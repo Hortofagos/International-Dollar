@@ -25,7 +25,16 @@ import sender_node
 import wallet_decryption
 import wallet_encryption
 
-
+try:
+    os.mkdir('ip_folder')
+    os.mkdir('ip_folder/1')
+    os.mkdir('ip_folder/2')
+    os.mkdir('ip_folder/3')
+    os.mkdir('transaction_folder')
+    os.mkdir('wallet_folder')
+except:
+    pass
+    
 root = Tk()
 root.title('International Dollar')
 root.tk.call('tk', 'scaling', 1.36)
