@@ -256,6 +256,7 @@ def ask_for_luck():
             ADDR = (PORT, random.choice(os.listdir('ip_folder/1')))
             client = socket.create_connection(ADDR, timeout=4)
             client.sendall('l' + addr.encode('utf-8'))
+            break
         except:
             pass
 
