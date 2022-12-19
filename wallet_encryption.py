@@ -16,5 +16,5 @@ def wallet_encrypt():
         file_read = f.read()
     cipher = Fernet(key)
     encrypted_file = cipher.encrypt(file_read)
-    with open('wallet_folder\wallet_encrypted_' + h_pass[0].strip() + '.txt', 'wb') as ef:
+    with open('wallet_folder/wallet_encrypted_' + h_pass[0].strip() + '.txt', 'wb') as ef:
         ef.write(encrypted_file)

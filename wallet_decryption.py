@@ -24,7 +24,7 @@ def wallet_decrypt():
             try:
                 decrypted_file = cipher.decrypt(file_read)
                 if decrypted_file.decode('utf-8').startswith(address):
-                    with open('wallet_folder\wallet_decrypted_' + x[17:], 'wb') as de:
+                    with open('wallet_folder/wallet_decrypted_' + x[17:], 'wb') as de:
                         de.write(decrypted_file)
                     break
             except:
