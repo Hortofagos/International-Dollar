@@ -1,8 +1,6 @@
 import os
 
-import random
-
-print(len(random.choice(os.listdir('ip_folder/1')).replace('.txt', '\n')))
+os.mkdir('ip_folder')
 
 """import sqlite3
 import time

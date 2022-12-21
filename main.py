@@ -34,7 +34,7 @@ try:
     os.mkdir('wallet_folder')
 except:
     pass
-    
+
 root = Tk()
 root.title('International Dollar')
 root.tk.call('tk', 'scaling', 1.36)
@@ -1065,28 +1065,30 @@ def send_bills(serial_num_start):
                 of = o.readlines()
                 o.seek(0)
                 o.truncate()
-                for wb in of:
-                    if wb.startswith(serial_num_start):
-                        try:
-                            full_transaction = wb.split()[0] + '\n' + str(int(wb.split()[1]) + 1) + '\n' + of[2]
-                            full_transaction += receiver.get() + '\n'
-                            read_tn = full_transaction.encode('utf-8')
-                            private_key_decode = base64.b85decode(of[1].strip())
-                            sk = ecdsa.SigningKey.from_string(private_key_decode, curve=ecdsa.SECP256k1,
-                                                              hashfunc=hashlib.sha3_256)
-                            sign = sk.sign(read_tn)
-                            signature = base64.b85encode(sign).decode('utf-8')
-                            full_transaction += str(signature)
-                            o.write('-' + wb.split()[0] + ' ' + str(int(wb.split()[1]) + 1) + ' ' + str(int(time.time())) + '\n')
-                            t = str(len(os.listdir('transaction_folder')) + 1)
-                            with open('transaction_folder/transaction_' + t + '.txt', 'w') as tn:
-                                tn.seek(0)
-                                tn.truncate()
-                                tn.write(str(full_transaction))
-                        except:
-                            o.write(wb)
-                    else:
+
+            for wb in of:
+                if wb.split('x')[0] + 'x' in serial_num_start:
+                    serial_num_start.remove(wb.split('x')[0] + 'x')
+                    try:
+                        full_transaction = wb.split()[0] + '\n' + str(int(wb.split()[1]) + 1) + '\n' + of[2]
+                        full_transaction += receiver.get() + '\n'
+                        read_tn = full_transaction.encode('utf-8')
+                        private_key_decode = base64.b85decode(of[1].strip())
+                        sk = ecdsa.SigningKey.from_string(private_key_decode, curve=ecdsa.SECP256k1,
+                                                          hashfunc=hashlib.sha3_256)
+                        sign = sk.sign(read_tn)
+                        signature = base64.b85encode(sign).decode('utf-8')
+                        full_transaction += str(signature)
+                        o.write('-' + wb.split()[0] + ' ' + str(int(wb.split()[1]) + 1) + ' ' + str(int(time.time())) + '\n')
+                        t = str(len(os.listdir('transaction_folder')) + 1)
+                        with open('transaction_folder/transaction_' + t + '.txt', 'w') as tn:
+                            tn.seek(0)
+                            tn.truncate()
+                            tn.write(str(full_transaction))
+                    except:
                         o.write(wb)
+                else:
+                    o.write(wb)
 
 def confirm_transaction():
     global selected_w1,selected_w2,selected_w5,selected_w10,selected_w20
@@ -1097,60 +1099,61 @@ def confirm_transaction():
     if len(os.listdir('transaction_folder')) != 0:
         sender_node.send_bills()
 
+    starts_with = []
     while True:
         if selected_w1 > 0:
-            starts_with = '1x'
+            starts_with.append('1x')
             selected_w1 -= 1
         elif selected_w2 > 0:
-            starts_with = '2x'
+            starts_with.append('2x')
             selected_w2 -= 1
         elif selected_w5 > 0:
-            starts_with = '5x'
+            starts_with.append('5x')
             selected_w5 -= 1
         elif selected_w10 > 0:
-            starts_with = '10x'
+            starts_with.append('10x')
             selected_w10 -= 1
         elif selected_w20 > 0:
-            starts_with = '20x'
+            starts_with.append('20x')
             selected_w20 -= 1
         elif selected_w50 > 0:
-            starts_with = '50x'
+            starts_with.append('50x')
             selected_w50 -= 1
         elif selected_w100 > 0:
-            starts_with = '100x'
+            starts_with.append('100x')
             selected_w100 -= 1
         elif selected_w200 > 0:
-            starts_with = '200x'
+            starts_with.append('200x')
             selected_w200 -= 1
         elif selected_w500 > 0:
-            starts_with = '500x'
+            starts_with.append('500x')
             selected_w500 -= 1
         elif selected_w1000 > 0:
-            starts_with = '1000x'
+            starts_with.append('1000x')
             selected_w1000 -= 1
         elif selected_w2000 > 0:
-            starts_with = '2000x'
+            starts_with.append('2000x')
             selected_w2000 -= 1
         elif selected_w5000 > 0:
-            starts_with = '5000x'
+            starts_with.append('5000x')
             selected_w5000 -= 1
         elif selected_w10000 > 0:
-            starts_with = '10000x'
+            starts_with.append('10000x')
             selected_w10000 -= 1
         elif selected_w20000 > 0:
-            starts_with = '20000x'
+            starts_with.append('20000x')
             selected_w20000 -= 1
         elif selected_w50000 > 0:
-            starts_with = '50000x'
+            starts_with.append('50000x')
             selected_w50000 -= 1
         elif selected_w100000 > 0:
-            starts_with = '100000x'
+            starts_with.append('100000x')
             selected_w100000 -= 1
         else:
-            threading.Thread(target=sender_node.send_bills).start()
             break
-        send_bills(starts_with)
 
+    send_bills(starts_with)
+    threading.Thread(target=sender_node.send_bills).start()
     receiver.delete(0, END)
     close_amount()
     update_balance()
