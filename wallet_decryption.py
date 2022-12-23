@@ -18,7 +18,7 @@ def wallet_decrypt():
     key = base64.urlsafe_b64encode(kdf.derive(password))
     cipher = Fernet(key)
     for x in os.listdir('wallet_folder'):
-        if x.startswith('wallet_encrypted'):
+        if x.replace('wallet_encrypted_', '').replace('.txt', '') == address:
             with open('wallet_folder/' + x, 'rb') as f:
                 file_read = f.read()
             try:
@@ -28,6 +28,6 @@ def wallet_decrypt():
                         de.write(decrypted_file)
                     break
             except:
-                continue
+                break
         elif x.startswith('wallet_decrypted'):
             os.remove('wallet_folder/' + x)

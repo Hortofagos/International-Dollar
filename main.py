@@ -291,7 +291,7 @@ def request_luck():
         lt.truncate()
         lt.write(str(int(time.time())))
     if int(time.time()) - last_timestamp > 86400:
-        button_lucky.config(cursor='wait')
+        button_lucky.config(cursor='watch')
         sender_node.ask_for_luck()
         b1 = b.get("1.0", END).strip('$')
         receive_bills()
@@ -300,8 +300,8 @@ def request_luck():
             won_text.insert(1.0, str(balance_combined) + '$')
 
 def print_bills():
-    root.config(cursor='wait')
-    button_print.config(cursor='wait')
+    root.config(cursor='watch')
+    button_print.config(cursor='watch')
     def t():
         full_bill(list(filter(None, selected_bills_text.get(1.0, END).splitlines())))
         root.config(cursor='arrow')
@@ -310,8 +310,8 @@ def print_bills():
     threading.Thread(target=t).start()
 
 def print_only_qr():
-    root.config(cursor='wait')
-    button_only_qr.config(cursor='wait')
+    root.config(cursor='watch')
+    button_only_qr.config(cursor='watch')
     def t():
         only_qr(selected_bills_text.get(1.0, END).splitlines())
         root.config(cursor='arrow')
@@ -887,8 +887,8 @@ w100000.place(x=152 * reso, y=520 * reso, width=149 * reso, height=64 * reso)
 
 
 def receive_bills():
-    root.config(cursor='wait')
-    receiver_button.config(cursor='wait')
+    root.config(cursor='watch')
+    receiver_button.config(cursor='watch')
     def thrd():
         sender_node.update_ip_list()
         sender_node.receive_bills()
@@ -994,9 +994,9 @@ def gen_ad():
         open('hashing.txt', 'w').close()
         generate_address_text.config(state='normal'),public_key.config(state='normal'),private_key.config(state='normal')
         generate_address_text.delete(0, END),public_key.delete(0, END),private_key.delete(0, END)
-        root.config(cursor='wait')
-        generate_address_button.config(cursor='wait')
-        subprocess.run('python generate_address.py')
+        root.config(cursor='watch')
+        generate_address_button.config(cursor='watch')
+        subprocess.run("python3 generate_address.py", shell=True)
         with open('hashing.txt', 'r') as hs:
             ha = hs.readlines()
         h_address = ha[0].strip()
@@ -1025,6 +1025,7 @@ def generate_wallet_final():
     sign_in_button()
 
 def particpate():
+    sender_node.ask_for_luck()
     success.place_forget()
     button_participate.place_forget()
     button_not_participate.place_forget()
@@ -1324,7 +1325,7 @@ def qr_decoder(qrimage):
 def qr_scan():
     global num_of_times_clicked, cap
     num_of_times_clicked += 1
-    webcam_scanner.config(cursor='wait')
+    webcam_scanner.config(cursor='watch')
     if (num_of_times_clicked % 2) != 0:
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         webcam_scanner.config(cursor='hand2')

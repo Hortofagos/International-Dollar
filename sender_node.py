@@ -9,7 +9,7 @@ import ipaddress
 import string
 
 already_tried = []
-PORT = 80
+PORT = 8080
 def connect(indicator, data, ipnl):
     with open('rsa_public_key.txt', 'r') as rsk:
         key = rsk.read()
