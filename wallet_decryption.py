@@ -12,7 +12,7 @@ def wallet_decrypt():
         p.seek(0)
         p.truncate()
     password = str(passphrase[0]).strip().encode('utf-8')
-    address = str(passphrase[1])
+    address = str(passphrase[1]).strip()
     salt = b'w\x8a\xb3\x97d\x17D\xba\x86\xcc\xea\x9a\x11\\=\xe2'
     kdf = PBKDF2HMAC(algorithm=hashes.SHA3_256, length=32, salt=salt, iterations=1000000, backend=default_backend())
     key = base64.urlsafe_b64encode(kdf.derive(password))
