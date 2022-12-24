@@ -1067,29 +1067,29 @@ def send_bills(serial_num_start):
                 o.seek(0)
                 o.truncate()
 
-            for wb in of:
-                if wb.split('x')[0] + 'x' in serial_num_start:
-                    serial_num_start.remove(wb.split('x')[0] + 'x')
-                    try:
-                        full_transaction = wb.split()[0] + '\n' + str(int(wb.split()[1]) + 1) + '\n' + of[2]
-                        full_transaction += receiver.get() + '\n'
-                        read_tn = full_transaction.encode('utf-8')
-                        private_key_decode = base64.b85decode(of[1].strip())
-                        sk = ecdsa.SigningKey.from_string(private_key_decode, curve=ecdsa.SECP256k1,
-                                                          hashfunc=hashlib.sha3_256)
-                        sign = sk.sign(read_tn)
-                        signature = base64.b85encode(sign).decode('utf-8')
-                        full_transaction += str(signature)
-                        o.write('-' + wb.split()[0] + ' ' + str(int(wb.split()[1]) + 1) + ' ' + str(int(time.time())) + '\n')
-                        t = str(len(os.listdir('transaction_folder')) + 1)
-                        with open('transaction_folder/transaction_' + t + '.txt', 'w') as tn:
-                            tn.seek(0)
-                            tn.truncate()
-                            tn.write(str(full_transaction))
-                    except:
+                for wb in of:
+                    if wb.split('x')[0] + 'x' in serial_num_start:
+                        serial_num_start.remove(wb.split('x')[0] + 'x')
+                        try:
+                            full_transaction = wb.split()[0] + '\n' + str(int(wb.split()[1]) + 1) + '\n' + of[2]
+                            full_transaction += receiver.get() + '\n'
+                            read_tn = full_transaction.encode('utf-8')
+                            private_key_decode = base64.b85decode(of[1].strip())
+                            sk = ecdsa.SigningKey.from_string(private_key_decode, curve=ecdsa.SECP256k1,
+                                                              hashfunc=hashlib.sha3_256)
+                            sign = sk.sign(read_tn)
+                            signature = base64.b85encode(sign).decode('utf-8')
+                            full_transaction += str(signature)
+                            o.write('-' + wb.split()[0] + ' ' + str(int(wb.split()[1]) + 1) + ' ' + str(int(time.time())) + '\n')
+                            t = str(len(os.listdir('transaction_folder')) + 1)
+                            with open('transaction_folder/transaction_' + t + '.txt', 'w') as tn:
+                                tn.seek(0)
+                                tn.truncate()
+                                tn.write(str(full_transaction))
+                        except:
+                            o.write(wb)
+                    else:
                         o.write(wb)
-                else:
-                    o.write(wb)
 
 def confirm_transaction():
     global selected_w1,selected_w2,selected_w5,selected_w10,selected_w20
