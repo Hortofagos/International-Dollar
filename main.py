@@ -996,7 +996,7 @@ def gen_ad():
         generate_address_text.delete(0, END),public_key.delete(0, END),private_key.delete(0, END)
         root.config(cursor='watch')
         generate_address_button.config(cursor='watch')
-        subprocess.run("python3 generate_address.py", shell=True)
+        subprocess.run("python generate_address.py", shell=True)
         with open('hashing.txt', 'r') as hs:
             ha = hs.readlines()
         h_address = ha[0].strip()
