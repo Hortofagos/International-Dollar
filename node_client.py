@@ -56,7 +56,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
     with open('rsa_public_key.txt', 'r') as pk:
         public_key_rsa = pk.read()
     def handle_client(conn, addr):
-        #try:
+        try:
             client_public_key = conn.recv(1024).decode('utf-8')
             conn.sendall(public_key_rsa.encode('utf-8'))
             def send(data1):
@@ -242,8 +242,8 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 active_udp_connections.remove(addr[0])
             active_connections.remove(addr[0])
             conn.close()
-        #except:
-            # pass
+        except:
+            pass
 
     overload = False
     def ping_own_server():
@@ -513,8 +513,8 @@ def maintain_connections(bill_pool):
 
 
 if __name__ == "__main__":
-    #for f in os.listdir('full_activation'):
-        #open('full_activation/' + f, 'w').close()
+    for f in os.listdir('full_activation'):
+        open('full_activation/' + f, 'w').close()
     with Manager() as manager:
         rf1 = manager.list()
         rf2 = manager.list()
@@ -524,7 +524,7 @@ if __name__ == "__main__":
         pos2 = ['500x', '1000x', '2000x', '5000x', '10000x', '20000x', '50000x', '100000x']
         Process(target=database, args=(rf1, rf2, t)).start()
         Process(target=maintain_connections, args=(bp, )).start()
-        #Process(target=download_bills, args=(pos1, t)).start()
-        #Process(target=download_bills, args=(pos2, t)).start()
+        Process(target=download_bills, args=(pos1, t)).start()
+        Process(target=download_bills, args=(pos2, t)).start()
         node_protocol(rf1, rf2, t, bp)
 
