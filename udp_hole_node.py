@@ -8,7 +8,7 @@ from node_client import new_ip
 import ipaddress
 import random
 from multiprocessing import Process, Manager
-from node_client import database
+from node_client import database, download_bills
 from hashlib import sha3_256
 import confirm_validity
 import base58
@@ -28,7 +28,7 @@ def udp_node(rfb, rfb_response, potential_conns):
             return
 
     def handle_client(nef):
-        #try:
+        try:
             ip, port = nef[0], int(nef[1])
             with open('rsa_public_key.txt', 'r') as rk:
                 key = rk.read()
@@ -94,8 +94,8 @@ def udp_node(rfb, rfb_response, potential_conns):
                 threading.Thread(target=listen).start()
                 time.sleep(0.3)
                 server_socket2.sendto(key.encode('utf-8'), (ip, port, 0, 0))
-        #except:
-            #pass
+        except:
+            pass
 
     while True:
         time.sleep(0.1)
@@ -186,8 +186,8 @@ def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
         time.sleep(0.4)
 
 if __name__ == "__main__":
-    # for f in os.listdir('full_activation'):
-        # open('full_activation/' + f, 'w').close()
+    for f in os.listdir('full_activation'):
+        open('full_activation/' + f, 'w').close()
     with Manager() as manager:
         rf1 = manager.list()
         rf2 = manager.list()
@@ -197,6 +197,6 @@ if __name__ == "__main__":
         Process(target=client_udp, args=(rf1, rf2, t, new_connect)).start()
         pos1 = ['1x', '2x', '5x', '10x', '20x', '50x', '100x', '200x']
         pos2 = ['500x', '1000x', '2000x', '5000x', '10000x', '20000x', '50000x', '100000x']
-        # Process(target=download_bills, args=(pos1, t)).start()
-        # Process(target=download_bills, args=(pos2, t)).start()
+        Process(target=download_bills, args=(pos1, t)).start()
+        Process(target=download_bills, args=(pos2, t)).start()
         udp_node(rf1, rf2, new_connect)
