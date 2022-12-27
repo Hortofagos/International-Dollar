@@ -16,7 +16,7 @@ import base58
 from multiprocessing import Process, Manager
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-PORT = 8080
+PORT = 8888
 def new_ip(v):
     try:
         try:
