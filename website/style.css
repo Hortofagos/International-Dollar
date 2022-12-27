@@ -35,15 +35,22 @@ h2 {
   display: block;
   margin-left: auto;
   margin-right: auto;
-  width: 5%;
+  width: 100px;
 }
 
+a{
+color: #00CED1;
+margin-top: 20px;
+text-align: center;
+display: block;
+}
 
 .center2 {
   display: block;
   margin-left: auto;
   margin-right: auto;
-  width: 35%;
+  margin-bottom: 20px;
+  width: 700px;
 }
 
 
@@ -56,19 +63,19 @@ p{
 }
 
 div.down {
-  width: 350px;
+  width: 650px;
   border: 5px solid green;
   background-color: #a5bba5;
   padding: 10px;
   margin-top: 0px;
   margin-left: auto;
   margin-right: auto;
-  width: 32%;
 }
 
 div.j {
-  margin-left: 630px;
-  margin-right: 630px;
+  margin-left: auto;
+  width: 680px;
+  margin-right: auto;
   margin-top: 0px;
   margin-bottom: 0px;
   text-align-last: justify;
@@ -83,7 +90,7 @@ div.j {
   display: inline-block;
   font-size: 26px;
   font-family: ind;
-  margin: 0px 18px;
+  margin: 0px 40px;
   cursor: pointer;
   background-color: white;
   color: black;
