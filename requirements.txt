@@ -30,3 +30,4 @@ PyRect==0.2.0
 tkinterdnd2==0.3.0
 PyPDF2==2.11.1
 requests==2.28.1
+pyglet==1.4.10
