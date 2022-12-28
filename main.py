@@ -286,7 +286,7 @@ def request_luck():
         lt.seek(0)
         lt.truncate()
         lt.write(str(int(time.time())))
-    if int(time.time()) - last_timestamp > 86400:
+    if int(time.time()) - int(last_timestamp) > 86400:
         button_lucky.config(cursor='watch')
         sender_node.ask_for_luck()
         b1 = b.get("1.0", END).strip('$')
