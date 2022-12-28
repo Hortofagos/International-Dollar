@@ -396,8 +396,6 @@ def download_bills(pos, transaction_pool):
                     data_decrypted = decryptor.update(data) + decryptor.finalize()
                     data_decoded = data_decrypted.decode('utf-8').strip('!')
                     spl = data_decoded.splitlines()
-                    print(spl)
-                    print('SPLIIIIIIIIIINE')
                     for c in range(50):
                         for _ in range(multi):
                             try:
@@ -425,7 +423,6 @@ def download_bills(pos, transaction_pool):
                         small_comparison.append(item)
                         bill_comparison.remove(item)
                 sorted_max_list.append(max(set(small_comparison), key=small_comparison.count))
-            print(sorted_max_list)
             with open('full_activation/' + it.strip('x') + '.txt', 'r') as d2:
                 if d2.read().endswith('x'):
                     return
