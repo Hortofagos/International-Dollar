@@ -18,7 +18,7 @@ Go to the the tab "Win/Print" and write the serial numbers of the bills you
 want to print in the grey box and click "Print bills". This requires you to have them in 
 your wallet.
 
-Dont forget to claim your free bills under "I'm feeling lucky" 
+Dont forget to claim your free bills under "I'm feeling lucky".
 If you want to purchase extra bills contact me at bankmann.hans@gmail.com 
 :)
 
@@ -40,3 +40,5 @@ consumption. But most importantly, we do not seek a financial gain
 from this project, all International Dollars will be slowly and
 equally distributed across the community. This is not about getting
 rich quick, this is about creating a fair financial system one step at a time.
+
+POWER TO THE PEOPLE
