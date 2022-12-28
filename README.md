@@ -4,8 +4,25 @@ Github contributions will be rewarded with 1000-100000 International Dollars.
 Just comment your IND address.
 
 Setup process:
-git clone 
+  1. git clone https://github.com/Hortofagos/International-Dollar.git
+  2. pip install -r /path/to/requirements.txt
+  3. python3 main.py
 
+Node setup:
+  Go to your router homepage. Search for "port forwarding" continue to forward PORT 8888 to your local ip.
+  This will enable your router to direct all incoming traffic to your machine. 
+  Last run python3 node_client.py
+
+If you want to convert your digital bills into physical ones, you can print them out yourself.
+Go to the the tab "Win/Print" and write the serial numbers of the bills you
+want to print in the grey box and click "Print bills". This requires you to have them in 
+your wallet.
+
+Dont forget to claim your free bills under "I'm feeling lucky" 
+If you want to purchase extra bills contact me at bankmann.hans@gmail.com 
+:)
+
+There is absolutley NO WARRANTY
 
 About 5,000 years ago that the Mesopotamian people created the shekel,
 which is considered the first known form of currency. Since then,
