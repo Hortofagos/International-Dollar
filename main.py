@@ -1021,7 +1021,10 @@ def generate_wallet_final():
     sign_in_button()
 
 def particpate():
-    sender_node.ask_for_luck()
+    def t():
+        time.sleep(40)
+        request_luck()
+    threading.Thread(target=t).start()
     success.place_forget()
     button_participate.place_forget()
     button_not_participate.place_forget()
