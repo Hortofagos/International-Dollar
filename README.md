@@ -1,5 +1,12 @@
 # International-Dollar
 
+Github contributions will be rewarded with 1000-100000 International Dollars.
+Just comment your IND address.
+
+Setup process:
+git clone 
+
+
 About 5,000 years ago that the Mesopotamian people created the shekel,
 which is considered the first known form of currency. Since then,
 we have come a long way in our monetary system. From Gold and Silver
