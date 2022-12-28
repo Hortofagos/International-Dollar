@@ -247,16 +247,10 @@ def receive_bills():
 
 
 def ask_for_luck():
-    addr = ''
-    for w in os.listdir('wallet_folder'):
+        for w in os.listdir('wallet_folder'):
         if w.startswith('wallet_decrypted'):
-            addr += w[18:].replace('.txt', '')
-    while True:
-        try:
-            ADDR = (PORT, random.choice(os.listdir('ip_folder/1')))
-            client = socket.create_connection(ADDR, timeout=4)
-            client.sendall('l' + addr.encode('utf-8'))
-            break
-        except:
-            pass
+            addr = w[18:].replace('.txt', '')
+            ipf = os.listdir('ip_folder/1')
+            connect('l', addr, ipf)
+
 
