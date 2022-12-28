@@ -35,7 +35,10 @@ root = Tk()
 root.title('International Dollar')
 root.tk.call('tk', 'scaling', 1.36)
 height_screen = root.winfo_screenheight()
-font = Font(file="ind_font.ttf", family="ind")
+try:
+    font = Font(file="ind_font.ttf", family="ind")
+except:
+    pyglet.resource.add_font('ind_font.ttf')
 
 if height_screen >= 4000:
     res = '8'
