@@ -282,7 +282,6 @@ a = Entry(root, font=('ind', 22 * reso), bg='light grey')
 receiver_history = Text(root, font=('ind', 22 * reso), bg='black', fg='light grey', bd=0, highlightthickness=0)
 receiver_history.bind("<Key>", lambda e: "break")
 
-won_text = Text(root, font=('ind', 38 * reso), bg='black', fg='white')
 def request_luck():
     with open('last_luck.txt', 'r+') as lt:
         last_timestamp = lt.read()
@@ -294,10 +293,7 @@ def request_luck():
         sender_node.ask_for_luck()
         b1 = b.get("1.0", END).strip('$')
         receive_bills()
-        balance_combined = int(b.get("1.0", END).strip('$')) - int(b1)
-        if balance_combined != 0:
-            won_text.insert(1.0, str(balance_combined) + '$')
-
+       
 def print_bills():
     root.config(cursor='watch')
     button_print.config(cursor='watch')
@@ -379,7 +375,6 @@ def win_button():
     all_bills_text.place(x=640 * reso, y=310 * reso, width=240 * reso, height=300 * reso)
     selected_bills_text.place(x=900 * reso, y=310 * reso, width=240 * reso, height=300 * reso)
     asl_text.place(x=640 * reso, y=260 * reso, width=480 * reso, height=48 * reso)
-    won_text.place(x=60 * reso, y=400 * reso, width=200 * reso, height=65 * reso)
     only_sm = ''
     for bsm in dr[4:]:
         if not bsm.startswith('-'):
@@ -1187,7 +1182,7 @@ def close():
     button_checkbox.place_forget(), info.place_forget(), tf_text.place_forget(), button_print.place_forget()
     add_bill_button.place_forget(), node_class_selector.place_forget()
     ron.place_forget(), bak.place_forget(), asl_text.place_forget(), all_bills_text.place_forget()
-    selected_bills_text.place_forget(), button_only_qr.place_forget(), won_text.place_forget()
+    selected_bills_text.place_forget(), button_only_qr.place_forget()
     try:
         qr.place_forget(), address_txt.place_forget()
     except Exception:
