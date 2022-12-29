@@ -8,7 +8,10 @@ Setup process:
   2. pip install -r /path/to/requirements.txt
   3. python3 main.py
 
+
 Node setup:
+  mkdir transaction_folder
+  mkdir wallet_folder
   Go to your router homepage. Search for "port forwarding" continue to forward PORT 8888 to your local ip.
   This will enable your router to direct all incoming traffic to your machine. 
   Last run python3 node_client.py
