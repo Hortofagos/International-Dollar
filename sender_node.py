@@ -99,15 +99,14 @@ def connect_udp(sm, ip_range):
 def send_bills():
     ipnl1 = os.listdir('ip_folder/1')
     ipnl2 = os.listdir('ip_folder/2')
-    while True:
-        for transaction in os.listdir('transaction_folder'):
-            with open('transaction_folder/' + transaction, 'r') as tm:
-                tm = tm.read()
-                threading.Thread(target=connect, args=('b', tm, ipnl1)).start()
-                for _ in range(2):
-                    threading.Thread(target=connect, args=('b', tm, ipnl1 + ipnl2)).start()
-                    time.sleep(0.1)
-            os.remove('transaction_folder/' + str(transaction))
+    for transaction in os.listdir('transaction_folder'):
+        with open('transaction_folder/' + transaction, 'r') as tm:
+            tm = tm.read()
+            threading.Thread(target=connect, args=('b', tm, ipnl1)).start()
+            for _ in range(2):
+                threading.Thread(target=connect, args=('b', tm, ipnl2)).start()
+                time.sleep(0.1)
+        os.remove('transaction_folder/' + str(transaction))
 
 
 def public_ip():
