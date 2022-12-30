@@ -1416,6 +1416,7 @@ def on_closing():
                         os.remove('wallet_folder/wallet_encrypted_' + wal[17:])
                         wallet_encryption.wallet_encrypt()
                         os.remove('wallet_folder/' + wal)
+                        open('hashing.txt', 'w').close()
         if run_on_startup == 'NO':
             os.remove(bat_path + '/server1.bat')
             os.remove(bat_path + '/server2.bat')
