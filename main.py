@@ -291,8 +291,8 @@ def request_luck():
     if int(time.time()) - int(last_timestamp) > 86400:
         button_lucky.config(cursor='watch')
         sender_node.ask_for_luck()
-        b1 = b.get("1.0", END).strip('$')
         receive_bills()
+        button_lucky.config(cursor='hand2')
        
 def print_bills():
     root.config(cursor='watch')
