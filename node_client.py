@@ -110,7 +110,6 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
             elif i == 'b':
                 # add a new bill to the database
                 bill = msg.splitlines(keepends=True)[:5]
-                print(bill)
                 bill_serial_num,  bill_number, bill_addr = bill[0].strip(), bill[1].strip(), bill[3].strip()
                 bill_public_key, bill_digital_sig = bill[2].strip(), bill[4].strip()
                 with open('spam_protection.txt', 'r') as sc:
@@ -277,7 +276,6 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
     while True:
         try:
             conn1, addr1 = server.accept()
-            print(active_udp_connections)
             print(conn1, addr1)
             with open('kill_node.txt', 'r') as kn2:
                 kill_node = kn2.read()
@@ -330,7 +328,7 @@ def database(rfb, rfb_response, transaction_pool):
                 c1.execute("SELECT * FROM bills WHERE serial_num MATCH ?", (finder[1],))
                 data = c1.fetchone()
                 if data:
-                    rfb_response.append(tuple(finder[0] + data[0] + data[1] + data[2]))
+                    rfb_response.append(tuple(finder[0]) + data))
             rfb.remove(finder)
 
         for new_bill in transaction_pool:
