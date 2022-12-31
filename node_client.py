@@ -328,7 +328,7 @@ def database(rfb, rfb_response, transaction_pool):
                 c1.execute("SELECT * FROM bills WHERE serial_num MATCH ?", (finder[1],))
                 data = c1.fetchone()
                 if data:
-                    rfb_response.append(tuple(finder[0]) + data)
+                    rfb_response.append(tuple([finder[0]]) + data)
             rfb.remove(finder)
 
         for new_bill in transaction_pool:
