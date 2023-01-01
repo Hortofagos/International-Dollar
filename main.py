@@ -291,6 +291,7 @@ def request_luck():
     if int(time.time()) - int(last_timestamp) > 86400:
         button_lucky.config(cursor='watch')
         sender_node.ask_for_luck()
+        time.sleep(5)
         receive_bills()
         button_lucky.config(cursor='hand2')
        
