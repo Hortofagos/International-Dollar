@@ -1281,7 +1281,7 @@ def add_bill():
     global used_codes
     full_code = serial_num.get() + '\n' + private_key_entry.get() + '\n' + public_key_entry.get() + '\n'
     if full_code not in used_codes:
-        used_codes.appned(full_code)
+        used_codes.append(full_code)
         am = int(claim_bills_amount.get().strip('$'))
         claim_bills_amount.delete(0, END)
         claim_bills_amount.insert(0, str(am + int(serial_num.get().split('x')[0])) + '$')
