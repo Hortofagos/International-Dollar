@@ -184,7 +184,6 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                             if nef[1] == addr[0].replace('::ffff:', ''):
                                 send('n' + ' '.join(nef))
                                 potential_conns_udp.remove(nef)
-                                print('send' + ' '.join(nef))
                         for b in bill_pool:
                             send(b)
                         itera += 1
