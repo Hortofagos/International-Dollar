@@ -39,14 +39,18 @@ def new_ip(v):
 
     with open('my_public_ip.txt', 'r+') as mpi:
         mpi_lines = mpi.readlines()
-        my_ip = mpi_lines[0].strip()
-        if my_ip != public_ip:
+        def newi():
             mpi.seek(0)
             mpi.truncate()
             mpi.write(str(public_ip))
             for _ in range(len(ipnl)):
                 threading.Thread(target=sender_node.connect, args=('i', public_ip + '\n' + v, ipnl)).start()
-
+        try:
+            my_ip = mpi_lines[0].strip()
+            if my_ip != public_ip:
+                newi()
+        except:
+            newi()
 
 def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
     new_ip('2')
