@@ -197,7 +197,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 sm = bill[0]
                 address = bill[1].strip()
                 digtal_sig = bill[2].strip()
-                hard_key = 'r*{>Opx@$BqA87pd<&4eK7bp~y;1dtlNplnDT1+52h<CoTd2f{02Egzuc0sKY5=SZlk#TuV|fM6&xQKV'
+                hard_key = 'zc9n<MOC?}9lz;(9#JiH?{R?0xvwhXzpCoFzpzOM@f7{xn9=5~!AbRgM>;P4Sg}@Kk8g~_%kPSR=$oZz'
                 v = confirm_validity.verify_ecdsa(digtal_sig, sm + address, hard_key)
                 if v == 'valid':
                     full_insert = (sm, '0', address)
