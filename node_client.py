@@ -136,7 +136,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 # confirm the possesion of a bill
                 with open('full_activation/' + msg.split('x')[0] + '.txt', 'r') as fa:
                     is_downloaded = fa.read().strip('x')
-                    if int(is_downloaded) > int(msg.split('x')[1]):
+                    if int(is_downloaded) >= int(msg.split('x')[1]):
                         db2 = access_database(msg)
                         if db2:
                             send('\n'.join(db2))
