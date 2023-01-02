@@ -10,11 +10,10 @@ Setup process:
 
 
 Node setup:
-  mkdir transaction_folder
-  mkdir wallet_folder
-  Go to your router homepage. Search for "port forwarding" continue to forward PORT 8888 to your local ip.
-  This will enable your router to direct all incoming traffic to your machine. 
-  Last run python3 node_client.py
+  1. $ mkdir transaction_folder
+  2. $ mkdir wallet_folder
+  3. Go to your router homepage. Search for "port forwarding" continue to forward PORT 8888 to your local ip.
+  4. $ python3 node_client.py 
 
 If you want to convert your digital bills into physical ones, you can print them out yourself.
 Go to the the tab "Win/Print" and write the serial numbers of the bills you
