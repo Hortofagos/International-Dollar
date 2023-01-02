@@ -240,7 +240,7 @@ def receive_bills():
                     if sm and sm not in bills_in_wallet:
                         threading.Thread(target=confirm_bill, args=(sm,)).start()
                         break
-                time.sleep(8)
+                time.sleep(5)
                 for b in new_bills:
                     with open('wallet_folder/' + wal, 'a') as wa2:
                         wa2.write(b[0] + ' ' + b[1] + ' ' + str(int(time.time())) + '\n')
