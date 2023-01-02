@@ -886,13 +886,15 @@ def receive_bills():
     receiver_button.config(cursor='watch')
     def thrd():
         sender_node.update_ip_list()
+    def thrd2():
         sender_node.receive_bills()
-        time.sleep(10)
+        time.sleep(5.5)
         update_balance()
         page()
         root.config(cursor='arrow')
         receiver_button.config(cursor='hand2')
     threading.Thread(target=thrd).start()
+    threading.Thread(target=thrd2).start()
 
 receiver_button_img = PhotoImage(file=path_button_receive)
 receiver_button = Button(root, image=receiver_button_img, cursor='hand2', command=receive_bills, bd=0,
