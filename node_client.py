@@ -162,12 +162,8 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 ip = msg.splitlines()[0]
                 version = msg.splitlines()[1]
                 if addr[0] == ip and ipaddress.ip_address(ip).version == 4:
-                    try:
-                        time.sleep(random.uniform(0.0, 2.5))
-                        send('test')
-                        open('ip_folder/' + version + '/' + ip + '.txt', 'w').close()
-                    except:
-                        pass
+                    open('ip_folder/' + version + '/' + ip + '.txt', 'w').close()
+                 
             elif i == 'y':
                 # connect a udp client to a udp node
                 random_udp_node = random.choice(active_udp_connections).replace('::ffff:', '')
