@@ -49,7 +49,6 @@ def connect_udp(sm, ip_range):
     random_port = random.randint(50000, 65000)
     with open('my_public_ip.txt', 'r') as mpi:
         my_ip = mpi.read()
-        # try:
         udp_ip = connect('y', str(random_port), ip_range)
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         server_socket.settimeout(5)
@@ -92,9 +91,6 @@ def connect_udp(sm, ip_range):
             if response:
                 return response[0]
 
-        # except:
-        # pass
-
 
 def send_bills():
     ipnl1 = os.listdir('ip_folder/1')
@@ -126,7 +122,6 @@ def check_validity(serial_num):
     ct = str(int(time.time()))
 
     def main_nodes():
-        # try:
         holder = connect('c', serial_num, ipnl)
         importance = int(max(0, 1800 - int(ct[0:4])) / 8)
         for x in range(importance):
@@ -134,8 +129,6 @@ def check_validity(serial_num):
                 comparison.append((holder.splitlines()[0], holder.splitlines()[1]))
             else:
                 comparison.append(" ")
-        # except:
-        # pass
     def full_nodes():
         # try:
         holder = connect('c', serial_num, ipnl2)
@@ -143,8 +136,6 @@ def check_validity(serial_num):
             comparison.append((holder.splitlines()[0], holder.splitlines()[1]))
         else:
             comparison.append(" ")
-        # except:
-        # pass
     def small_udp_node():
         holder = connect_udp(serial_num, ipnl + ipnl2)
         if holder != 'n':
@@ -168,7 +159,6 @@ def check_validity(serial_num):
 
 
 def update_ip_list():
-    # try:
     def new_main_ip():
         comparison_ip = []
         main_ips = os.listdir('ip_folder/1')
@@ -213,12 +203,9 @@ def update_ip_list():
                         open('ip_folder/3/' + str(ip) + '.txt').close()
         except:
             pass
-    # except:
-    # pass
 
 
 def receive_bills():
-    # try:
     ipnl = os.listdir('ip_folder/1') + os.listdir('ip_folder/2')
     for wal in os.listdir('wallet_folder'):
         if wal.startswith('wallet_decrypted'):
@@ -244,8 +231,6 @@ def receive_bills():
                 for b in new_bills:
                     with open('wallet_folder/' + wal, 'a') as wa2:
                         wa2.write(b[0] + ' ' + b[1] + ' ' + str(int(time.time())) + '\n')
-    # except:
-    # pass
 
 
 def ask_for_luck():
