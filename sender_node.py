@@ -198,9 +198,9 @@ def update_ip_list():
                         matches2 += 1
                 if matches0 < 32 and matches1 < 4 and matches2 < 1:
                     if (c % 2) == 0:
-                        open('ip_folder/2/' + str(ip) + '.txt').close()
+                        open('ip_folder/2/' + str(ip) + '.txt', 'w').close()
                     else:
-                        open('ip_folder/3/' + str(ip) + '.txt').close()
+                        open('ip_folder/3/' + str(ip) + '.txt', 'w').close()
         except:
             pass
 
