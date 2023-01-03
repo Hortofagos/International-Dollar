@@ -26,8 +26,9 @@ import wallet_decryption
 import wallet_encryption
 
 try:
-    os.mkdir('transaction_folder')
-    os.mkdir('wallet_folder')
+    os.remove('ip_folder/3/PLACE_HOLDER.txt')
+    os.remove('wallet_folder/PLACE_HOLDER.txt')
+    os.remove('transaction_folder/PLACE_HOLDER.txt')
 except:
     pass
 
