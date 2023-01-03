@@ -161,7 +161,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 # add a new ip address to node network
                 ip = msg.splitlines()[0]
                 version = msg.splitlines()[1]
-                if addr[0] == ip and ipaddress.ip_address(ip).version == 4:
+                if addr[0].replace('::ffff:', '') == ip and ipaddress.ip_address(ip).version == 4:
                     open('ip_folder/' + version + '/' + ip + '.txt', 'w').close()
                  
             elif i == 'y':
