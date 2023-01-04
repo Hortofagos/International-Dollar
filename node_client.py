@@ -193,15 +193,14 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 pass
             elif i == 'n':
                 # new bills are being added to the database
-                bill = msg.splitlines(keepends=True)
+                bill = msg.splitlines()
                 sm = bill[0]
-                address = bill[1].strip()
-                digtal_sig = bill[2].strip()
+                address = bill[1]
+                digtal_sig = bill[2]
                 hard_key = 'zc9n<MOC?}9lz;(9#JiH?{R?0xvwhXzpCoFzpzOM@f7{xn9=5~!AbRgM>;P4Sg}@Kk8g~_%kPSR=$oZz'
                 v = confirm_validity.verify_ecdsa(digtal_sig, sm + address, hard_key)
                 if v == 'valid':
-                    full_insert = (sm, '0', address)
-                    transaction_pool.append(full_insert)
+                    transaction_pool.append((sm, '0', address))
             elif i == 'd':
                 # download service for another node
                 key_aes = os.urandom(32)
