@@ -447,6 +447,9 @@ def download_bills(pos, transaction_pool):
                 fa3.truncate()
                 fa3.write(str(number))
             for _ in range(ct):
+                with open('full_activation/' + it.strip('x') + '.txt', 'r') as d2:
+                    if d2.read().endswith('x'):
+                        return
                 threading.Thread(target=thrd2, args=(number, )).start()
                 number += 50
                 time.sleep(1)
