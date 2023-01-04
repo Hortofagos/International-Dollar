@@ -130,7 +130,6 @@ def check_validity(serial_num):
             else:
                 comparison.append(" ")
     def full_nodes():
-        # try:
         holder = connect('c', serial_num, ipnl2)
         if holder != 'n':
             comparison.append((holder.splitlines()[0], holder.splitlines()[1]))
@@ -188,13 +187,14 @@ def update_ip_list():
                 matches0 = 0
                 matches1 = 0
                 matches2 = 0
-                for item_ip in os.listdir('ip_folder/2') + os.listdir('ip_folder/3'):
-                    ip_split = item_ip.split('.')
+                ip_split = ip.split('.')
+                for ii in os.listdir('ip_folder/2') + os.listdir('ip_folder/3'):
+                    item_ip = ii.split('.')
                     if item_ip[0] == ip_split[0]:
                         matches0 += 1
-                    if item_ip[0] + item_ip[1] == ip_split[0] + ip_split[1]:
+                    if item_ip[:2] == ip_split[:2]:
                         matches1 += 1
-                    if item_ip[0] + item_ip[1] + item_ip[2] == ip_split[0] + ip_split[1] + ip_split[2]:
+                    if item_ip[:3] == ip_split[:3]:
                         matches2 += 1
                 if matches0 < 32 and matches1 < 4 and matches2 < 1:
                     if (c % 2) == 0:
