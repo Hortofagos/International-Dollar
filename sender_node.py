@@ -21,7 +21,7 @@ def connect(indicator, data, ipnl):
         ADDR = (SERVER, PORT)
         try:
             if SERVER not in already_tried:
-                client = socket.create_connection(ADDR, timeout=0.4)
+                client = socket.create_connection(ADDR, timeout=1)
                 client.settimeout(4)
                 client.sendall(key.encode('utf-8'))
                 recv_key = client.recv(1024).decode('utf-8')
