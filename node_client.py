@@ -355,7 +355,8 @@ def download_bills(pos, transaction_pool):
             serial_num_range = it + str(num)
             with open('rsa_public_key.txt', 'r') as rsk:
                 key = rsk.read()
-            while True:
+            start_time = int(time.time())
+            while int(time.time()) - start_time <= 9:
                 if random.randrange(1000) == 9:
                     already_tried.clear()
                 SERVER = random.choice(ipnl).replace('.txt', '')
