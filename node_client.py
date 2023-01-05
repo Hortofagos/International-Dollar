@@ -415,7 +415,7 @@ def download_bills(pos, transaction_pool):
             for c3 in range(50):
                 small_comparison = []
                 for item in bill_comparison:
-                    if item[0] == it + str(number1 + c3) or item[1] == it + str(number1 + c3):
+                    if item[0] == it + str(number1 + c3):
                         small_comparison.append(item)
                         bill_comparison.remove(item)
                 sorted_max_list.append(max(set(small_comparison), key=small_comparison.count))
