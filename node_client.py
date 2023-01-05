@@ -363,8 +363,8 @@ def download_bills(pos, transaction_pool):
                 if SERVER not in already_tried:
                     ADDR = (SERVER, PORT)
                     try:
-                        client = socket.create_connection(ADDR, timeout=1)
-                        client.settimeout(6)
+                        client = socket.create_connection(ADDR, timeout=5)
+                        client.settimeout(10)
                         client.sendall(key.encode('utf-8'))
                         recv_key = client.recv(1024).decode('utf-8')
                         public_key_node = rsa.PublicKey.load_pkcs1(base64.b64decode(recv_key))
@@ -411,12 +411,12 @@ def download_bills(pos, transaction_pool):
             for _ in range(3):
                 threading.Thread(target=down, args=(number1, os.listdir('ip_folder/2'))).start()
 
-            time.sleep(9)
+            time.sleep(15)
             sorted_max_list = []
             for c3 in range(50):
                 small_comparison = []
                 for item in bill_comparison:
-                    if item[0] == it + str(number1 + c3):
+                    if item[0] == it + str(number1 + c3) or item[1] == it + str(number1 + c3):
                         small_comparison.append(item)
                         bill_comparison.remove(item)
                 sorted_max_list.append(max(set(small_comparison), key=small_comparison.count))
