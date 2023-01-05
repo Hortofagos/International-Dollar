@@ -359,50 +359,50 @@ def download_bills(pos, transaction_pool):
                 if random.randrange(1000) == 9:
                     already_tried.clear()
                 SERVER = random.choice(ipnl).replace('.txt', '')
-
-                ADDR = (SERVER, PORT)
-                try:
-                    client = socket.create_connection(ADDR, timeout=0.3)
-                    client.settimeout(6)
-                    client.sendall(key.encode('utf-8'))
-                    recv_key = client.recv(1024).decode('utf-8')
-                    public_key_node = rsa.PublicKey.load_pkcs1(base64.b64decode(recv_key))
-                    encrypted_data = rsa.encrypt(('d' + serial_num_range).encode('utf-8'), public_key_node)
-                    encrypted_data_b64 = base64.b64encode(encrypted_data)
-                    client.sendall(encrypted_data_b64)
-                    full_msg = ''
-                    multi = 1
-                    s1 = serial_num_range.split('x')
-                    ct2 = str(int(time.time()))
-                    if SERVER in os.listdir('ip_folder/1'):
-                        multi += int(max(0, 1800 - int(ct2[0:4])) / 12)
-                    for _ in range(3):
-                        full_msg += client.recv(2048).decode('utf-8')
-                        if full_msg == 'None':
-                            for c in range(50):
-                                for _ in range(multi):
+                if SERVER not in already_tried:
+                    ADDR = (SERVER, PORT)
+                    try:
+                        client = socket.create_connection(ADDR, timeout=0.3)
+                        client.settimeout(6)
+                        client.sendall(key.encode('utf-8'))
+                        recv_key = client.recv(1024).decode('utf-8')
+                        public_key_node = rsa.PublicKey.load_pkcs1(base64.b64decode(recv_key))
+                        encrypted_data = rsa.encrypt(('d' + serial_num_range).encode('utf-8'), public_key_node)
+                        encrypted_data_b64 = base64.b64encode(encrypted_data)
+                        client.sendall(encrypted_data_b64)
+                        full_msg = ''
+                        multi = 1
+                        s1 = serial_num_range.split('x')
+                        ct2 = str(int(time.time()))
+                        if SERVER in os.listdir('ip_folder/1'):
+                            multi += int(max(0, 1800 - int(ct2[0:4])) / 12)
+                        for _ in range(3):
+                            full_msg += client.recv(2048).decode('utf-8')
+                            if full_msg == 'None':
+                                for c in range(50):
+                                    for _ in range(multi):
+                                        bill_comparison.append(('n',  s1[0] + 'x' + str(int(s1[1]) + c), 'n'))
+                                return
+                        recv_msg_decode = base64.b64decode(full_msg)
+                        iv = recv_msg_decode[:16]
+                        key_aes = recv_msg_decode[16:48]
+                        data = recv_msg_decode[48:]
+                        cipher = Cipher(algorithms.AES(key_aes), modes.CBC(iv))
+                        decryptor = cipher.decryptor()
+                        data_decrypted = decryptor.update(data) + decryptor.finalize()
+                        data_decoded = data_decrypted.decode('utf-8').strip('!')
+                        spl = data_decoded.splitlines()
+                        for c in range(50):
+                            for _ in range(multi):
+                                try:
+                                    bill_comparison.append((spl[c * 3], spl[c * 3 + 1], spl[c * 3 + 2]))
+                                except:
                                     bill_comparison.append(('n',  s1[0] + 'x' + str(int(s1[1]) + c), 'n'))
-                            return
-                    recv_msg_decode = base64.b64decode(full_msg)
-                    iv = recv_msg_decode[:16]
-                    key_aes = recv_msg_decode[16:48]
-                    data = recv_msg_decode[48:]
-                    cipher = Cipher(algorithms.AES(key_aes), modes.CBC(iv))
-                    decryptor = cipher.decryptor()
-                    data_decrypted = decryptor.update(data) + decryptor.finalize()
-                    data_decoded = data_decrypted.decode('utf-8').strip('!')
-                    spl = data_decoded.splitlines()
-                    for c in range(50):
-                        for _ in range(multi):
-                            try:
-                                bill_comparison.append((spl[c * 3], spl[c * 3 + 1], spl[c * 3 + 2]))
-                            except:
-                                bill_comparison.append(('n',  s1[0] + 'x' + str(int(s1[1]) + c), 'n'))
-                    client.close()
-                    break
-                except TimeoutError:
-                    if SERVER not in already_tried:
-                        already_tried.append(SERVER)
+                        client.close()
+                        break
+                    except TimeoutError:
+                        if SERVER not in already_tried:
+                            already_tried.append(SERVER)
 
         def thrd2(number1):
             for _ in range(2):
