@@ -362,7 +362,7 @@ def download_bills(pos, transaction_pool):
                 if SERVER not in already_tried:
                     ADDR = (SERVER, PORT)
                     try:
-                        client = socket.create_connection(ADDR, timeout=0.3)
+                        client = socket.create_connection(ADDR, timeout=1)
                         client.settimeout(6)
                         client.sendall(key.encode('utf-8'))
                         recv_key = client.recv(1024).decode('utf-8')
@@ -466,7 +466,7 @@ def maintain_connections(bill_pool):
     def connection(ip, b_pool):
         ADDR = (ip, PORT)
         try:
-            client = socket.create_connection(ADDR, timeout=0.5)
+            client = socket.create_connection(ADDR, timeout=1)
             client.settimeout(120)
             with open('rsa_public_key.txt', 'r') as rsk:
                 key = rsk.read()
