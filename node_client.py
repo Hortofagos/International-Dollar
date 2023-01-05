@@ -441,7 +441,7 @@ def download_bills(pos, transaction_pool):
                 if d.read().endswith('x'):
                     return
 
-            ct = int(str(int(time.time()))[:3]) - 165
+            ct = int(str(int(time.time()))[:3]) - 166
             with open('full_activation/' + it.strip('x') + '.txt', 'w') as fa3:
                 fa3.seek(0)
                 fa3.truncate()
