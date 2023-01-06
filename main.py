@@ -19,6 +19,7 @@ import rsa
 from datetime import datetime
 import random
 from tkextrafont import Font
+import pyglet
 
 from print import full_bill, only_qr
 import sender_node
