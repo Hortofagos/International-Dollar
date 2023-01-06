@@ -175,10 +175,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 if addr[0] not in active_udp_connections:
                     active_udp_connections.append(addr[0])
                     itera = 0
-                    while True:
-                        if itera == 1150:
-                            active_udp_connections.remove(addr[0])
-                            break
+                    while itera <= 1100:   
                         time.sleep(0.1)
                         for nef in potential_conns_udp:
                             if nef[1] == addr[0].replace('::ffff:', ''):
