@@ -187,6 +187,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                         for b in bill_pool:
                             send(b)
                         itera += 1
+                    active_udp_connections.remove(addr[0])
             elif i == 'x':
                 # send client their public ip
                 send(addr[0].replace('::ffff:', ''))
@@ -235,8 +236,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                         conn.sendall('None'.encode('utf-8'))
                 else:
                     conn.sendall('None'.encode('utf-8'))
-            if i == 'p':
-                active_udp_connections.remove(addr[0])
+                
             active_connections.remove(addr[0])
             conn.close()
         except:
