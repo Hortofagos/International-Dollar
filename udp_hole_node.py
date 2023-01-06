@@ -170,10 +170,8 @@ def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
                                     transaction_pool.append((bill_serial_num, bill_addr, bill_number))
         except:
             pass
-        try:
-            active_conns.remove(ip)
-        except:
-            pass
+        active_conns.remove(ip)
+        
 
     while True:
         with open('kill_node.txt', 'r') as kn2:
