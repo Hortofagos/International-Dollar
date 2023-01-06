@@ -890,7 +890,7 @@ def receive_bills():
         sender_node.update_ip_list()
     def thrd2():
         sender_node.receive_bills()
-        time.sleep(5.5)
+        time.sleep(12)
         update_balance()
         page()
         root.config(cursor='arrow')
