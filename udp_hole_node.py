@@ -181,7 +181,7 @@ def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
         ip_addr = random.choice(ip_f).replace('.txt', '')
         if len(active_conns) < len(ip_f) / 10 + 1 and ip_addr not in active_conns:
             threading.Thread(target=new_conn, args=(ip_addr,)).start()
-        time.sleep(0.4)
+        time.sleep(2)
 
 if __name__ == "__main__":
     for f in os.listdir('full_activation'):
