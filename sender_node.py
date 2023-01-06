@@ -234,10 +234,8 @@ def receive_bills():
 
 
 def ask_for_luck():
-        for w in os.listdir('wallet_folder'):
+    for w in os.listdir('wallet_folder'):
         if w.startswith('wallet_decrypted'):
             addr = w[17:].replace('.txt', '')
             ipf = os.listdir('ip_folder/1')
             connect('l', addr, ipf)
-
-
