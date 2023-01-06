@@ -506,7 +506,7 @@ def maintain_connections(bill_pool):
                 threading.Thread(target=connection, args=(ip_addr, bill_pool)).start()
             except:
                 pass
-        time.sleep(0.5)
+        time.sleep(2)
 
 
 if __name__ == "__main__":
