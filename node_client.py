@@ -86,15 +86,11 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
 
             conn.settimeout(120)
             add_spam(addr[0])
-            #try:
             with open('kill_node.txt', 'r') as kn4:
                 if kn4.read() == 'True':
                     conn.close()
                     return
             msg_encrypted = conn.recv(512).decode('utf-8')
-            if not msg_encrypted:
-                conn.close()
-                return
 
             with open('rsa_private_key.txt', 'r') as rsk:
                 private_key = rsk.read()
@@ -236,7 +232,8 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
             active_connections.remove(addr[0])
             conn.close()
         except:
-            pass
+            active_connections.remove(addr[0])
+            conn.close()
 
     overload = False
     def ping_own_server():
