@@ -644,7 +644,7 @@ def add_1():
     if bills_w1 - selected_w1 == 0:
         w1.config(cursor='', image=w1_img, state='disabled')
     amount_config()
-w1 = Button(frame_w, image=w1_img, bd=0, command=add_1, state='disabled',
+w1 = Button(frame_w, image=w1_img, bd=0, command=add_1, state='disabled', highlightthickness=0,
             font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_2():
@@ -658,7 +658,7 @@ def add_2():
     if bills_w2 - selected_w2 == 0:
         w2.config(cursor='', image=w2_img, state='disabled')
     amount_config()
-w2 = Button(frame_w, image=w2_img, bd=0, command=add_2, state='disabled',
+w2 = Button(frame_w, image=w2_img, bd=0, command=add_2, state='disabled', highlightthickness=0,
             font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_5():
@@ -672,7 +672,7 @@ def add_5():
     if bills_w5 - selected_w5 == 0:
         w5.config(cursor='', image=w5_img, state='disabled')
     amount_config()
-w5 = Button(frame_w, image=w5_img, bd=0, command=add_5, state='disabled',
+w5 = Button(frame_w, image=w5_img, bd=0, command=add_5, state='disabled', highlightthickness=0,
             font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_10():
@@ -686,7 +686,7 @@ def add_10():
     if bills_w10 - selected_w10 == 0:
         w10.config(cursor='', image=w10_img, state='disabled')
     amount_config()
-w10 = Button(frame_w, image=w10_img, bd=0, command=add_10, state='disabled',
+w10 = Button(frame_w, image=w10_img, bd=0, command=add_10, state='disabled', highlightthickness=0,
              font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_20():
@@ -700,7 +700,7 @@ def add_20():
     if bills_w20 - selected_w20 == 0:
         w20.config(cursor='', image=w20_img, state='disabled')
     amount_config()
-w20 = Button(frame_w, image=w20_img, bd=0, command=add_20, state='disabled',
+w20 = Button(frame_w, image=w20_img, bd=0, command=add_20, state='disabled', highlightthickness=0,
              font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_50():
@@ -714,7 +714,7 @@ def add_50():
     if bills_w50 - selected_w50 == 0:
         w50.config(cursor='', image=w50_img, state='disabled')
     amount_config()
-w50 = Button(frame_w, image=w50_img, bd=0, command=add_50, state='disabled',
+w50 = Button(frame_w, image=w50_img, bd=0, command=add_50, state='disabled', highlightthickness=0,
              font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_100():
@@ -728,7 +728,7 @@ def add_100():
     if bills_w100 - selected_w100 == 0:
         w100.config(cursor='', image=w100_img, state='disabled')
     amount_config()
-w100 = Button(frame_w, image=w100_img, bd=0, command=add_100, state='disabled',
+w100 = Button(frame_w, image=w100_img, bd=0, command=add_100, state='disabled', highlightthickness=0,
               font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_200():
@@ -742,7 +742,7 @@ def add_200():
     if bills_w200 - selected_w200 == 0:
         w200.config(cursor='', image=w200_img, state='disabled')
     amount_config()
-w200 = Button(frame_w, image=w200_img, bd=0, command=add_200, state='disabled',
+w200 = Button(frame_w, image=w200_img, bd=0, command=add_200, state='disabled', highlightthickness=0,
               font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_500():
@@ -756,7 +756,7 @@ def add_500():
     if bills_w500 - selected_w500 == 0:
         w500.config(cursor='', image=w500_img, state='disabled')
     amount_config()
-w500 = Button(frame_w, image=w500_img, bd=0, command=add_500, state='disabled',
+w500 = Button(frame_w, image=w500_img, bd=0, command=add_500, state='disabled', highlightthickness=0,
               font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_1000():
@@ -770,7 +770,7 @@ def add_1000():
     if bills_w1000 - selected_w1000 == 0:
         w1000.config(cursor='', image=w1000_img, state='disabled')
     amount_config()
-w1000 = Button(frame_w, image=w1000_img, bd=0, command=add_1000, state='disabled',
+w1000 = Button(frame_w, image=w1000_img, bd=0, command=add_1000, state='disabled', highlightthickness=0,
                font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_2000():
@@ -784,7 +784,7 @@ def add_2000():
     if bills_w2000 - selected_w2000 == 0:
         w2000.config(cursor='', image=w2000_img, state='disabled')
     amount_config()
-w2000 = Button(frame_w, image=w2000_img, bd=0, command=add_2000, state='disabled',
+w2000 = Button(frame_w, image=w2000_img, bd=0, command=add_2000, state='disabled', highlightthickness=0,
                font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_5000():
@@ -798,7 +798,7 @@ def add_5000():
     if bills_w5000 - selected_w5000 == 0:
         w5000.config(cursor='', image=w5000_img, state='disabled')
     amount_config()
-w5000 = Button(frame_w, image=w5000_img, bd=0, command=add_5000, state='disabled',
+w5000 = Button(frame_w, image=w5000_img, bd=0, command=add_5000, state='disabled', highlightthickness=0,
                font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_10000():
@@ -812,7 +812,7 @@ def add_10000():
     if bills_w10000 - selected_w10000 == 0:
         w10000.config(cursor='', image=w10000_img, state='disabled')
     amount_config()
-w10000 = Button(frame_w, image=w10000_img, bd=0, command=add_10000, state='disabled',
+w10000 = Button(frame_w, image=w10000_img, bd=0, command=add_10000, state='disabled', highlightthickness=0,
                 font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_20000():
@@ -826,7 +826,7 @@ def add_20000():
     if bills_w20000 - selected_w20000 == 0:
         w20000.config(cursor='', image=w20000_img, state='disabled')
     amount_config()
-w20000 = Button(frame_w, image=w20000_img, bd=0, command=add_20000, state='disabled',
+w20000 = Button(frame_w, image=w20000_img, bd=0, command=add_20000, state='disabled', highlightthickness=0,
                 font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_50000():
@@ -840,7 +840,7 @@ def add_50000():
     if bills_w50000 - selected_w50000 == 0:
         w50000.config(cursor='', image=w50000_img, state='disabled')
     amount_config()
-w50000 = Button(frame_w, image=w50000_img, bd=0, command=add_50000, state='disabled',
+w50000 = Button(frame_w, image=w50000_img, bd=0, command=add_50000, state='disabled', highlightthickness=0,
                 font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def add_100000():
@@ -854,7 +854,7 @@ def add_100000():
     if bills_w100000 - selected_w100000 == 0:
         w100000.config(cursor='', image=w100000_img, state='disabled')
     amount_config()
-w100000 = Button(frame_w, image=w100000_img, bd=0, command=add_100000, state='disabled',
+w100000 = Button(frame_w, image=w100000_img, bd=0, command=add_100000, state='disabled', highlightthickness=0,
                  font=('ind', 30 * reso), fg='white', bg='black', compound='center')
 
 def start_bills():
