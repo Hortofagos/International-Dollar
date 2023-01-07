@@ -176,7 +176,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                     active_udp_connections.append(addr[0])
                     itera = 0
                     while itera <= 1100:   
-                        time.sleep(0.5)
+                        time.sleep(0.1)
                         for nef in potential_conns_udp:
                             if nef[1] == addr[0].replace('::ffff:', ''):
                                 send('n' + ' '.join(nef))
