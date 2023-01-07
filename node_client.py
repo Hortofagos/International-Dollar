@@ -130,7 +130,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                                 add_spam(bill_serial_num)
                                 bill_pool.append(''.join(bill))
                                 transaction_pool.append((bill_serial_num, bill_addr, bill_number))
-                                time.sleep(2)
+                                time.sleep(0.5)
                                 bill_pool.remove(''.join(bill))
             elif i == 'c':
                 # confirm the possesion of a bill
@@ -170,14 +170,14 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 # keep a udp node updated
                 active_udp_connections.append(addr[0])
                 itera = 0
-                while itera <= 1100:   
-                    time.sleep(0.1)
+                while itera <= 370:   
+                    time.sleep(0.3)
                     for nef in potential_conns_udp:
                         if nef[1] == addr[0].replace('::ffff:', ''):
                             send('n' + ' '.join(nef))
                             potential_conns_udp.remove(nef)
                     for b in bill_pool:
-                        send(b)
+                        send('b' + b)
                     itera += 1
                 active_udp_connections.remove(addr[0])
             elif i == 'x':
