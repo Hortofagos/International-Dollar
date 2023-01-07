@@ -156,7 +156,7 @@ def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
                         sc = sc.read()
                         spam_count = sc.count(bill_serial_num)
                     num_bill = bill_serial_num.split('x')[1]
-                    if spam_count < 4 and 0 < int(num_bill) < 500000000:
+                    if spam_count < 4 and 0 < int(num_bill) < 50000000:
                         db = access_database(bill_serial_num)
                         if db:
                             addr_old = db[0]
