@@ -172,19 +172,18 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 send(random_udp_node)
             elif i == 'p':
                 # keep a udp node updated
-                if addr[0] not in active_udp_connections:
-                    active_udp_connections.append(addr[0])
-                    itera = 0
-                    while itera <= 1100:   
-                        time.sleep(0.1)
-                        for nef in potential_conns_udp:
-                            if nef[1] == addr[0].replace('::ffff:', ''):
-                                send('n' + ' '.join(nef))
-                                potential_conns_udp.remove(nef)
-                        for b in bill_pool:
-                            send(b)
-                        itera += 1
-                    active_udp_connections.remove(addr[0])
+                active_udp_connections.append(addr[0])
+                itera = 0
+                while itera <= 1100:   
+                    time.sleep(0.1)
+                    for nef in potential_conns_udp:
+                        if nef[1] == addr[0].replace('::ffff:', ''):
+                            send('n' + ' '.join(nef))
+                            potential_conns_udp.remove(nef)
+                    for b in bill_pool:
+                        send(b)
+                    itera += 1
+                active_udp_connections.remove(addr[0])
             elif i == 'x':
                 # send client their public ip
                 send(addr[0].replace('::ffff:', ''))
