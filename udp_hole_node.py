@@ -138,10 +138,6 @@ def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
                 rsa_pk = rsa.PrivateKey.load_pkcs1(base64.b64decode(private_key))
             while True:
                 msg_encrypted = client.recv(512).decode('utf-8')
-                if not msg_encrypted:
-                    client.close()
-                    active_conns.remove(ip)
-                    return
                 msg_decrypted = rsa.decrypt(base64.b64decode(msg_encrypted), rsa_pk).decode('utf-8')
                 msg_split = msg_decrypted[1:].split()
                 if msg_decrypted[0] == 'n':
@@ -169,9 +165,8 @@ def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
                                 if v_sig == 'valid':
                                     transaction_pool.append((bill_serial_num, bill_addr, bill_number))
         except:
-            pass
-        active_conns.remove(ip)
-        
+            active_conns.remove(ip)
+            client.close()
 
     while True:
         with open('kill_node.txt', 'r') as kn2:
