@@ -486,10 +486,7 @@ def maintain_connections(bill_pool):
             client.close()
             active_conns.remove(ip)
         except:
-            try:
-                active_conns.remove(ip)
-            except:
-                pass
+            active_conns.remove(ip)
 
     while True:
         with open('kill_node.txt', 'r') as kn2:
