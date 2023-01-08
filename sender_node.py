@@ -52,8 +52,10 @@ def public_ip():
         try:
             try:
                 public_ip = requests.get('https://www.wikipedia.org').headers['X-Client-IP']
+                return public_ip
             except:
                 public_ip = requests.get('https://checkip.amazonaws.com').text.strip()
+                return public_ip
         except:
             ipnl = os.listdir('ip_folder/1') + os.listdir('ip_folder/2')
             public_ip = connect('x', '', ipnl)
