@@ -51,16 +51,16 @@ def public_ip():
     try:
         try:
             try:
-                public_ip = requests.get('https://www.wikipedia.org').headers['X-Client-IP']
-                return public_ip
+                my_ip = requests.get('https://www.wikipedia.org').headers['X-Client-IP']
+                return my_ip
             except:
-                public_ip = requests.get('https://checkip.amazonaws.com').text.strip()
-                return public_ip
+                my_ip = requests.get('https://checkip.amazonaws.com').text.strip()
+                return my_ip
         except:
             ipnl = os.listdir('ip_folder/1') + os.listdir('ip_folder/2')
-            public_ip = connect('x', '', ipnl)
-            if public_ip != 'n' and public_ip:
-                return public_ip
+            my_ip = connect('x', '', ipnl)
+            if my_ip != 'n' and my_ip:
+                return my_ip
     except:
         return
     
