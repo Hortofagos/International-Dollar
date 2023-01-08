@@ -7,6 +7,7 @@ import base64
 import rsa
 import ipaddress
 import string
+import requests
 
 already_tried = []
 PORT = 8888
@@ -45,51 +46,67 @@ def connect(indicator, data, ipnl):
     return 'n'
 
 
+
+def public_ip():
+    try:
+        try:
+            try:
+                public_ip = requests.get('https://www.wikipedia.org').headers['X-Client-IP']
+            except:
+                public_ip = requests.get('https://checkip.amazonaws.com').text.strip()
+        except:
+            ipnl = os.listdir('ip_folder/1') + os.listdir('ip_folder/2')
+            public_ip = connect('x', '', ipnl)
+            if public_ip != 'n' and public_ip:
+                return public_ip
+    except:
+        return
+    
+
 def connect_udp(sm, ip_range):
     random_port = random.randint(50000, 65000)
-    with open('my_public_ip.txt', 'r') as mpi:
-        my_ip = mpi.read()
-        udp_ip = connect('y', str(random_port), ip_range)
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        server_socket.settimeout(5)
-        server_socket.bind(('', random_port))
-        with open('rsa_public_key.txt', 'r') as p:
-            public_key = p.read()
-        if ipaddress.ip_address(my_ip).version == 4:
-            server_socket.sendto('None'.encode('utf-8'), (udp_ip, random_port))
-        else:
-            server_socket.sendto('None'.encode('utf-8'), (udp_ip, random_port, 0, 0))
-        response = []
-        def listen():
+    my_ip = public_ip()
+    udp_ip = connect('y', str(random_port), ip_range)
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server_socket.settimeout(5)
+    server_socket.bind(('', random_port))
+    with open('rsa_public_key.txt', 'r') as p:
+        public_key = p.read()
+    if ipaddress.ip_address(my_ip).version == 4:
+        server_socket.sendto('None'.encode('utf-8'), (udp_ip, random_port))
+    else:
+        server_socket.sendto('None'.encode('utf-8'), (udp_ip, random_port, 0, 0))
+    response = []
+    def listen():
+        recv_pk = server_socket.recv(1024).decode('utf-8')
+        if recv_pk == 'None':
             recv_pk = server_socket.recv(1024).decode('utf-8')
-            if recv_pk == 'None':
-                recv_pk = server_socket.recv(1024).decode('utf-8')
-            time.sleep(0.4)
-            print(recv_pk)
-            pk_node = rsa.PublicKey.load_pkcs1(base64.b64decode(recv_pk))
-            full_msg = ''.join(random.choices(string.ascii_uppercase + string.digits, k=9)) + '\n' + sm
-            encrypted_data = rsa.encrypt(full_msg.encode('utf-8'), pk_node)
-            encrypted_data_b64 = base64.b64encode(encrypted_data)
-            if ipaddress.ip_address(my_ip).version == 4:
-                server_socket.sendto(encrypted_data_b64, (udp_ip, random_port))
-            else:
-                server_socket.sendto(encrypted_data_b64, (udp_ip, random_port, 0, 0))
-            data = server_socket.recv(1024).decode('utf-8')
-            if data:
-                data_decrypted = rsa.decrypt(base64.b64decode(data), recv_pk).decode('utf-8')
-                response.append(data_decrypted)
-            else:
-                response.append('n')
-        threading.Thread(target=listen).start()
-        time.sleep(0.3)
+        time.sleep(0.4)
+        print(recv_pk)
+        pk_node = rsa.PublicKey.load_pkcs1(base64.b64decode(recv_pk))
+        full_msg = ''.join(random.choices(string.ascii_uppercase + string.digits, k=9)) + '\n' + sm
+        encrypted_data = rsa.encrypt(full_msg.encode('utf-8'), pk_node)
+        encrypted_data_b64 = base64.b64encode(encrypted_data)
         if ipaddress.ip_address(my_ip).version == 4:
-            server_socket.sendto(public_key.encode('utf-8'), (udp_ip, random_port))
+            server_socket.sendto(encrypted_data_b64, (udp_ip, random_port))
         else:
-            server_socket.sendto(public_key.encode('utf-8'), (udp_ip, random_port, 0, 0))
-        while True:
-            time.sleep(0.1)
-            if response:
-                return response[0]
+            server_socket.sendto(encrypted_data_b64, (udp_ip, random_port, 0, 0))
+        data = server_socket.recv(1024).decode('utf-8')
+        if data:
+            data_decrypted = rsa.decrypt(base64.b64decode(data), recv_pk).decode('utf-8')
+            response.append(data_decrypted)
+        else:
+            response.append('n')
+    threading.Thread(target=listen).start()
+    time.sleep(0.3)
+    if ipaddress.ip_address(my_ip).version == 4:
+        server_socket.sendto(public_key.encode('utf-8'), (udp_ip, random_port))
+    else:
+        server_socket.sendto(public_key.encode('utf-8'), (udp_ip, random_port, 0, 0))
+    while True:
+        time.sleep(0.1)
+        if response:
+            return response[0]
 
 
 def send_bills():
@@ -103,16 +120,6 @@ def send_bills():
                 threading.Thread(target=connect, args=('b', tm, ipnl2)).start()
                 time.sleep(0.1)
         os.remove('transaction_folder/' + str(transaction))
-
-
-def public_ip():
-    try:
-        ipnl = os.listdir('ip_folder/1') + os.listdir('ip_folder/2')
-        ip_addr = connect('x', '', ipnl)
-        if ip_addr:
-            return ip_addr
-    except:
-        pass
 
 
 def check_validity(serial_num):
