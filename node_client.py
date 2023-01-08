@@ -18,29 +18,30 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 PORT = 8888
 def new_ip(v):
     public_ip = sender_node.public_ip()
-    if ipaddress.ip_address(public_ip).version == 6:
-        with open('kill_node.txt', 'w') as kn:
-            kn.seek(0)
-            kn.truncate()
-            kn.write('True')
-            return
+    if public_ip:
+        if ipaddress.ip_address(public_ip).version == 6:
+            with open('kill_node.txt', 'w') as kn:
+                kn.seek(0)
+                kn.truncate()
+                kn.write('True')
+                return
 
-    ipnl = os.listdir('ip_folder/1') + os.listdir('ip_folder/2')
+        ipnl = os.listdir('ip_folder/1') + os.listdir('ip_folder/2')
 
-    with open('my_public_ip.txt', 'r+') as mpi:
-        mpi_lines = mpi.readlines()
-        def newi():
-            mpi.seek(0)
-            mpi.truncate()
-            mpi.write(str(public_ip))
-            for _ in range(len(ipnl)):
-                threading.Thread(target=sender_node.connect, args=('i', public_ip + '\n' + v, ipnl)).start()
-        try:
-            my_ip = mpi_lines[0].strip()
-            if my_ip != public_ip:
+        with open('my_public_ip.txt', 'r+') as mpi:
+            mpi_lines = mpi.readlines()
+            def newi():
+                mpi.seek(0)
+                mpi.truncate()
+                mpi.write(str(public_ip))
+                for _ in range(len(ipnl)):
+                    threading.Thread(target=sender_node.connect, args=('i', public_ip + '\n' + v, ipnl)).start()
+            try:
+                my_ip = mpi_lines[0].strip()
+                if my_ip != public_ip:
+                    newi()
+            except:
                 newi()
-        except:
-            newi()
 
 def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
     new_ip('2')
