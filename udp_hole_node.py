@@ -7,9 +7,8 @@ import os
 from node_client import new_ip
 import ipaddress
 import random
-import sqlite3
 from multiprocessing import Process, Manager
-from node_client import download_bills
+from node_client import download_bills, database
 from hashlib import sha3_256
 import confirm_validity
 import base58
@@ -19,7 +18,7 @@ def udp_node(rfb, rfb_response, potential_conns):
 
     def access_database(sma):
         random_num1 = str(random.uniform(0.1, 99.9))
-        rfb.append((random_num1 + sma))
+        rfb.append((random_num1, sma))
         time.sleep(0.8)
         for respon in rfb_response:
             if respon[0] == random_num1:
@@ -103,67 +102,13 @@ def udp_node(rfb, rfb_response, potential_conns):
         for new in potential_conns:
             threading.Thread(target=handle_client, args=(new, )).start()
             potential_conns.remove(new)
-            
-            
-def database(rfb, rfb_response, transaction_pool):
-    conn1 = sqlite3.connect('node_bills.db')
-    c1 = conn1.cursor()
-    while True:
-        time.sleep(0.1)
-        current_time_float = time.time()
-        current_time = int(current_time_float)
-        with open('kill_node.txt', 'r') as kn1:
-            kill_node = kn1.read()
-            if kill_node == 'True':
-                conn1.close()
-                break
-        if str(current_time).endswith('999'):
-            open('spam_protection.txt', 'w').close()
-        for finder in rfb:
-            if finder[1].startswith('x'):
-                c1.execute("SELECT serial_num FROM bills WHERE address MATCH ? ORDER BY RANDOM() LIMIT 14", (finder[1], ))
-                data = c1.fetchall()
-                full_return = [finder[0]]
-                for item in data:
-                    full_return.append(item[0])
-                rfb_response.append(tuple(full_return))
-            elif finder[1].startswith('!'):
-                finder_range = []
-                f1 = finder[1][1:].split('x')[0]
-                f2 = finder[1].split('x')[1]
-                for cou in range(50):
-                    finder_range.append(f1 + 'x' + str(int(f2) + cou))
-                c1.execute("SELECT * FROM bills WHERE serial_num IN (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(finder_range))
-                rfb_response.append(tuple([finder[0]] + c1.fetchall()))
-            elif finder[1]:
-                c1.execute("SELECT * FROM bills WHERE serial_num MATCH ?", (finder[1],))
-                data = c1.fetchone()
-                print(data)
-                if data:
-                    rfb_response.append(tuple([finder[0]]) + data)
-            rfb.remove(finder)
-
-        for new_bill in transaction_pool:
-            serial_number2 = new_bill[0]
-            address = new_bill[1]
-            number = new_bill[2]
-            dataf = (address, number, serial_number2)
-            datag = (serial_number2, address, number)
-            c1.execute("SELECT * FROM bills WHERE serial_num MATCH ?", (serial_number2,))
-            existing = c1.fetchone()
-            if existing:
-                c1.execute("UPDATE bills SET address = ?, number = ? WHERE serial_num MATCH ?", dataf)
-            else:
-                c1.execute("INSERT INTO bills VALUES(?, ?, ?)", datag)
-            transaction_pool.remove(new_bill)
-        conn1.commit()
 
                       
 def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
 
     def access_database(sma):
         random_num1 = str(random.uniform(0.1, 99.9))
-        rfb.append((random_num1 + sma))
+        rfb.append((random_num1, sma))
         time.sleep(0.8)
         for respon in rfb_response:
             if respon[0] == random_num1:
