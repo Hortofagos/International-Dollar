@@ -7,7 +7,6 @@ from hashlib import sha3_256
 import base64
 import rsa
 import random
-import requests
 import sender_node
 import ipaddress
 import difflib
@@ -18,16 +17,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 PORT = 8888
 def new_ip(v):
-    try:
-        try:
-            try:
-                public_ip = requests.get('https://www.wikipedia.org').headers['X-Client-IP']
-            except:
-                public_ip = requests.get('https://checkip.amazonaws.com').text.strip()
-        except:
-            public_ip = sender_node.public_ip()
-    except:
-        return
+    public_ip = sender_node.public_ip()
     if ipaddress.ip_address(public_ip).version == 6:
         with open('kill_node.txt', 'w') as kn:
             kn.seek(0)
