@@ -76,7 +76,7 @@ def udp_node(rfb, rfb_response, potential_conns):
             server_socket.sendto(key.encode('utf-8'), (ip, port))
 
         elif type_ip.version == 6:
-            server_socket2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            server_socket2 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
             server_socket2.settimeout(5)
             server_socket2.bind(('', port, 0, 0))
             server_socket2.sendto('None'.encode('utf-8'), (ip, port, 0, 0))
