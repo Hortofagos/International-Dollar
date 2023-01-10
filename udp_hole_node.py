@@ -105,8 +105,8 @@ def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
 
     active_conns = []
     def new_conn(ip):
+        client = socket.create_connection((ip, 8888), timeout=1)
         try:
-            client = socket.create_connection((ip, 8888), timeout=1)
             client.settimeout(120)
             active_conns.append(ip)
             with open('rsa_public_key.txt', 'r') as rsk:
