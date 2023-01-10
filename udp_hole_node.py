@@ -127,7 +127,7 @@ def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
                 msg_decrypted = rsa.decrypt(base64.b64decode(msg_encrypted), rsa_pk).decode('utf-8')
                 msg_split = msg_decrypted[1:].split()
                 if msg_decrypted[0] == 'n':
-                    potential_conns2.append((msg_split[0], msg_split[2]), msg_split[3])
+                    potential_conns2.append((msg_split[0], msg_split[2], msg_split[3]))
                 elif msg_decrypted[0] == 'b':
                     msg = msg_decrypted[1:]
                     bill = msg.splitlines(keepends=True)[:5]
