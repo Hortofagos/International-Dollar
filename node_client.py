@@ -154,7 +154,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
             elif i == 'y':
                 # connect a udp client to a udp node
                 random_udp_node = random.choice(active_udp_connections).replace('::ffff:', '')
-                if 40000 <= int(msg) <= 65000:
+                if 50000 <= int(msg) <= 65000:
                     potential_conns_udp.append((addr[0].replace('::ffff:', ''), random_udp_node, msg))
                 send(random_udp_node)
             elif i == 'p':
