@@ -69,7 +69,7 @@ def connect_udp(sm, ip_range):
     source_port = random.randint(50000, 65000)
     destination_port = random.randint(50000, 65000)
     my_ip = public_ip()
-    udp_ip = connect('y', str(source_port) + ' ' str(destination_port), ip_range)
+    udp_ip = connect('y', str(source_port) + ' ' + str(destination_port), ip_range)
     ip_version = ipaddress.ip_address(my_ip).version
     with open('rsa_public_key.txt', 'r') as p:
         public_key = p.read()
