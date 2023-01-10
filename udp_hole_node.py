@@ -28,7 +28,7 @@ def udp_node(rfb, rfb_response, potential_conns):
             return
 
     def handle_client(nef):
-        ip, port = nef[0], int(nef[1])
+        ip, s_port, d_port = nef[0], int(nef[1]), int(nef[2])
         with open('rsa_public_key.txt', 'r') as rk:
             key = rk.read()
         with open('rsa_private_key.txt', 'r') as rsk:
@@ -46,7 +46,6 @@ def udp_node(rfb, rfb_response, potential_conns):
                     db = access_database(serial_num)
                     key2 = rsa.PublicKey.load_pkcs1(base64.b64decode(p_key))
                     full_msg = random_verify + '\n' + '\n'.join(db)
-                    print(full_msg)
                     encrypted_data = rsa.encrypt(full_msg.encode('utf-8'), key2)
                     encrypted_data_b64 = base64.b64encode(encrypted_data)
                     return encrypted_data_b64
@@ -56,43 +55,30 @@ def udp_node(rfb, rfb_response, potential_conns):
         if type_ip.version == 4:
             server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             server_socket.settimeout(5)
-            server_socket.bind(('', port))
-            server_socket.sendto('None'.encode('utf-8'), (ip, port))
-            def listen():
-                public_key = ''
-                while True:
-                    message = server_socket.recv(1024).decode('utf-8')
-                    print(message)
-                    if message != 'None' and public_key == '':
-                        public_key += message
-                    elif message != 'None':
-                        encd = rsa_process(message, public_key)
-                        if encd:
-                            server_socket.sendto(encd.encode('utf-8'), (ip, port))
-                        break
-            threading.Thread(target=listen).start()
-            time.sleep(0.3)
-            server_socket.sendto(key.encode('utf-8'), (ip, port))
+            server_socket.bind(('', d_port))
+            server_socket.sendto('None'.encode('utf-8'), (ip, s_port))
+            time.sleep(1)
+            server_socket.sendto(key.encode('utf-8'), (ip, s_port))
+            public_key = server_socket.recv(1024).decode('utf-8')
+            if public_key == 'None':
+                public_key = server_socket.recv(1024).decode('utf-8')
+            encd = rsa_process(message, public_key)
+            if encd:
+                server_socket.sendto(encd.encode('utf-8'), (ip, port))
 
         elif type_ip.version == 6:
-            server_socket2 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-            server_socket2.settimeout(5)
-            server_socket2.bind(('', port, 0, 0))
-            server_socket2.sendto('None'.encode('utf-8'), (ip, port, 0, 0))
-            def listen():
-                public_key = ''
-                while True:
-                    message = server_socket.recv(1024).decode('utf-8')
-                    if message != 'None' and public_key == '':
-                        public_key += message
-                    elif message != 'None':
-                        encd = rsa_process(message, public_key)
-                        if encd:
-                            server_socket.sendto(encd.encode('utf-8'), (ip, port, 0, 0))
-                        break
-            threading.Thread(target=listen).start()
-            time.sleep(0.3)
-            server_socket2.sendto(key.encode('utf-8'), (ip, port, 0, 0))
+            server_socket = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            server_socket.settimeout(5)
+            server_socket.bind(('', d_port))
+            server_socket.sendto('None'.encode('utf-8'), (ip, s_port, 0, 0))
+            time.sleep(1)
+            server_socket.sendto(key.encode('utf-8'), (ip, s_port, 0, 0))
+            public_key = server_socket.recv(1024).decode('utf-8')
+            if public_key == 'None':
+                public_key = server_socket.recv(1024).decode('utf-8')
+            encd = rsa_process(message, public_key)
+            if encd:
+                server_socket.sendto(encd.encode('utf-8'), (ip, port, 0, 0))
 
     while True:
         time.sleep(0.1)
@@ -139,7 +125,7 @@ def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
                 msg_decrypted = rsa.decrypt(base64.b64decode(msg_encrypted), rsa_pk).decode('utf-8')
                 msg_split = msg_decrypted[1:].split()
                 if msg_decrypted[0] == 'n':
-                    potential_conns2.append((msg_split[0], msg_split[2]))
+                    potential_conns2.append((msg_split[0], msg_split[2]), msg_split[3])
                 elif msg_decrypted[0] == 'b':
                     msg = msg_decrypted[1:]
                     bill = msg.splitlines(keepends=True)[:5]
