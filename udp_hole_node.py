@@ -62,9 +62,10 @@ def udp_node(rfb, rfb_response, potential_conns):
             public_key = server_socket.recv(1024).decode('utf-8')
             if public_key == 'None':
                 public_key = server_socket.recv(1024).decode('utf-8')
+            message = server_socket.recv(1024).decode('utf-8')
             encd = rsa_process(message, public_key)
             if encd:
-                server_socket.sendto(encd.encode('utf-8'), (ip, port))
+                server_socket.sendto(encd.encode('utf-8'), (ip, s_port))
 
         elif type_ip.version == 6:
             server_socket = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
@@ -76,9 +77,10 @@ def udp_node(rfb, rfb_response, potential_conns):
             public_key = server_socket.recv(1024).decode('utf-8')
             if public_key == 'None':
                 public_key = server_socket.recv(1024).decode('utf-8')
+            message = server_socket.recv(1024).decode('utf-8')
             encd = rsa_process(message, public_key)
             if encd:
-                server_socket.sendto(encd.encode('utf-8'), (ip, port, 0, 0))
+                server_socket.sendto(encd.encode('utf-8'), (ip, s_port, 0, 0))
 
     while True:
         time.sleep(0.1)
