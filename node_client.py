@@ -166,10 +166,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                     for nef in potential_conns_udp:
                         if nef[1] == addr[0].replace('::ffff:', ''):
                             send('n' + ' '.join(nef))
-                        try:
                             potential_conns_udp.remove(nef)
-                        except:
-                            pass
                     for b in bill_pool:
                         send('b' + b)
                     itera += 1
@@ -222,10 +219,13 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                         conn.sendall('None'.encode('utf-8'))
                 else:
                     conn.sendall('None'.encode('utf-8'))
-                
+            if i == 'p':
+                active_udp_connections.remove(addr[0])
             active_connections.remove(addr[0])
             conn.close()
         except:
+            if i == 'p':
+                active_udp_connections.remove(addr[0])
             active_connections.remove(addr[0])
             conn.close()
 
