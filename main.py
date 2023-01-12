@@ -25,6 +25,7 @@ from print import full_bill, only_qr
 import sender_node
 import wallet_decryption
 import wallet_encryption
+import portforwardlib
 
 try:
     os.remove('ip_folder/3/PLACE_HOLDER.txt')
@@ -221,6 +222,7 @@ except Exception:
     pass
 
 def start():
+    result = portforwardlib.forwardPort(8888, 8888, None, None, "True", "TCP", 0, 'test', 'yes')
     with open('node_class.txt', 'w') as nc:
         nc.seek(0)
         nc.truncate()
