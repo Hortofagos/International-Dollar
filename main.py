@@ -222,7 +222,7 @@ except Exception:
     pass
 
 def start():
-    result = portforwardlib.forwardPort(8888, 8888, None, None, "True", "TCP", 0, 'test', 'yes')
+    result = portforwardlib.forwardPort(8888, 8888, None, None, "False", "TCP", 0, 'test', 'yes')
     with open('node_class.txt', 'w') as nc:
         nc.seek(0)
         nc.truncate()
