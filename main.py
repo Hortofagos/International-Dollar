@@ -380,12 +380,12 @@ def win_button():
     all_bills_text.place(x=640 * reso, y=310 * reso, width=240 * reso, height=300 * reso)
     selected_bills_text.place(x=900 * reso, y=310 * reso, width=240 * reso, height=300 * reso)
     asl_text.place(x=640 * reso, y=260 * reso, width=480 * reso, height=48 * reso)
+    purchase.place(x=0, y=0)
     only_sm = ''
     for bsm in dr[4:]:
         if not bsm.startswith('-'):
             only_sm += bsm.split()[0] + '\n'
     all_bills_text.insert(1.0, only_sm[:-1])
-    purchase.place(x=0, y=0)
 def wallet_button():
     close()
     button.config(bg='black', fg='white'),button2.config(bg='black', fg='white'),button3.config(bg='black', fg='white')
