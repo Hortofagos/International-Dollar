@@ -1238,7 +1238,7 @@ plus_bills_button = Button(root, image=plus_bills_button_img, command=plus_bills
                            cursor='hand2')
 claim_bill_img = PhotoImage(file=path_claim_bill)
 claim_bill = Label(root, image=claim_bill_img, bd=0, highlightthickness=0)
-claim_bills_amount = Entry(root, font=('ind', 26 * reso, 'bold'), fg='white', bg='black', bd=0)
+claim_bills_amount = Entry(root, font=('ind', 26 * reso, 'bold'), fg='white', bg='black', highlightthickness=0, bd=0)
 claim_bills_amount.insert(0, '0$')
 
 used_codes = []
