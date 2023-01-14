@@ -18,8 +18,11 @@ import getpass
 import rsa
 from datetime import datetime
 import random
-from tkextrafont import Font
-import pyglet
+try:
+    from tkextrafont import Font
+    from pyzbar.pyzbar import decode
+except:
+    pass
 
 from print import full_bill, only_qr
 import sender_node
@@ -34,6 +37,7 @@ try:
 except:
     pass
 
+
 root = Tk()
 root.title('International Dollar')
 root.tk.call('tk', 'scaling', 1.36)
@@ -42,7 +46,10 @@ try:
     font = Font(file="ind_font.ttf", family="ind")
 except:
     pyglet.resource.add_font('ind_font.ttf')
-
+    
+if platform.system() != 'Windows' and platform.system() != 'Linux':
+    os.system('cp ind_font.ttf /Library/Fonts/ind_font.ttf')
+    
 if height_screen >= 4000:
     res = '8'
 elif height_screen >= 1600:
@@ -1332,7 +1339,12 @@ def qr_scan():
     num_of_times_clicked += 1
     webcam_scanner.config(cursor='watch')
     if (num_of_times_clicked % 2) != 0:
-        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        if platform.system() == 'Windows':
+            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        elif platform.system() == 'Linux':
+            cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+        else:
+            cap = cv2.VideoCapture(0)
         webcam_scanner.config(cursor='hand2')
 
     def loop():
