@@ -18,6 +18,7 @@ import getpass
 import rsa
 from datetime import datetime
 import random
+import pyglet
 try:
     from tkextrafont import Font
     from pyzbar.pyzbar import decode
