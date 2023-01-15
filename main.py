@@ -30,6 +30,7 @@ import sender_node
 import wallet_decryption
 import wallet_encryption
 import portforwardlib
+import platform
 
 try:
     os.remove('ip_folder/3/PLACE_HOLDER.txt')
