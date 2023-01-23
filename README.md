@@ -15,6 +15,10 @@ Node setup:
   3. Go to your router homepage. Search for "port forwarding" continue to forward PORT 8888 to your local ip.
   4. $ python3 node_client.py 
 
+MacOS:
+  1. brew install zbar
+  2. delete tkextrafont from requirements.txt
+
 If you want to convert your digital bills into physical ones, you can print them out yourself.
 Go to the the tab "Win/Print" and write the serial numbers of the bills you
 want to print in the grey box and click "Print bills". This requires you to have them in 
