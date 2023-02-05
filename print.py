@@ -3,6 +3,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 import re
 import qrcode
 import subprocess
+import threading
 import time
 from pyautogui import hotkey
 from PyPDF2 import PdfFileMerger
@@ -15,7 +16,7 @@ def print_pdf():
     with open('print_folder/result.pdf', 'wb') as fout:
         merger.write(fout)
     os.startfile(os.path.normpath('print_folder/result.pdf'))
-    time.sleep(5)
+    time.sleep(10)
     hotkey('ctrl', 'p')
     time.sleep(10)
     for f in os.listdir('print_folder'):
@@ -35,7 +36,7 @@ def full_bill(list_bills):
         y_pos2 = 20
         c6 = 0
         for c, bill in enumerate(list_bills):
-            img = Image.open('img/bills_to_print/' + bill.split('x')[0] + '.png')
+            img = Image.open('img/bills_to_print/' + bill[0].split('x')[0] + '.png')
             a4_png.paste(img, (x_pos2, y_pos2))
             if c == 5 or c6 == len(list_bills) - 1:
                 w, h = a4_png.size
@@ -76,6 +77,7 @@ def full_bill(list_bills):
 
         d.text((5, 120), "Private Key :\n" + format_key(bill.splitlines()[1]),  font=f, fill=255)
         d.text((510, 70), "Public Key :\n" + format_key(bill.splitlines()[2]),  font=f, fill=255)
+        d.text((330, 278), "Number : " + bill.splitlines()[3], font=f, fill=255)
         d.text((5, 252), sm, font=f2, fill=255)
         d.text((760 - len(sm) * 20, 2), sm, font=f2, fill=255)
         rot = txt.rotate(90,  expand=1)
@@ -102,14 +104,20 @@ def full_bill(list_bills):
         count5 += 1
 
     bill_gen_front()
+    used_addr = []
     for i in list_bills:
-        subprocess.run('python generate_address.py')
+        if platform.system != 'Windows':
+            subprocess.run('python3 generate_address.py', shell=True)
+        else:
+            subprocess.run('python generate_address.py', shell=True)
         with open('hashing.txt', 'r+') as new_addr:
-            new_address = new_addr.read().splitlines(keepends=True)
-            bill_gen_back(i + '\n' + ''.join(new_address[1:]))
+            new_address = new_addr.readlines()
+            used_addr.append(new_address[0])
+            bill_gen_back(i[0] + '\n' + ''.join(new_address[1:]) + i[1])
             new_addr.seek(0)
             new_addr.truncate()
-    print_pdf()
+    threading.Thread(target=print_pdf).start()
+    return used_addr
 
 def only_qr(list_bills):
     global x_pos_qr, y_pos_qr, c4, c5
@@ -143,11 +151,17 @@ def only_qr(list_bills):
         c4 += 1
         c5 += 1
 
+    used_addr = []
     for i in list_bills:
-        subprocess.run('python generate_address.py')
+        if platform.system != 'Windows':
+            subprocess.run('python3 generate_address.py', shell=True)
+        else:
+            subprocess.run('python generate_address.py', shell=True)
         with open('hashing.txt', 'r+') as new_addr:
-            new_address = new_addr.read().splitlines(keepends=True)
-            bill_gen_qr(i + '\n' + ''.join(new_address[1:]))
+            new_address = new_addr.readlines()
+            used_addr.append(new_address[0])
+            bill_gen_qr(i[0] + '\n' + ''.join(new_address[1:] + i[1]))
             new_addr.seek(0)
             new_addr.truncate()
-    print_pdf()
+    threading.Thread(target=print_pdf).start()
+    return used_addr

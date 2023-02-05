@@ -229,14 +229,14 @@ def receive_bills():
             new_bills = []
             def confirm_bill(serial_number):
                 bill_holder = check_validity(serial_number)
-                if bill_holder[0] == address and serial_number + '\n' not in wallet:
+                if bill_holder[0] == address:
                     new_bills.append((serial_number, bill_holder[1]))
             if msg != 'n':
                 bills_in_wallet = []
                 for b in wallet[4:]:
                     bills_in_wallet.append(b.split()[0])
                 for sm in msg.splitlines():
-                    if int(sm.split('x')[1]) < 50000000 and sm not in bills_in_wallet:
+                    if int(sm.split('x')[1]) < 50000000 and sm.strip() not in bills_in_wallet:
                         threading.Thread(target=confirm_bill, args=(sm,)).start()
                         break
                 time.sleep(7.2)
