@@ -25,8 +25,6 @@ want to print in the grey box and click "Print bills". This requires you to have
 your wallet.
 
 Dont forget to claim your free bills under "I'm feeling lucky".
-If you want to purchase extra bills contact me at bankmann.hans@gmail.com 
-:)
 
 There is absolutley NO WARRANTY
 
