@@ -16,7 +16,7 @@ def print_pdf():
         merger.append(open('print_folder/' + pdf_file, 'rb'))
     with open('print_folder/result.pdf', 'wb') as fout:
         merger.write(fout)
-    if platform.system == 'Windows':
+    if platform.system() == 'Windows':
         os.startfile(os.path.normpath('print_folder/result.pdf'))
     else:
         opener = "open" if sys.platform == "darwin" else "xdg-open"
@@ -110,7 +110,7 @@ def full_bill(list_bills):
     bill_gen_front()
     used_addr = []
     for i in list_bills:
-        if platform.system != 'Windows':
+        if platform.system() != 'Windows':
             subprocess.run('python3 generate_address.py', shell=True)
         else:
             subprocess.run('python generate_address.py', shell=True)
@@ -157,7 +157,7 @@ def only_qr(list_bills):
 
     used_addr = []
     for i in list_bills:
-        if platform.system != 'Windows':
+        if platform.system() != 'Windows':
             subprocess.run('python3 generate_address.py', shell=True)
         else:
             subprocess.run('python generate_address.py', shell=True)
