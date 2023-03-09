@@ -7,7 +7,8 @@ import threading
 import time
 from pyautogui import hotkey
 from PyPDF2 import PdfFileMerger
-
+import platform
+import sys
 
 def print_pdf():
     merger = PdfFileMerger()
@@ -15,7 +16,11 @@ def print_pdf():
         merger.append(open('print_folder/' + pdf_file, 'rb'))
     with open('print_folder/result.pdf', 'wb') as fout:
         merger.write(fout)
-    os.startfile(os.path.normpath('print_folder/result.pdf'))
+    if platform.system == 'Windows':
+        os.startfile(os.path.normpath('print_folder/result.pdf'))
+    else:
+        opener = "open" if sys.platform == "darwin" else "xdg-open"
+    	subprocess.call([opener, 'print_folder/result.pdf'])
     time.sleep(10)
     hotkey('ctrl', 'p')
     time.sleep(10)
@@ -35,28 +40,27 @@ def full_bill(list_bills):
         x_pos2 = 35
         y_pos2 = 20
         c6 = 0
-        for c, bill in enumerate(list_bills):
+        c7 = 0
+        for bill in list_bills:
             img = Image.open('img/bills_to_print/' + bill[0].split('x')[0] + '.png')
             a4_png.paste(img, (x_pos2, y_pos2))
-            if c == 5 or c6 == len(list_bills) - 1:
+            if c7 == 5 or c6 == len(list_bills) - 1:
                 w, h = a4_png.size
                 crop_top = a4_png.crop((0, 0, w - 70, h - 20))
                 resized = crop_top.resize((w, h), Image.Resampling.LANCZOS)
-                if len(os.listdir('print_folder')) == 0:
-                    len_list = 0
-                else:
-                    len_list = len(os.listdir('print_folder')) + 1
+                len_list = float(c6 / 5) * 2
                 resized.save('print_folder/' + str(len_list) + '.pdf')
                 a4_png.paste(Image.new('L', (1190, 1680), color='white'))
                 x_pos2 = 35
                 y_pos2 = 20
-                c -= c - 1
-            elif c == 2:
+                c7 -= 6
+            elif c7 == 2:
                 y_pos2 += 805
                 x_pos2 -= 702
             else:
                 x_pos2 += 351
             c6 += 1
+            c7 += 1
 
     def bill_gen_back(bill):
         global x_pos, y_pos, count, count5
@@ -90,7 +94,7 @@ def full_bill(list_bills):
             w, h = a4_png.size
             crop_top = a4_png.crop((0, 0, w - 70, h - 20))
             resized = crop_top.resize((w, h), Image.Resampling.LANCZOS)
-            resized.save('print_folder/' + str(len(os.listdir('print_folder'))) + '.pdf')
+            resized.save('print_folder/' + str(float(count5 / 5) * 2 + 0.5) + '.pdf')
             a4_png.paste(Image.new('L', (1190, 1680), color='white'))
             x_pos = 35
             y_pos = 20
