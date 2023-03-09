@@ -20,7 +20,7 @@ def print_pdf():
         os.startfile(os.path.normpath('print_folder/result.pdf'))
     else:
         opener = "open" if sys.platform == "darwin" else "xdg-open"
-    	subprocess.call([opener, 'print_folder/result.pdf'])
+        subprocess.call([opener, 'print_folder/result.pdf'])
     time.sleep(10)
     hotkey('ctrl', 'p')
     time.sleep(10)
