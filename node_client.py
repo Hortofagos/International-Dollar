@@ -302,12 +302,13 @@ def database(rfb, rfb_response, transaction_pool):
                     full_return.append(item[0])
                 rfb_response.append(tuple(full_return))
             elif finder[1].startswith('!'):
-                finder_range = []
                 f1 = finder[1][1:].split('x')[0]
                 f2 = finder[1].split('x')[1]
-                for cou in range(50):
-                    finder_range.append(f1 + 'x' + str(int(f2) + cou))
-                c1.execute("SELECT * FROM bills WHERE serial_num IN (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", tuple(finder_range))
+                plusf = {'1':0, '2':10000, '5':20000, '10':30000, '20':40000, '50':50000, '100':60000, '200':70000,
+                         '500':80000, '1000':90000, '2000':100000, '5000':110000, '10000':120000, '20000':130000,
+                         '50000':140000, '100000':150000}
+                serial_range = int(f2) + plusf[f1] + 160000 * int(int(f2) / 10000)
+                c1.execute("SELECT * FROM bills WHERE rowid >= ? LIMIT 50", (serial_range, ))
                 rfb_response.append(tuple([finder[0]] + c1.fetchall()))
             elif finder[1]:
                 c1.execute("SELECT * FROM bills WHERE serial_num MATCH ?", (finder[1],))
@@ -337,7 +338,7 @@ def download_bills(pos, transaction_pool):
         number = 0
         already_tried = []
         bill_comparison = []
-
+        
         def down(num, ipnl):
             serial_num_range = it + str(num)
             with open('rsa_public_key.txt', 'r') as rsk:
@@ -393,12 +394,18 @@ def download_bills(pos, transaction_pool):
                             already_tried.append(SERVER)
 
         def thrd2(number1):
-            for _ in range(2):
-                threading.Thread(target=down, args=(number1, os.listdir('ip_folder/1'))).start()
-            for _ in range(3):
-                threading.Thread(target=down, args=(number1, os.listdir('ip_folder/2'))).start()
+            ipf_1 = os.listdir('ip_folder/1')
+            ipf_2 = os.listdir('ip_folder/2')
+            threading.Thread(target=down, args=(number1, ipf_1)).start()
+            used = []
+            for count, ip in enumerate(ipf_1 + ipf_2):
+                if count == 10:
+                    break
+                if ip not in used:
+                    threading.Thread(target=down, args=(number1, [ip])).start()
+                used.append(ip)
 
-            time.sleep(15)
+            time.sleep(20)
             sorted_max_list = []
             for c3 in range(50):
                 small_comparison = []
@@ -428,20 +435,14 @@ def download_bills(pos, transaction_pool):
             with open('full_activation/' + it.strip('x') + '.txt', 'r') as d:
                 if d.read().endswith('x'):
                     return
-
-            ct = int(str(int(time.time()))[:3]) - 166
             with open('full_activation/' + it.strip('x') + '.txt', 'w') as fa3:
                 fa3.seek(0)
                 fa3.truncate()
                 fa3.write(str(number))
-            for _ in range(ct):
-                with open('full_activation/' + it.strip('x') + '.txt', 'r') as d2:
-                    if d2.read().endswith('x'):
-                        return
-                threading.Thread(target=thrd2, args=(number, )).start()
-                number += 50
-                time.sleep(1)
-            time.sleep(10)
+
+            threading.Thread(target=thrd2, args=(number, )).start()
+            number += 50
+            time.sleep(1)
 
     for i in pos:
         time.sleep(10)
