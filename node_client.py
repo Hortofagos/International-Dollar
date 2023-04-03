@@ -318,17 +318,22 @@ def database(rfb, rfb_response, transaction_pool):
             rfb.remove(finder)
 
         for new_bill in transaction_pool:
+            plusf = {'1': 0, '2': 10000, '5': 20000, '10': 30000, '20': 40000, '50': 50000, '100': 60000, '200': 70000,
+                     '500': 80000, '1000': 90000, '2000': 100000, '5000': 110000, '10000': 120000, '20000': 130000,
+                     '50000': 140000, '100000': 150000}
             serial_number2 = new_bill[0]
+            f1 = serial_number2[1][1:].split('x')[0]
+            f2 = serial_number2[1].split('x')[1]
             address = new_bill[1]
             number = new_bill[2]
             dataf = (address, number, serial_number2)
-            datag = (serial_number2, address, number)
+            datag = (int(f2) + plusf[f1] + 160000 * int(int(f2) / 10000), serial_number2, address, number)
             c1.execute("SELECT * FROM bills WHERE serial_num MATCH ?", (serial_number2,))
             existing = c1.fetchone()
             if existing:
                 c1.execute("UPDATE bills SET address = ?, number = ? WHERE serial_num MATCH ?", dataf)
             else:
-                c1.execute("INSERT INTO bills VALUES(?, ?, ?)", datag)
+                c1.execute("INSERT INTO bills(rowid, serial_num, address, number) VALUES(?, ?, ?, ?)", datag)
             transaction_pool.remove(new_bill)
         conn1.commit()
 
@@ -392,7 +397,6 @@ def download_bills(pos, transaction_pool):
                     except TimeoutError:
                         if SERVER not in already_tried:
                             already_tried.append(SERVER)
-
         def thrd2(number1):
             ipf_1 = os.listdir('ip_folder/1')
             ipf_2 = os.listdir('ip_folder/2')
@@ -439,10 +443,11 @@ def download_bills(pos, transaction_pool):
                 fa3.seek(0)
                 fa3.truncate()
                 fa3.write(str(number))
-
-            threading.Thread(target=thrd2, args=(number, )).start()
-            number += 50
-            time.sleep(1)
+            for it in range(200):
+                threading.Thread(target=thrd2, args=(number, )).start()
+                number += 50
+                time.sleep(1)
+            time.sleep(25)
 
     for i in pos:
         time.sleep(10)
@@ -509,4 +514,3 @@ if __name__ == "__main__":
         Process(target=download_bills, args=(pos1, t)).start()
         Process(target=download_bills, args=(pos2, t)).start()
         node_protocol(rf1, rf2, t, bp)
-
