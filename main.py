@@ -29,7 +29,6 @@ from print import full_bill, only_qr
 import sender_node
 import wallet_decryption
 import wallet_encryption
-import portforwardlib
 import platform
 
 try:
@@ -241,7 +240,6 @@ except Exception:
 
 #This function starts a network node
 def start():
-    result = portforwardlib.forwardPort(8888, 8888, None, None, "False", "TCP", 0, 'test', 'yes')
     with open('node_class.txt', 'w') as nc:
         nc.seek(0)
         nc.truncate()
