@@ -13,7 +13,6 @@ import difflib
 import sqlite3
 import base58
 from multiprocessing import Process, Manager
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 PORT = 8888
 def new_ip(v):
@@ -68,11 +67,10 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 random_num1 = str(random.uniform(0.1, 99.9))
                 rfb.append((random_num1, serial_num_address))
                 time.sleep(0.8)
-                for respon in rfb_response:
-                    if respon[0] == random_num1:
-                        rfb_response.remove(respon)
-                        return respon[2:]
-                else:
+                try:
+                    item_response_dtbse = rfb_response.pop(random_num1)
+                    return item_response_dtbse[1:]
+                except:
                     return
 
             conn.settimeout(120)
@@ -95,9 +93,8 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 random_num = str(random.uniform(0.1, 99.9))
                 rfb.append((random_num, msg))
                 time.sleep(0.8)
-                for respor in rfb_response:
-                    if respor[0] == random_num:
-                        send('\n'.join(respor[1:]))
+                item_response = rfb_response.pop(random_num)
+                send('\n'.join(item_response))
             elif i == 'b':
                 # add a new bill to the database
                 bill = msg.splitlines(keepends=True)[:5]
@@ -126,7 +123,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
             elif i == 'c':
                 # confirm the possesion of a bill
                 with open('full_activation/' + msg.split('x')[0] + '.txt', 'r') as fa:
-                    is_downloaded = fa.read().strip('x')
+                    is_downloaded = fa.read()
                     if int(is_downloaded) >= int(msg.split('x')[1]):
                         db2 = access_database(msg)
                         if db2:
@@ -175,57 +172,30 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 # send client their public ip
                 send(addr[0].replace('::ffff:', ''))
                 pass
-            elif i == 'n':
-                # new bills are being added to the database
-                bill = msg.splitlines()
-                sm = bill[0]
-                address = bill[1]
-                digtal_sig = bill[2]
-                hard_key = 'zc9n<MOC?}9lz;(9#JiH?{R?0xvwhXzpCoFzpzOM@f7{xn9=5~!AbRgM>;P4Sg}@Kk8g~_%kPSR=$oZz'
-                v = confirm_validity.verify_ecdsa(digtal_sig, sm + address, hard_key)
-                if v == 'valid':
-                    transaction_pool.append((sm, '0', address))
             elif i == 'd':
                 # download service for another node
-                key_aes = os.urandom(32)
-                iv = os.urandom(16)
                 sm1 = msg.split('x')[0]
                 sm2 = int(msg.split('x')[1])
                 with open('full_activation/' + sm1 + '.txt', 'r') as fa:
-                    max_num = int(fa.read().strip('x'))
+                    max_num = int(fa.read())
                 if sm2 <= max_num:
                     random_num2 = str(random.uniform(0.1, 99.9))
                     rfb.append((random_num2, '!' + msg))
-                    time.sleep(3)
-                    for respo in rfb_response:
-                        if respo[0] == random_num2:
-                            cipher = Cipher(algorithms.AES(key_aes), modes.CBC(iv))
-                            encryptor = cipher.encryptor()
-                            join_list = ''
-                            for ite in respo[1:]:
-                                join_list += '\n'.join(ite) + '\n'
-                            while len(join_list) < 2720:
-                                join_list += '!'
-                            ct = encryptor.update(join_list.encode('utf-8')) + encryptor.finalize()
-                            data_encode = base64.b64encode(iv + key_aes + ct)
-                            conn.sendall(data_encode[:1300])
-                            time.sleep(0.5)
-                            conn.sendall(data_encode[1300:2600])
-                            time.sleep(0.5)
-                            conn.sendall(data_encode[2600:])
-                            rfb_response.remove(respo)
-                            break
-                    else:
-                        conn.sendall('None'.encode('utf-8'))
-                else:
-                    conn.sendall('None'.encode('utf-8'))
+                    time.sleep(2)
+                    item_respo = rfb_response.pop(random_num2)
+                    join_list = ''
+                    for ite in item_respo:
+                        join_list += '\n'.join(ite) + '\n'
+                    parts = [join_list[ium:ium + 1300] for ium in range(0, len(join_list), 1300)]
+                    for send_data in parts:
+                        conn.sendall(send_data.encode('utf-8'))
+                        time.sleep(0.1)
+                    conn.sendall('END'.encode('utf-8'))
             if i == 'p':
                 active_udp_connections.remove(addr[0])
             active_connections.remove(addr[0])
             conn.close()
         except:
-            if i == 'p':
-                active_udp_connections.remove(addr[0])
             active_connections.remove(addr[0])
             conn.close()
 
@@ -283,7 +253,7 @@ def database(rfb, rfb_response, transaction_pool):
     conn1 = sqlite3.connect('node_bills.db')
     c1 = conn1.cursor()
     while True:
-        time.sleep(0.1)
+        time.sleep(0.2)
         current_time_float = time.time()
         current_time = int(current_time_float)
         with open('kill_node.txt', 'r') as kn1:
@@ -294,47 +264,51 @@ def database(rfb, rfb_response, transaction_pool):
         if str(current_time).endswith('999'):
             open('spam_protection.txt', 'w').close()
         for finder in rfb:
-            if finder[1].startswith('x'):
-                c1.execute("SELECT serial_num FROM bills WHERE address MATCH ? ORDER BY RANDOM() LIMIT 14", (finder[1], ))
-                data = c1.fetchall()
-                full_return = [finder[0]]
-                for item in data:
-                    full_return.append(item[0])
-                rfb_response.append(tuple(full_return))
-            elif finder[1].startswith('!'):
-                f1 = finder[1][1:].split('x')[0]
-                f2 = finder[1].split('x')[1]
-                plusf = {'1':0, '2':10000, '5':20000, '10':30000, '20':40000, '50':50000, '100':60000, '200':70000,
-                         '500':80000, '1000':90000, '2000':100000, '5000':110000, '10000':120000, '20000':130000,
-                         '50000':140000, '100000':150000}
-                serial_range = int(f2) + plusf[f1] + 160000 * int(int(f2) / 10000)
-                c1.execute("SELECT * FROM bills WHERE rowid >= ? LIMIT 50", (serial_range, ))
-                rfb_response.append(tuple([finder[0]] + c1.fetchall()))
-            elif finder[1]:
-                c1.execute("SELECT * FROM bills WHERE serial_num MATCH ?", (finder[1],))
-                data = c1.fetchone()
-                if data:
-                    rfb_response.append(tuple([finder[0]]) + data)
-            rfb.remove(finder)
-
-        for new_bill in transaction_pool:
-            plusf = {'1': 0, '2': 10000, '5': 20000, '10': 30000, '20': 40000, '50': 50000, '100': 60000, '200': 70000,
-                     '500': 80000, '1000': 90000, '2000': 100000, '5000': 110000, '10000': 120000, '20000': 130000,
-                     '50000': 140000, '100000': 150000}
-            serial_number2 = new_bill[0]
-            f1 = serial_number2[1][1:].split('x')[0]
-            f2 = serial_number2[1].split('x')[1]
-            address = new_bill[1]
-            number = new_bill[2]
-            dataf = (address, number, serial_number2)
-            datag = (int(f2) + plusf[f1] + 160000 * int(int(f2) / 10000), serial_number2, address, number)
-            c1.execute("SELECT * FROM bills WHERE serial_num MATCH ?", (serial_number2,))
-            existing = c1.fetchone()
-            if existing:
-                c1.execute("UPDATE bills SET address = ?, number = ? WHERE serial_num MATCH ?", dataf)
-            else:
-                c1.execute("INSERT INTO bills(rowid, serial_num, address, number) VALUES(?, ?, ?, ?)", datag)
-            transaction_pool.remove(new_bill)
+            #try:
+                if finder[1].startswith('x'):
+                    c1.execute("SELECT serial_num FROM bills WHERE address MATCH ? ORDER BY RANDOM() LIMIT 14", (finder[1], ))
+                    data = c1.fetchall()
+                    full_return = []
+                    for item in data:
+                        full_return.append(item[0])
+                    rfb_response[finder[0]] = full_return
+                elif finder[1].startswith('!'):
+                    f1 = finder[1][1:].split('x')[0]
+                    f2 = finder[1].split('x')[1]
+                    plusf = {'1':0, '2':10000, '5':20000, '10':30000, '20':40000, '50':50000, '100':60000, '200':70000,
+                             '500':80000, '1000':90000, '2000':100000, '5000':110000, '10000':120000, '20000':130000,
+                             '50000':140000, '100000':150000}
+                    serial_range = plusf[f1] + (160000 * int(int(f2) / 10000))
+                    c1.execute("SELECT * FROM bills WHERE rowid >= ? LIMIT 10000", (serial_range + 1, ))
+                    rfb_response[finder[0]] = c1.fetchall()
+                elif finder[1]:
+                    c1.execute("SELECT * FROM bills WHERE serial_num MATCH ?", (finder[1],))
+                    data = c1.fetchone()
+                    if data:
+                        rfb_response[finder[0]] = data
+                rfb.remove(finder)
+            #except:
+                #pass
+        trans_pool_copy = transaction_pool[:]
+        transaction_pool[:] = []
+        for new_bill in trans_pool_copy:
+            #try:
+                plusf = {'1': 0, '2': 10000, '5': 20000, '10': 30000, '20': 40000, '50': 50000, '100': 60000, '200': 70000,
+                         '500': 80000, '1000': 90000, '2000': 100000, '5000': 110000, '10000': 120000, '20000': 130000,
+                         '50000': 140000, '100000': 150000}
+                serial_number2 = new_bill[0]
+                f1 = serial_number2.split('x')[0]
+                f2 = serial_number2.split('x')[1]
+                address = new_bill[1]
+                number = new_bill[2]
+                try:
+                    add_sm = int(f2[-4:])
+                except:
+                    add_sm = int(f2)
+                datag = (add_sm + plusf[f1] + (160000 * int(int(f2) / 10000)), serial_number2, address, number)
+                c1.execute("INSERT OR REPLACE INTO bills(rowid, serial_num, address, number) VALUES(?, ?, ?, ?)", datag)
+            #except:
+                #pass
         conn1.commit()
 
 def download_bills(pos, transaction_pool):
@@ -342,21 +316,22 @@ def download_bills(pos, transaction_pool):
     def thrd(it):
         number = 0
         already_tried = []
-        bill_comparison = []
-        
+        bill_comparison = {}
+
         def down(num, ipnl):
             serial_num_range = it + str(num)
+            print(serial_num_range)
             with open('rsa_public_key.txt', 'r') as rsk:
                 key = rsk.read()
             start_time = int(time.time())
             while int(time.time()) - start_time <= 9:
                 if random.randrange(1000) == 9:
                     already_tried.clear()
-                SERVER = random.choice(ipnl).replace('.txt', '')
+                SERVER = ipnl
                 if SERVER not in already_tried:
                     ADDR = (SERVER, PORT)
                     try:
-                        client = socket.create_connection(ADDR, timeout=5)
+                        client = socket.create_connection(ADDR, timeout=8)
                         client.settimeout(10)
                         client.sendall(key.encode('utf-8'))
                         recv_key = client.recv(1024).decode('utf-8')
@@ -366,32 +341,21 @@ def download_bills(pos, transaction_pool):
                         client.sendall(encrypted_data_b64)
                         full_msg = ''
                         multi = 1
-                        s1 = serial_num_range.split('x')
                         ct2 = str(int(time.time()))
                         if SERVER in os.listdir('ip_folder/1'):
                             multi += int(max(0, 1800 - int(ct2[0:4])) / 12)
-                        for _ in range(3):
-                            full_msg += client.recv(2048).decode('utf-8')
-                            if full_msg == 'None':
-                                for c in range(50):
-                                    for _ in range(multi):
-                                        bill_comparison.append(('n',  s1[0] + 'x' + str(int(s1[1]) + c), 'n'))
-                                return
-                        recv_msg_decode = base64.b64decode(full_msg)
-                        iv = recv_msg_decode[:16]
-                        key_aes = recv_msg_decode[16:48]
-                        data = recv_msg_decode[48:]
-                        cipher = Cipher(algorithms.AES(key_aes), modes.CBC(iv))
-                        decryptor = cipher.decryptor()
-                        data_decrypted = decryptor.update(data) + decryptor.finalize()
-                        data_decoded = data_decrypted.decode('utf-8').strip('!')
+                        for _ in range(432):
+                            recvv = client.recv(2048)
+                            if recvv == 'END':
+                                break
+                            full_msg += recvv.decode('utf-8')
+                        print('FULLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL')
+                        data_decoded = full_msg.strip('!')
                         spl = data_decoded.splitlines()
-                        for c in range(50):
+                        print(len(spl))
+                        for c in range(10000):
                             for _ in range(multi):
-                                try:
-                                    bill_comparison.append((spl[c * 3], spl[c * 3 + 1], spl[c * 3 + 2]))
-                                except:
-                                    bill_comparison.append(('n',  s1[0] + 'x' + str(int(s1[1]) + c), 'n'))
+                                bill_comparison[it + str(int(num) + c)].append((spl[c * 3], spl[c * 3 + 1], spl[c * 3 + 2]))
                         client.close()
                         break
                     except TimeoutError:
@@ -400,54 +364,42 @@ def download_bills(pos, transaction_pool):
         def thrd2(number1):
             ipf_1 = os.listdir('ip_folder/1')
             ipf_2 = os.listdir('ip_folder/2')
-            threading.Thread(target=down, args=(number1, ipf_1)).start()
             used = []
             for count, ip in enumerate(ipf_1 + ipf_2):
-                if count == 10:
-                    break
                 if ip not in used:
-                    threading.Thread(target=down, args=(number1, [ip])).start()
+                    threading.Thread(target=down, args=(str(number1), ip.replace('.txt', ''))).start()
                 used.append(ip)
 
-            time.sleep(20)
+            time.sleep(10)
             sorted_max_list = []
-            for c3 in range(50):
-                small_comparison = []
-                for item in bill_comparison:
-                    if item[0] == it + str(number1 + c3) or item[1] == it + str(number1 + c3):
-                        small_comparison.append(item)
-                        bill_comparison.remove(item)
-                sorted_max_list.append(max(set(small_comparison), key=small_comparison.count))
+            for key_item in bill_comparison.values():
+                sorted_max_list.append(max(set(key_item), key=key_item.count))
+
             with open('full_activation/' + it.strip('x') + '.txt', 'r') as d2:
                 if d2.read().endswith('x'):
                     return
-            for sorted_bill in sorted_max_list:
-                if sorted_bill[0] != 'n':
-                    transaction_pool.append(sorted_bill)
-                else:
-                    with open('full_activation/' + it.strip('x') + '.txt', 'w') as fa2:
-                        fa2.seek(0)
-                        fa2.truncate()
-                        fa2.write(sorted_bill[1].split('x')[1] + 'x')
-                    return
+            transaction_pool.extend(sorted_max_list)
 
         while True:
+            current_time = int(str(int(time.time()))[:3])
+            if number == 10000000 and current_time <= 173:
+                break
+            if number == 50000000:
+                break
             with open('kill_node.txt', 'r') as kn2:
                 kill_node = kn2.read()
                 if kill_node == 'True':
-                    return
-            with open('full_activation/' + it.strip('x') + '.txt', 'r') as d:
-                if d.read().endswith('x'):
                     return
             with open('full_activation/' + it.strip('x') + '.txt', 'w') as fa3:
                 fa3.seek(0)
                 fa3.truncate()
                 fa3.write(str(number))
-            for it in range(200):
-                threading.Thread(target=thrd2, args=(number, )).start()
-                number += 50
-                time.sleep(1)
-            time.sleep(25)
+            for appnd_dict in range(10000):
+                bill_comparison[it + str(number + appnd_dict)] = []
+            thrd2(number)
+            number += 10000
+            bill_comparison.clear()
+
 
     for i in pos:
         time.sleep(10)
@@ -504,7 +456,7 @@ if __name__ == "__main__":
         open('full_activation/' + f, 'w').close()
     with Manager() as manager:
         rf1 = manager.list()
-        rf2 = manager.list()
+        rf2 = manager.dict()
         t = manager.list()
         bp = manager.list()
         pos1 = ['1x', '2x', '5x', '10x', '20x', '50x', '100x', '200x']
@@ -514,3 +466,4 @@ if __name__ == "__main__":
         Process(target=download_bills, args=(pos1, t)).start()
         Process(target=download_bills, args=(pos2, t)).start()
         node_protocol(rf1, rf2, t, bp)
+
