@@ -264,7 +264,7 @@ def database(rfb, rfb_response, transaction_pool):
         if str(current_time).endswith('999'):
             open('spam_protection.txt', 'w').close()
         for finder in rfb:
-            #try:
+            try:
                 if finder[1].startswith('x'):
                     c1.execute("SELECT serial_num FROM bills WHERE address MATCH ? ORDER BY RANDOM() LIMIT 14", (finder[1], ))
                     data = c1.fetchall()
@@ -287,12 +287,12 @@ def database(rfb, rfb_response, transaction_pool):
                     if data:
                         rfb_response[finder[0]] = data
                 rfb.remove(finder)
-            #except:
-                #pass
+            except:
+                pass
         trans_pool_copy = transaction_pool[:]
         transaction_pool[:] = []
         for new_bill in trans_pool_copy:
-            #try:
+            try:
                 plusf = {'1': 0, '2': 10000, '5': 20000, '10': 30000, '20': 40000, '50': 50000, '100': 60000, '200': 70000,
                          '500': 80000, '1000': 90000, '2000': 100000, '5000': 110000, '10000': 120000, '20000': 130000,
                          '50000': 140000, '100000': 150000}
@@ -307,8 +307,8 @@ def database(rfb, rfb_response, transaction_pool):
                     add_sm = int(f2)
                 datag = (add_sm + plusf[f1] + (160000 * int(int(f2) / 10000)), serial_number2, address, number)
                 c1.execute("INSERT OR REPLACE INTO bills(rowid, serial_num, address, number) VALUES(?, ?, ?, ?)", datag)
-            #except:
-                #pass
+            except:
+                pass
         conn1.commit()
 
 def download_bills(pos, transaction_pool):
@@ -320,7 +320,6 @@ def download_bills(pos, transaction_pool):
 
         def down(num, ipnl):
             serial_num_range = it + str(num)
-            print(serial_num_range)
             with open('rsa_public_key.txt', 'r') as rsk:
                 key = rsk.read()
             start_time = int(time.time())
@@ -349,10 +348,8 @@ def download_bills(pos, transaction_pool):
                             if recvv == 'END':
                                 break
                             full_msg += recvv.decode('utf-8')
-                        print('FULLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL')
                         data_decoded = full_msg.strip('!')
                         spl = data_decoded.splitlines()
-                        print(len(spl))
                         for c in range(10000):
                             for _ in range(multi):
                                 bill_comparison[it + str(int(num) + c)].append((spl[c * 3], spl[c * 3 + 1], spl[c * 3 + 2]))
