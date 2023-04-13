@@ -16,15 +16,14 @@ import base58
 def udp_node(rfb, rfb_response, potential_conns):
     new_ip('3')
 
-    def access_database(sma):
+    def access_database(serial_num_address):
         random_num1 = str(random.uniform(0.1, 99.9))
-        rfb.append((random_num1, sma))
+        rfb.append((random_num1, serial_num_address))
         time.sleep(0.8)
-        for respon in rfb_response:
-            if respon[0] == random_num1:
-                rfb_response.remove(respon)
-                return respon[2:]
-        else:
+        try:
+            item_response_dtbse = rfb_response.pop(random_num1)
+            return item_response_dtbse[1:]
+        except:
             return
 
     def handle_client(nef):
@@ -94,15 +93,14 @@ def udp_node(rfb, rfb_response, potential_conns):
                       
 def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
 
-    def access_database(sma):
+    def access_database(serial_num_address):
         random_num1 = str(random.uniform(0.1, 99.9))
-        rfb.append((random_num1, sma))
+        rfb.append((random_num1, serial_num_address))
         time.sleep(0.8)
-        for respon in rfb_response:
-            if respon[0] == random_num1:
-                rfb_response.remove(respon)
-                return respon[2:]
-        else:
+        try:
+            item_response_dtbse = rfb_response.pop(random_num1)
+            return item_response_dtbse[1:]
+        except:
             return
 
     active_conns = []
