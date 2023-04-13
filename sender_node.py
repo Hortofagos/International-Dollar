@@ -238,7 +238,6 @@ def receive_bills():
                 for sm in msg.splitlines():
                     if int(sm.split('x')[1]) < 50000000 and sm.strip() not in bills_in_wallet:
                         threading.Thread(target=confirm_bill, args=(sm,)).start()
-                        break
                 time.sleep(7.2)
                 for b in new_bills:
                     with open('wallet_folder/' + wal, 'a') as wa2:
