@@ -1,85 +1,77 @@
 import time
-import rsa
-import base64
+import ipaddress
 import socket
 import threading
 import os
-from node_client import new_ip
-import ipaddress
 import random
 from multiprocessing import Process, Manager
-from node_client import download_bills, database
+from node_client import download_bills, database, new_ip
 from hashlib import sha3_256
 import confirm_validity
 import base58
 
+
 def udp_node(rfb, rfb_response, potential_conns):
+    # register a new ip with the node network. The '3' indicates that this is a udp node
     new_ip('3')
 
-    def access_database(serial_num_address):
-        random_num1 = str(random.uniform(0.1, 99.9))
-        rfb.append((random_num1, serial_num_address))
-        time.sleep(0.8)
-        try:
-            item_response_dtbse = rfb_response.pop(random_num1)
-            return item_response_dtbse[1:]
-        except:
-            return
+    # this function accesses the sqlite database known as 'node_bills.db'
+    def access_database(sml):
+        random_nums = []
+        for bill_sm in sml:
+            with open('full_activation/' + bill_sm.split('x')[0] + '.txt', 'r') as fa:
+                is_downloaded = fa.read()
+            # check download status
+            if int(is_downloaded) >= int(bill_sm.split('x')[1]):
+                random_num1 = str(random.uniform(0.1, 99.9))
+                rfb.append((random_num1, bill_sm))
+                random_nums.append(random_num1)
+        # wait for database to respond
+        time.sleep(1)
+        send_b = ''
+        # iterate through random_nums and index + remove from database response
+        for rndm in random_nums:
+            try:
+                item_response_dtbse = rfb_response.pop(rndm[0])
+                send_b += '\n'.join(item_response_dtbse) + '\n'
+            except:
+                send_b = sml[random_nums.index(rndm)] + '\nx\nx'
+        # return a list of bills in string format
+        return send_b
 
+    # this function handles a udp client
     def handle_client(nef):
-        ip, s_port, d_port = nef[0], int(nef[1]), int(nef[2])
-        with open('rsa_public_key.txt', 'r') as rk:
-            key = rk.read()
-        with open('rsa_private_key.txt', 'r') as rsk:
-            private_key = rsk.read()
-            rsa_pk = rsa.PrivateKey.load_pkcs1(base64.b64decode(private_key))
-
-        def rsa_process(m, p_key):
-            msg_decrypted = rsa.decrypt(base64.b64decode(m), rsa_pk).decode('utf-8')
-            mspl = msg_decrypted.splitlines()
-            random_verify = mspl[0]
-            serial_num = mspl[1]
-            with open('full_activation/' + serial_num.split('x')[0] + '.txt', 'r') as fa:
-                is_downloaded = fa.read().strip('x')
-                if int(is_downloaded) > int(serial_num.split('x')[1]):
-                    db = access_database(serial_num)
-                    key2 = rsa.PublicKey.load_pkcs1(base64.b64decode(p_key))
-                    full_msg = random_verify + '\n' + '\n'.join(db)
-                    encrypted_data = rsa.encrypt(full_msg.encode('utf-8'), key2)
-                    encrypted_data_b64 = base64.b64encode(encrypted_data)
-                    return encrypted_data_b64
-                else:
-                    return
-        type_ip = ipaddress.ip_address(ip)
-        if type_ip.version == 4:
-            server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            server_socket.settimeout(5)
-            server_socket.bind(('', d_port))
-            server_socket.sendto('None'.encode('utf-8'), (ip, s_port))
-            time.sleep(1)
-            server_socket.sendto(key.encode('utf-8'), (ip, s_port))
-            public_key = server_socket.recv(1024).decode('utf-8')
-            if public_key == 'None':
-                public_key = server_socket.recv(1024).decode('utf-8')
-            message = server_socket.recv(1024).decode('utf-8')
-            encd = rsa_process(message, public_key)
-            if encd:
-                server_socket.sendto(encd.encode('utf-8'), (ip, s_port))
-
-        elif type_ip.version == 6:
-            server_socket = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-            server_socket.settimeout(5)
-            server_socket.bind(('', d_port))
-            server_socket.sendto('None'.encode('utf-8'), (ip, s_port, 0, 0))
-            time.sleep(1)
-            server_socket.sendto(key.encode('utf-8'), (ip, s_port, 0, 0))
-            public_key = server_socket.recv(1024).decode('utf-8')
-            if public_key == 'None':
-                public_key = server_socket.recv(1024).decode('utf-8')
-            message = server_socket.recv(1024).decode('utf-8')
-            encd = rsa_process(message, public_key)
-            if encd:
-                server_socket.sendto(encd.encode('utf-8'), (ip, s_port, 0, 0))
+        ip_version = ipaddress.ip_address(nef[0]).version
+        if ip_version == 4:
+            # for IPv4 clients
+            ip, s_port, d_port = nef[0], int(nef[1]), int(nef[2])
+            sock4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock4.settimeout(5)
+            # we bind to the destination port and send to the source port while the client does the opposite
+            sock4.bind(('', d_port))
+            # punching a hole in the NAT
+            sock4.sendto(b'0', (ip, s_port))
+            message = sock4.recv(1024).decode('utf-8')
+            db = access_database(message.splitlines()[1:])
+            # the random verify prohibits ip spoofing
+            random_verify = message.splitlines()[0]
+            full_msg = random_verify + '\n' + db
+            sock4.sendto(full_msg.encode('utf-8'), (ip, s_port))
+        elif ip_version == 6:
+            # for IPv6 clients
+            ip, s_port, d_port = nef[0], int(nef[1]), int(nef[2])
+            sock4 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            sock4.settimeout(5)
+            # we bind to the destination port and send to the source port while the client does the opposite
+            sock4.bind(('', d_port))
+            # punching a hole in the NAT
+            sock4.sendto(b'0', (ip, s_port, 0, 0))
+            message = sock4.recv(1024).decode('utf-8')
+            db = access_database(message.splitlines()[1:])
+            # the random verify prohibits ip spoofing
+            random_verify = message.splitlines()[0]
+            full_msg = random_verify + '\n' + db
+            sock4.sendto(full_msg.encode('utf-8'), (ip, s_port, 0, 0))
 
     while True:
         time.sleep(0.1)
@@ -87,12 +79,12 @@ def udp_node(rfb, rfb_response, potential_conns):
             if kn1.read() == 'True':
                 break
         for new in potential_conns:
-            threading.Thread(target=handle_client, args=(new, )).start()
-            potential_conns.remove(new)
+            threading.Thread(target=handle_client, args=(new,)).start()
+        potential_conns[:] = []
 
-                      
+
 def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
-
+    # search for only 1 serial num in database 'node_bills.db'
     def access_database(serial_num_address):
         random_num1 = str(random.uniform(0.1, 99.9))
         rfb.append((random_num1, serial_num_address))
@@ -103,64 +95,58 @@ def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
         except:
             return
 
-    active_conns = []
+    # this function establishes a socket connection with a number '2' node, known as the rendezvous server
+    # the rendezvous server exchanges information between udp node and a client.
+    # it also updates the udp server with new bills
     def new_conn(ip):
-        client = socket.create_connection((ip, 8888), timeout=1)
-        try:
-            client.settimeout(120)
-            active_conns.append(ip)
-            with open('rsa_public_key.txt', 'r') as rsk:
-                key = rsk.read()
-            client.sendall(key.encode('utf-8'))
-            recv_key = client.recv(1024).decode('utf-8')
-            public_key_node = rsa.PublicKey.load_pkcs1(base64.b64decode(recv_key))
-            encrypted_data = rsa.encrypt('p'.encode('utf-8'), public_key_node)
-            encrypted_data_b64 = base64.b64encode(encrypted_data)
-            client.sendall(encrypted_data_b64)
-            with open('rsa_private_key.txt', 'r') as rsk:
-                private_key = rsk.read()
-                rsa_pk = rsa.PrivateKey.load_pkcs1(base64.b64decode(private_key))
-            while True:
-                msg_encrypted = client.recv(512).decode('utf-8')
-                msg_decrypted = rsa.decrypt(base64.b64decode(msg_encrypted), rsa_pk).decode('utf-8')
-                msg_split = msg_decrypted[1:].split()
-                if msg_decrypted[0] == 'n':
-                    potential_conns2.append((msg_split[0], msg_split[2], msg_split[3]))
-                elif msg_decrypted[0] == 'b':
-                    msg = msg_decrypted[1:]
-                    bill = msg.splitlines(keepends=True)[:5]
-                    print(bill)
-                    bill_serial_num, bill_number, bill_addr = bill[0].strip(), bill[1].strip(), bill[3].strip()
-                    bill_public_key, bill_digital_sig = bill[2].strip(), bill[4].strip()
-                    with open('spam_protection.txt', 'r') as sc:
-                        sc = sc.read()
-                        spam_count = sc.count(bill_serial_num)
-                    num_bill = bill_serial_num.split('x')[1]
-                    if spam_count < 4 and 0 < int(num_bill) < 50000000:
-                        db = access_database(bill_serial_num)
-                        if db:
-                            addr_old = db[0]
-                            number = db[1]
-                            hash_key = sha3_256(bill_public_key.encode('utf-8')).digest()
-                            hash_key_encode = base58.b58encode(hash_key).decode('utf-8')
-                            if hash_key_encode[:30] == addr_old and int(number) + 1 == int(bill_number):
-                                v_sig = confirm_validity.verify_ecdsa(bill_digital_sig, ''.join(bill[:4]),
-                                                                      bill_public_key)
-                                if v_sig == 'valid':
-                                    transaction_pool.append((bill_serial_num, bill_addr, bill_number))
-        except:
-            active_conns.remove(ip)
-            client.close()
-
+        rendezvous = (ip, 8888)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(60)
+        sock.sendto(b'node', rendezvous)
+        while True:
+            msg = sock.recv(1024).decode('utf-8')
+            # a client is ready to exchange information
+            if msg == 'ready':
+                data = sock.recv(248).decode('utf-8')
+                ip, sport, dport = data.splitlines()
+                potential_conns2.append(ip, int(sport), int(dport))
+            else:
+                # divide bill
+                bill = msg.splitlines(keepends=True)[:5]
+                bill_serial_num, bill_number, bill_addr = bill[0].strip(), bill[1].strip(), bill[3].strip()
+                bill_public_key, bill_digital_sig = bill[2].strip(), bill[4].strip()
+                with open('spam_protection.txt', 'r') as sc:
+                    sc = sc.read()
+                    spam_count = sc.count(bill_serial_num)
+                num_bill = bill_serial_num.split('x')[1]
+                # check if spam count is under 6 and check if number of bill is below max of 50 million
+                if spam_count < 6 and 0 < int(num_bill) < 50000000:
+                    db = access_database(bill_serial_num)
+                    if db:
+                        addr_old = db[0]
+                        number = db[1]
+                        hash_key = sha3_256(bill_public_key.encode('utf-8')).digest()
+                        hash_key_encode = base58.b58encode(hash_key).decode('utf-8')
+                        # check if sha3 256 hash of the sender public key equals his address, in the database.
+                        # check if number (how many times a bill has been sent) correlates to number in the database
+                        if hash_key_encode[:30] == addr_old and int(number) + 1 == int(bill_number):
+                            v_sig = confirm_validity.verify_ecdsa(bill_digital_sig, ''.join(bill[:4]),
+                                                                  bill_public_key)
+                            if v_sig == 'valid':
+                                with open('spam_protection.txt', 'a') as sp:
+                                    sp.write(bill_serial_num + '\n')
+                                transaction_pool.append((bill_serial_num, bill_addr, bill_number))
+    # connect to all '2' nodes saved in the ip_folder/2
     while True:
         with open('kill_node.txt', 'r') as kn2:
             if kn2.read() == 'True':
                 break
-        ip_f = os.listdir('ip_folder/1') + os.listdir('ip_folder/2')
-        ip_addr = random.choice(ip_f).replace('.txt', '')
-        if len(active_conns) < len(ip_f) / 10 + 1 and ip_addr not in active_conns:
-            threading.Thread(target=new_conn, args=(ip_addr,)).start()
-        time.sleep(2)
+        ip_f = os.listdir('ip_folder/2')
+        for ip_address in ip_f:
+            threading.Thread(target=new_conn, args=(ip_address.replace('.txt', ''),)).start()
+            time.sleep(0.2)
+        time.sleep(61)
+
 
 if __name__ == "__main__":
     for f in os.listdir('full_activation'):
@@ -174,6 +160,7 @@ if __name__ == "__main__":
         Process(target=client_udp, args=(rf1, rf2, t, new_connect)).start()
         pos1 = ['1x', '2x', '5x', '10x', '20x', '50x', '100x', '200x']
         pos2 = ['500x', '1000x', '2000x', '5000x', '10000x', '20000x', '50000x', '100000x']
+        # start 2 download processes on 2 cores
         Process(target=download_bills, args=(pos1, t)).start()
         Process(target=download_bills, args=(pos2, t)).start()
         udp_node(rf1, rf2, new_connect)
