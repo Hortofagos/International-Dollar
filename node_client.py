@@ -494,7 +494,6 @@ def maintain_connections(bill_pool):
 def udp_rendezvous(bill_pool):
     # udp rendezvous server socket
     udp_nodes = []
-    clients = []
     def ipv4_sock():
         dest_port = 8888
         # UDP socket bound to 8888
@@ -525,13 +524,12 @@ def udp_rendezvous(bill_pool):
                         udp_nodes.remove(address)
                     threading.Thread(target=node_communication).start()
                 elif data_d == 'client':
-                    clients.append(address)
                     # choose a random udp node to pair up with client
                     c2 = random.choice(udp_nodes)
                     c2_addr, c2_port = c2
                     if len(c2) >= 1:
                         # comb = combination of address and destination port
-                        comb = '\n'.join(address) + '\n' + dest_port
+                        comb = '\n'.join(str(a) for a in address) + '\n' + str(dest_port)
                         sock.sendto(b'ready', c2)
                         sock.sendto('{} {} {}'.format(c2_addr, c2_port, dest_port).encode('utf-8'), address)
                         sock.sendto(comb.encode('utf-8'), c2)
@@ -551,12 +549,11 @@ def udp_rendezvous(bill_pool):
                     if kill_node == 'True':
                         break
                 data, address = sock6.recvfrom(128)
-                clients.append(address)
                 c2 = random.choice(udp_nodes)
                 c2_addr, c2_port = c2
                 if len(c2) >= 1:
                     # comb = combination of address and destination port
-                    comb = '\n'.join(address) + '\n' + dest_port
+                    comb = '\n'.join(str(a) for a in address) + '\n' + str(dest_port)
                     sock6.sendto(b'ready', c2)
                     # send node info to client
                     sock6.sendto('{} {} {}'.format(c2_addr, c2_port, dest_port).encode('utf-8'), address)
