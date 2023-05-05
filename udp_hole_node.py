@@ -109,7 +109,7 @@ def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
             if msg == 'ready':
                 data = sock.recv(248).decode('utf-8')
                 ip, sport, dport = data.splitlines()
-                potential_conns2.append(ip, int(sport), int(dport))
+                potential_conns2.append((ip, int(sport), int(dport)))
             else:
                 # divide bill
                 bill = msg.splitlines(keepends=True)[:5]
@@ -161,6 +161,6 @@ if __name__ == "__main__":
         pos1 = ['1x', '2x', '5x', '10x', '20x', '50x', '100x', '200x']
         pos2 = ['500x', '1000x', '2000x', '5000x', '10000x', '20000x', '50000x', '100000x']
         # start 2 download processes on 2 cores
-        Process(target=download_bills, args=(pos1, t)).start()
-        Process(target=download_bills, args=(pos2, t)).start()
+        #Process(target=download_bills, args=(pos1, t)).start()
+        #Process(target=download_bills, args=(pos2, t)).start()
         udp_node(rf1, rf2, new_connect)
