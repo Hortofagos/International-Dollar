@@ -12,7 +12,6 @@ import ecdsa
 import qrcode
 from PIL import ImageTk, Image
 import cv2
-from pyzbar.pyzbar import decode
 from tkinterdnd2 import *
 import getpass
 import rsa
@@ -20,10 +19,6 @@ from datetime import datetime
 import random
 from pyzbar.pyzbar import decode
 import pyglet
-try:
-    from tkextrafont import Font
-except:
-    pass
 
 from print import full_bill, only_qr
 import sender_node
@@ -31,41 +26,50 @@ import wallet_decryption
 import wallet_encryption
 import portforwardlib
 import platform
+# most modules come preinstalled
+# if you miss modules, execute pip install -r ./requirements.txt in the local directory (cmd)
 
+
+# the main.py file is more or less just the tkinter GUI implementation
+# transactions can also be made and sent manually in the command line, for example:
+# python -c "import sender_node; sender_node.send_bills()"
+
+# removes unnecessary place holder files for github repo
 try:
     os.remove('ip_folder/3/PLACE_HOLDER.txt')
     os.remove('wallet_folder/PLACE_HOLDER.txt')
     os.remove('transaction_folder/PLACE_HOLDER.txt')
-    os.remove('print_folder/PLACE_HOLDER.txt')
 except:
     pass
 
-
+# everything builds on this main root
 root = Tk()
 root.title('International Dollar')
+# ensure right scaling of text even when user has different zoom settings (laptop)
 root.tk.call('tk', 'scaling', 1.36)
+# get the screen height
 height_screen = root.winfo_screenheight()
-try:
-    font = Font(file="ind_font.ttf", family="ind")
-except:
-    pyglet.resource.add_font('ind_font.ttf')
-    
-if platform.system() == 'Darwin':
+# import custom font
+# works on windows, issues on linux
+pyglet.resource.add_font('ind_font.ttf')
+
+# for mac os, makes a copy in the fonts folder
+if platform.system() != 'Windows' and platform.system() != 'Linux':
     os.system('cp ind_font.ttf /Library/Fonts/ind_font.ttf')
-    
+
+# reso is going to determine the multiplkator for high resolution screens
 if height_screen >= 4000:
     res = '8'
 elif height_screen >= 1600:
     res = '4'
 else:
     res = ''
-
 try:
     reso = int(int(res) / 2)
 except Exception:
     reso = 1
 
-#this creates a wallet_folder backup in user folder
+# make a backup copy of all wallets in the wallet folder, in case program is uninstalled, these will remain
 try:
     path = os.path.expanduser('~/wallet_folder_backup')
     try:
@@ -83,7 +87,8 @@ try:
 except:
     pass
 
-
+# all paths to GUI images that make up the program
+# we have chose to do it this way, for better styling and faster design process
 path, path_purchase, path_info = 'img/home' + res + '.png', 'img/purchase' + res + '.png','img/info' + res + '.png'
 path_node_terminal = 'img/_terminal' + res + '.png'
 path_sign_in, path_wallet = 'img/sign_in' + res + '.png', 'img/wallet' + res + '.png'
@@ -135,8 +140,9 @@ path_w2000c,path_w5000c = 'img/wallet_bills/_2000c' + res + '.png','img/wallet_b
 path_w10000c,path_w20000c = 'img/wallet_bills/_10000c' + res + '.png','img/wallet_bills/_20000c' + res + '.png'
 path_w50000c,path_w100000c = 'img/wallet_bills/_50000c' + res + '.png','img/wallet_bills/_100000c' + res + '.png'
 
-#reads new information in useres wallet
+
 def update_wallet():
+    # this function will return a update of the decrypted wallet file
     for x in os.listdir('wallet_folder'):
         if x.startswith('wallet_decrypted'):
             with open('wallet_folder/' + x, 'r+') as d:
@@ -149,13 +155,15 @@ try:
 except:
     pass
 
+# main "International Dollar" text in upper left corner of GUI
 international_dollar = Text(root, font=('ind', 45 * reso), bg='black', fg='white', bd=0, highlightthickness=0)
 international_dollar.insert(1.0, 'International Dollar')
 international_dollar.place(x=150 * reso, y=45 * reso, height=90 * reso, width=410 * reso)
 international_dollar.config(state='disabled', cursor='arrow')
 
-#this function generates new RSA keys, used to encrypt internet traffic between nodes and clients
+
 def generate_new_keys():
+    # this function generates a new RSA key pair and writes them in the local files
     public_key_rsa, private_key_rsa = rsa.newkeys(2048)
     with open('rsa_public_key.txt', 'w') as rk:
         rk.write(base64.b64encode(public_key_rsa.save_pkcs1('PEM')).decode('utf-8'))
@@ -169,7 +177,7 @@ if not f:
 elif random.randrange(9) == 3:
     generate_new_keys()
 
-#generates a qr code of the wallet address
+# create a qr code of the wallet address
 try:
     wa_sliced = dr[0]
     address_qr = qrcode.QRCode(version=1, box_size=6, border=1, error_correction=qrcode.constants.ERROR_CORRECT_H)
@@ -182,7 +190,7 @@ try:
 except Exception:
     pass
 
-#main tkinter background images
+# main images that make up the background
 root.configure(background='white')
 img = PhotoImage(file=path)
 panel = Label(root, image=img)
@@ -201,6 +209,7 @@ generate_wallet_img = PhotoImage(file=path_button_generate_wallet)
 generate_wallet = Label(root, image=generate_wallet_img)
 receiver = Entry(root, font=('ind', 20 * reso), bg='light grey')
 frame_w = Frame(root, bg='black')
+# disable window resize
 root.resizable(False, False)
 
 
@@ -210,6 +219,8 @@ with open('node_class.txt', 'r') as ncl:
     l3 = l1[1].strip()
     l4 = l1[2].strip()
 
+# drop down menu in Node Terminal tab
+# Full (TCP with open PORTS) or Small Node (UDP hole punching)
 class_var = StringVar(root)
 node_class_selector = OptionMenu(root, class_var, 'FULL NODE', 'SMALL NODE')
 node_class_selector.config(font=('ind', 24 * reso, 'bold'), cursor='hand2', bg='black', fg='white')
@@ -217,7 +228,7 @@ ncss = root.nametowidget(node_class_selector.menuname)
 ncss.config(font=('ind', 20 * reso))
 class_var.set(l2)
 
-#run node on startup
+# run on startup option
 ron_var = StringVar(root)
 ron = OptionMenu(root, ron_var, 'YES', 'NO')
 ron.config(font=('ind', 24 * reso, 'bold'), cursor='hand2', bg='black', fg='white')
@@ -225,23 +236,29 @@ rons = root.nametowidget(ron.menuname)
 rons.config(font=('ind', 20 * reso))
 ron_var.set(l3)
 
-#run node in background
+# run in background option
 bak_var = StringVar(root)
 bak = OptionMenu(root, bak_var, 'YES', 'NO')
 bak.config(font=('ind', 24 * reso, 'bold'), cursor='hand2', bg='black', fg='white')
 baks = root.nametowidget(bak.menuname)
 baks.config(font=('ind', 20 * reso))
 bak_var.set(l4)
+
 try:
     USER_NAME = getpass.getuser()
     disk = os.path.realpath(__file__)[0]
     bat_path = disk + r':\Users\%s\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup' % USER_NAME
+    print(bat_path)
 except Exception:
     pass
 
-#This function starts a network node
 def start():
-    result = portforwardlib.forwardPort(8888, 8888, None, None, "False", "TCP", 0, 'test', 'yes')
+    # these functions will try to forward PORTS 8888 and 8887, using UPNP
+    # Note that this often fails, so it is recommended to manually forward ports in your router settings
+    forward_tcp = portforwardlib.forwardPort(8888, 8888, None, None, False, "TCP", 0, 'node_IND', 'yes')
+    forward_udp = portforwardlib.forwardPort(8888, 8888, None, None, False, "UDP", 0, 'node_IND', 'yes')
+    forward_udp_ipv6 = portforwardlib.forwardPort(8887, 8887, None, None, False, "UDP", 0, 'node_IND', 'yes')
+    # update node class
     with open('node_class.txt', 'w') as nc:
         nc.seek(0)
         nc.truncate()
@@ -249,6 +266,7 @@ def start():
         nc.write(str(ron_var.get()) + '\n')
         nc.write(str(bak_var.get()))
 
+    # if run on startup is enabled 'YES', write a BAT file
     if ron_var.get() == 'YES':
         try:
             if class_var.get() == 'FULL NODE':
@@ -266,23 +284,19 @@ def start():
     start_button.place_forget()
     end_button.place(x=977 * reso, y=190 * reso)
 
+    # start a subprocess of the node_client.py file, using local pythonw.exe
     if class_var.get() == 'FULL NODE':
         def subp():
-            if platform.system != 'Windows':
-                subprocess.run('python3 node_client.py', shell=True)
-            else:
-                subprocess.run('python node_client.py', shell=True)
+            subprocess.run(['pythonw.exe', '-m', 'node_client'])
         threading.Thread(target=subp).start()
         time.sleep(0.5)
     else:
         def subp():
-            if platform.system != 'Windows':
-                subprocess.run('python3 udp_hole_node.py', shell=True)
-            else:
-                subprocess.run('python udp_hole_node.py', shell=True)
+            subprocess.run(['pythonw.exe', '-m', 'udp_hole_client'])
         threading.Thread(target=subp).start()
         time.sleep(0.5)
 
+    # add more nodes to your ip_folder
     def thrd2():
         time.sleep(5)
         for _ in range(3):
@@ -290,6 +304,7 @@ def start():
 
     threading.Thread(target=thrd2).start()
 
+# shut the node off
 def end():
     with open('kill_node.txt', 'w') as kn1:
         kn1.seek(0)
@@ -297,7 +312,7 @@ def end():
     end_button.place_forget()
     start_button.place(x=977 * reso, y=190 * reso)
     time.sleep(1)
-
+# b = balance
 b = Text(root, font=('ind', 37 * reso), bg='black', fg='white', bd=0, highlightthickness=0)
 balance_top = Text(root, font=('ind', 26 * reso), bg='black', fg='white', bd=0, highlightthickness=0)
 
@@ -306,11 +321,12 @@ start_button = Button(root, image=start_button_img, bd=0, highlightthickness=0, 
 end_button_img = PhotoImage(file=path_button_end)
 end_button = Button(root, image=end_button_img, bd=0, highlightthickness=0, cursor='hand2', command=end)
 
+# a = amount
 a = Entry(root, font=('ind', 22 * reso), bg='light grey')
 receiver_history = Text(root, font=('ind', 22 * reso), bg='black', fg='light grey', bd=0, highlightthickness=0)
 receiver_history.bind("<Key>", lambda e: "break")
 
-#send a free bill request to the main nodes
+# request free bills in the Win/Print section
 def request_luck():
     with open('last_luck.txt', 'r+') as lt:
         last_timestamp = lt.read()
@@ -324,33 +340,43 @@ def request_luck():
         receive_bills()
         button_lucky.config(cursor='hand2')
 
-#use the paper wallet on a bill to sign a transaction, directed to your own local wallet
 address_to_charge = []
 def charge_bills():
+    # this function is used AFTER the print processes is finished and the user wants to "charge" the bills
+    # this function uses the generated addresses, creates a file in transaction_folder and sends them to the nodes
     root.config(cursor='watch')
     charge_bills_button.config(cursor='watch')
+    # list_sm = list serial numbers
     list_sm = list(filter(None, selected_bills_text.get(1.0, END).splitlines()))
+    # iterate through wallet folder
     for w in os.listdir('wallet_folder'):
         if w.startswith('wallet_decrypted'):
             with open('wallet_folder/' + w, 'r+') as o:
                 of = o.readlines()
                 o.seek(0)
                 o.truncate()
+                # iterate through lines
                 for wb in of:
+                    # check if serial number is in the selected list
                     if wb.split()[0] in list_sm:
                         index_item = list_sm.index(wb.split()[0])
                         try:
+                            # format: 10x9 (serial number)\n 1 (number)\n (public key)\n (receiver address)\n
+                            # (digital signature)\n
                             full_transaction = wb.split()[0] + '\n' + str(int(wb.split()[1]) + 1) + '\n' + of[2]
                             full_transaction += address_to_charge[index_item]
                             read_tn = full_transaction.encode('utf-8')
+                            # decode the base85 private key and sign the transaction
                             private_key_decode = base64.b85decode(of[1].strip())
                             sk = ecdsa.SigningKey.from_string(private_key_decode, curve=ecdsa.SECP256k1,
                                                               hashfunc=hashlib.sha3_256)
                             sign = sk.sign(read_tn)
                             signature = base64.b85encode(sign).decode('utf-8')
                             full_transaction += str(signature)
+                            # update the local wallet file, write a - minus infront of the bill
                             o.write('-' + wb.split()[0] + ' ' + str(int(wb.split()[1]) + 1) + ' ' + str(int(time.time())) + '\n')
                             t = str(len(os.listdir('transaction_folder')) + 1)
+                            # write a new file, containing the fully signed transaction, to the transaction_folder
                             with open('transaction_folder/transaction_' + t + '.txt', 'w') as tn:
                                 tn.seek(0)
                                 tn.truncate()
@@ -359,49 +385,59 @@ def charge_bills():
                             o.write(wb)
                     else:
                         o.write(wb)
+    # send all files in the transaction_folder to the node network
     sender_node.send_bills()
     charge_bills_button.place_forget()
     button_print.place(x=640 * reso, y=650 * reso)
     button_only_qr.place(x=950 * reso, y=650 * reso)
     selected_bills_text.delete(1.0, END)
     root.config(cursor='arrow')
+    # update balance and transaction history
     update_balance()
     page()
     charge_bills_button.config(cursor='hand2')
 
-#this function creates a pdf, with paper wallets, that can be printed out on a DIN A4
 def print_bills():
+    # this function is responsible for creating a pdf file which the user can print
     def t():
+        # check if user has selected serial numbers to print
         if len(selected_bills_text.get(1.0, END)) > 2:
             list_bills = list(filter(None, selected_bills_text.get(1.0, END).splitlines()))
             list_bills_2 = []
             dr, _ = update_wallet()
+            # iterate through all bills in the wallet
             for b in dr[4:]:
                 if b.split()[0] in list_bills:
                     list_bills_2.append((b.split()[0], str(int(b.split()[1]) + 1)))
+            # start the print function located in the print.py file and pass a list of selected serial numbers
             return_addr = full_bill(list_bills_2)
             root.config(cursor='arrow')
             button_print.config(cursor='hand2')
+            # get all the new addresses that have been generated, and use them to potentially charge the bills
             for re_addr in return_addr:
                 address_to_charge.append(re_addr)
     threading.Thread(target=t).start()
+    # the user can do other things, while the threads working in the background
     if len(selected_bills_text.get(1.0, END)) > 2:
         root.config(cursor='watch')
         button_print.config(cursor='watch')
         def f():
+            # wait 60 seconds before placing the charge bills button
             time.sleep(60)
             button_print.place_forget()
             button_only_qr.place_forget()
             charge_bills_button.place(x=750 * reso, y=650 * reso)
         threading.Thread(target=f).start()
 
-#this function creates qrcodes of paper wallets on DIN A4
 def print_only_qr():
+    # this function only prints qr codes, containing private key, public key and number
     def t():
+        # check if user has selected serial numbers to print
         if len(selected_bills_text.get(1.0, END)) > 2:
             list_bills = list(filter(None, selected_bills_text.get(1.0, END).splitlines()))
             list_bills_2 = []
             dr, _ = update_wallet()
+            # iterate through all bills in the wallet
             for b in dr[4:]:
                 if b.split()[0] in list_bills:
                     list_bills_2.append((b.split()[0], str(int(b.split()[1]) + 1)))
@@ -415,6 +451,7 @@ def print_only_qr():
         root.config(cursor='watch')
         button_print.config(cursor='watch')
         def f():
+            # wait 60 seconds before placing the charge bills button
             time.sleep(60)
             button_print.place_forget()
             button_only_qr.place_forget()
@@ -436,22 +473,26 @@ asl_text.config(state='disabled')
 charge_bills_button_img = PhotoImage(file=path_charge_bills_button)
 charge_bills_button = Button(root, image=charge_bills_button_img, highlightthickness=0, cursor='hand2', command=charge_bills)
 
-#these buttons display the main 4 tabs
 def node_terminal_button():
+    # this button function opens the 'Node terminal' tab in the right upper corner
+    # the close function makes previous windows disappear
     close()
     button.config(bg='white', fg='black'),button2.config(bg='black', fg='white'), button3.config(bg='black', fg='white')
     button4.config(bg='black', fg='white'), button_log_in.config(bg='black', fg='black')
+    # check if node is already running
     with open('kill_node.txt', 'r') as kn:
         if kn.read() == 'True':
             start_button.place(x=977 * reso, y=190 * reso)
         else:
             end_button.place(x=977 * reso, y=190 * reso)
+    # Dropdown menus related to settings like "run in background: YES"
     node_class_selector.place(x=450 * reso,  y=255 * reso, width=230 * reso, height=45 * reso)
     ron.place(x=450 * reso,  y=395 * reso, width=230 * reso, height=45 * reso)
     bak.place(x=450 * reso,  y=535 * reso, width=230 * reso, height=45 * reso)
     node_terminal.place(x=0, y=0)
 
 def sign_in_button():
+    # this button function opens the 'Sign in' button window in the right upper corner
     close()
     button.config(bg='black', fg='white'),button2.config(bg='black', fg='white'),button3.config(bg='black', fg='white')
     button4.config(bg='black', fg='white'),button_log_in.config(bg='white', fg='black')
@@ -461,6 +502,7 @@ def sign_in_button():
     enter_address.place(x=400 * reso, y=355 * reso, width=425 * reso, height=50 * reso)
     enter_key.place(x=370 * reso, y=500 * reso, width=425 * reso, height=50 * reso)
     log_in_button2.place(x=500 * reso, y=650 * reso)
+    # check if user wants to be signed in permanently
     with open('check_signed_in.txt', 'r') as csi:
         if csi.read() == 'True':
             button_checkmark.place(x=465 * reso, y=602 * reso)
@@ -470,12 +512,14 @@ def sign_in_button():
     sign_in.place(x=0, y=0)
 
 def info_button():
+    # this button function opens the 'Information' tab in the right upper corner
     close()
     button.config(bg='black', fg='white'),button2.config(bg='white', fg='black'),button3.config(bg='black', fg='white')
     button4.config(bg='black', fg='white')
     info.place(x=0, y=0)
 
 def win_button():
+    # this button function opens the 'Win/Print' tab in the right upper corner
     close()
     button.config(bg='black', fg='white'),button4.config(bg='black', fg='white'),button2.config(bg='black', fg='white')
     button3.config(bg='white', fg='black')
@@ -491,12 +535,14 @@ def win_button():
         dr, num_lines = update_wallet()
     except:
         pass
+    # update serial numbers in all_bills_text text field
     for bsm in dr[4:]:
         if not bsm.startswith('-'):
             only_sm += bsm.split()[0] + '\n'
     all_bills_text.delete(1.0, END)
     all_bills_text.insert(1.0, only_sm[:-1])
 def wallet_button():
+    # this button function opens the 'wallet' tab in the right upper corner
     close()
     button.config(bg='black', fg='white'),button2.config(bg='black', fg='white'),button3.config(bg='black', fg='white')
     button4.config(bg='white', fg='black')
@@ -527,6 +573,7 @@ def wallet_button():
         pass
 
 def generate_wallet_button():
+    # this button function opens the 'Generate address' tab in the sign in window
     button_show.place_forget(),enter_key.place_forget(),log_in_button2.place_forget()
     enter_address.place_forget(),sign_in.place_forget(), button_checkmark.place_forget(), button_checkbox.place_forget()
     button_generate_wallet.config(bg='white', fg='black')
@@ -542,9 +589,8 @@ def generate_wallet_button():
     generate_wallet.place(x=0, y=0)
 
 tf_text = Text(font=('ind', 28 * reso), bg='black', fg='white', bd=0)
-
-#this function creates a qr code containing the wallet address, public and private key aswell as the password
 def transfer_wallet():
+    # this function generates a qr code, containing wallet address, public key, private key and wallet password
     try:
         data_wallet = ''.join(dr[:4])
         wallet_qr = qrcode.QRCode(version=1, box_size=4, border=1,
@@ -584,10 +630,10 @@ tf_button = Button(root, image=tf_button_img, bd=0, highlightthickness=0, cursor
 r_button_img = PhotoImage(file=path_button_r)
 r_button = Button(root, image=r_button_img, bd=0, highlightthickness=0, cursor='hand2', command=receive_qr)
 
-#scroll through transaction history
 page_wallet = 1
 place_next_button = 0
 def page():
+    # this function is flips the pages between transaction history
     global place_next_button
     try:
         conf = ''
@@ -640,6 +686,7 @@ previous_button_img = PhotoImage(file=path_button_previous)
 previous_button = Button(root, image=previous_button_img, bd=0, highlightthickness=0, cursor='hand2', command=previous)
 page()
 
+# these variables contain the .png images  used for the bill buttons in the wallet tab
 w1c_img = PhotoImage(file=path_w1c)
 w2c_img = PhotoImage(file=path_w2c)
 w5c_img = PhotoImage(file=path_w5c)
@@ -673,7 +720,6 @@ w20000_img = PhotoImage(file=path_w20000)
 w50000_img = PhotoImage(file=path_w50000)
 w100000_img = PhotoImage(file=path_w100000)
 
-#these variables relate to the amount of the users wallet
 amount = 0
 bills_w1, bills_w2, bills_w5, bills_w10, bills_w20, bills_w50, bills_w100, bills_w200, bills_w500 = 0, 0, 0, 0, 0, 0, 0, 0, 0
 bills_w1000, bills_w2000, bills_w5000, bills_w10000, bills_w20000, bills_w50000, bills_w100000 = 0, 0, 0, 0, 0, 0, 0
@@ -681,8 +727,8 @@ selected_w1, selected_w2, selected_w5, selected_w10, selected_w20 = 0, 0, 0, 0, 
 selected_w50, selected_w100, selected_w200, selected_w500, selected_w1000 = 0, 0, 0, 0, 0
 selected_w2000, selected_w5000, selected_w10000, selected_w20000 = 0, 0, 0, 0
 selected_w50000, selected_w100000 = 0, 0
-#this function updates all visual balances for the user
 def update_balance():
+    # this function updates all balance indicators for the user
     global first_iteration, amount, count_selected
     global bills_w1, bills_w2, bills_w5, bills_w10, bills_w20, bills_w50, bills_w100, bills_w200, bills_w500
     global bills_w1000, bills_w2000, bills_w5000, bills_w10000, bills_w20000, bills_w50000, bills_w100000
@@ -692,6 +738,7 @@ def update_balance():
         pass
     bills_w1 = bills_w2 = bills_w5 = bills_w10 = bills_w20 = bills_w50 = bills_w100 = bills_w200 = bills_w500 = 0
     bills_w1000 = bills_w2000 = bills_w5000 = bills_w10000 = bills_w20000 = bills_w50000 = bills_w100000 = 0
+    # recount the existance of bills in the wallet
     try:
         for az in dr_new2:
             if az.startswith('1x'):
@@ -750,7 +797,9 @@ def amount_config():
     a.insert(0, str(amount_format) + '$')
     a.bind("<Key>", lambda e: "break")
 
-#these "add" functions are related to a button press on a bill, inside the wallet tab
+# these "add" functions are responsible for updating the amounts selected by the user
+# changing the count text on the bills and the color if no more bills are available
+####################################################################
 def add_1():
     global selected_w1, amount, count_selected
     if bills_w1 - selected_w1 > 0:
@@ -982,6 +1031,8 @@ def start_bills():
     count_selected = True
 start_bills()
 update_balance()
+####################################################################
+
 
 w1.place(x=0, y=0, width=139 * reso, height=59 * reso)
 w2.place(x=0, y=70 * reso, width=139 * reso, height=59 * reso)
@@ -1000,8 +1051,9 @@ w20000.place(x=152 * reso, y=370 * reso, width=149 * reso, height=64 * reso)
 w50000.place(x=152 * reso, y=445 * reso, width=149 * reso, height=64 * reso)
 w100000.place(x=152 * reso, y=520 * reso, width=149 * reso, height=64 * reso)
 
-#this function is sends an update request to the network nodes. 
+
 def receive_bills():
+    # this function invokes receive_bills() which will ask the node network for new bills
     root.config(cursor='watch')
     receiver_button.config(cursor='watch')
     def thrd():
@@ -1019,8 +1071,7 @@ def receive_bills():
 receiver_button_img = PhotoImage(file=path_button_receive)
 receiver_button = Button(root, image=receiver_button_img, cursor='hand2', command=receive_bills, bd=0,
                          highlightthickness=0)
-
-#these functions show or hide the password in the sign_in tab
+# visual of password or important private key to display as : ******** or : password123
 show = 0
 def show_key_s():
     global show
@@ -1046,9 +1097,9 @@ def show_password():
     else:
         choose_password.config(show='')
 
-#stay signed in to the wallet or log in every time program is started. For security reasons i recommend signing in every time.
-#Note that the wallet is not encrypted, when you stay signed in
+
 def stay_signed():
+    # this function upon button press will change if the user doesnt log out upon closing
     with open('check_signed_in.txt', 'r+') as csig:
         checkmark = csig.read()
         csig.seek(0)
@@ -1062,29 +1113,27 @@ def stay_signed():
             button_checkbox.place(x=465 * reso, y=602 * reso)
             csig.write('False')
 
-#this function takes the given password and logs into an encrypted wallet
 def log_in():
+    # this function will sign the user into a encrypted wallet
     with open('passphrase.txt', 'w') as ps:
         ps.seek(0)
         ps.truncate(0)
         ps.write(str(enter_key.get()) + '\n')
         ps.write(str(address_variable.get()))
     wallet_decryption.wallet_decrypt()
-
+    # check if the right password was entered
     def check_decrypted():
         global decrypted
         for decrypted_wallet in os.listdir('wallet_folder'):
             if decrypted_wallet.startswith('wallet_decrypted'):
                 root.destroy()
-                if platform.system != 'Windows':
-                    subprocess.run('python3 main.py', shell=True)
-                else:
-                    subprocess.run('python main.py', shell=True)
+                subprocess.run(['pythonw.exe', '-m', 'main'])
                 break
     check_decrypted()
 
 address_variable = StringVar(root)
 options_addr = ['                                                                        ']
+# add to the dropdown menu of addresses in the sign in window
 for s in os.listdir('wallet_folder'):
     wallet_raw = s.replace('wallet_encrypted_', '').replace('wallet_decrypted_', '').replace('.txt', '')
     if wallet_raw not in options_addr:
@@ -1111,18 +1160,17 @@ button_checkbox = Button(root, image=button_checkbox_img, cursor='hand2', comman
 button_checkmark_img = PhotoImage(file=path_checkmark)
 button_checkmark = Button(root, image=button_checkmark_img, cursor='hand2', command=stay_signed, bd=0,
                           highlightthickness=0)
-#this function starts the generate_address.py file to generate an new wallet. Note that it takes 8 CPU cores 
+
 def gen_ad():
+    # this function is responsible for invoking generate_address.py
     def t():
         open('hashing.txt', 'w').close()
         generate_address_text.config(state='normal'),public_key.config(state='normal'),private_key.config(state='normal')
         generate_address_text.delete(0, END),public_key.delete(0, END),private_key.delete(0, END)
         root.config(cursor='watch')
         generate_address_button.config(cursor='watch')
-        if platform.system != 'Windows':
-            subprocess.run('python3 generate_address.py', shell=True)
-        else:
-            subprocess.run('python generate_address.py', shell=True)
+        process = subprocess.run(['pythonw.exe', '-m', 'generate_address'])
+        # get the info of the generated wallet
         with open('hashing.txt', 'r') as hs:
             ha = hs.readlines()
         h_address = ha[0].strip()
@@ -1139,6 +1187,7 @@ def generate_wallet_final():
         hf.write(str(choose_password.get()) + '\n')
         hf.seek(0)
         addr_hash = hf.readlines()[0].strip()
+    # encrypt the new wallet
     wallet_encryption.wallet_encrypt()
     open('hashing.txt', 'w').close()
     success.place(x=282 * reso, y=193 * reso)
@@ -1150,8 +1199,8 @@ def generate_wallet_final():
     address_variable.set(addr_hash)
     sign_in_button()
 
-#ask the user if he wants to participate in the node network
 def particpate():
+    # ask the user if he wants to become a node
     def t():
         time.sleep(40)
         request_luck()
@@ -1188,30 +1237,41 @@ button_log_in = Button(root, font=('ind', 30 * reso), text='Sign In', bd=0, high
                        bg='black', fg='white', command=sign_in_button)
 button_generate_wallet = Button(root, font=('ind', 30 * reso), text='Generate Wallet', bd=0, highlightthickness=0,
                                 cursor='hand2', bg='black', fg='white', command=generate_wallet_button)
-#This function signs a transaction and sends it to the node network
+
 def send_bills(serial_num_start):
+    # this function will write new signed transactions to the transaction folder
+    # iterate through wallet folder, and find decrypted wallet
     for w in os.listdir('wallet_folder'):
         if w.startswith('wallet_decrypted'):
+            # open and read the decrypted wallet
             with open('wallet_folder/' + w, 'r+') as o:
                 of = o.readlines()
                 o.seek(0)
                 o.truncate()
-
+                # iterate over lines
                 for wb in of:
+                    # check if the serial number matches a bill with the same value that has been selected
                     if wb.split('x')[0] + 'x' in serial_num_start:
                         serial_num_start.remove(wb.split('x')[0] + 'x')
                         try:
+                            # format: "(serial number)\n(number)\n(sender public key)\n(receiver address)\n
+                            # (digital signature)"
                             full_transaction = wb.split()[0] + '\n' + str(int(wb.split()[1]) + 1) + '\n' + of[2]
                             full_transaction += receiver.get() + '\n'
                             read_tn = full_transaction.encode('utf-8')
+                            # decode the base85 private key, outcome will be in bytes
                             private_key_decode = base64.b85decode(of[1].strip())
+                            # define the ECDSA signing key
                             sk = ecdsa.SigningKey.from_string(private_key_decode, curve=ecdsa.SECP256k1,
                                                               hashfunc=hashlib.sha3_256)
+                            # sign and encode the signature in base 85
                             sign = sk.sign(read_tn)
                             signature = base64.b85encode(sign).decode('utf-8')
                             full_transaction += str(signature)
+                            # write the line with a minus (-) infront
                             o.write('-' + wb.split()[0] + ' ' + str(int(wb.split()[1]) + 1) + ' ' + str(int(time.time())) + '\n')
                             t = str(len(os.listdir('transaction_folder')) + 1)
+                            # write to transaction folder the full signed transaction
                             with open('transaction_folder/transaction_' + t + '.txt', 'w') as tn:
                                 tn.seek(0)
                                 tn.truncate()
@@ -1222,6 +1282,7 @@ def send_bills(serial_num_start):
                         o.write(wb)
 
 def confirm_transaction():
+    # this function is prequel to the send_bills() function
     global selected_w1,selected_w2,selected_w5,selected_w10,selected_w20
     global selected_w50,selected_w100,selected_w200,selected_w500,selected_w1000
     global selected_w2000,selected_w5000,selected_w10000,selected_w20000,selected_w50000
@@ -1292,14 +1353,15 @@ def confirm_transaction():
 
 def send_button():
     try:
+        # get a few new nodes (30)
         for _ in range(3):
             sender_node.update_ip_list()
         if len(receiver.get()) == 30 and amount != 0 and receiver.get() != dr[0].strip():
             confirm_transaction()
     except:
         pass
-#this function makes buttons, and labels disappear visually
 def close():
+    # this function will make all labels, buttons and images disappear.
     claim_bills_amount.place_forget(), webcam_scanner.place_forget(), private_key_entry.place_forget()
     claim_bill.place_forget(),close_button.place_forget(), next_button.place_forget(), end_button.place_forget()
     serial_num.place_forget(), public_key_entry.place_forget(), check_validity_button.place_forget()
@@ -1321,8 +1383,8 @@ def close():
         qr.place_forget(), address_txt.place_forget()
     except Exception:
         pass
-#this function resets the input amount for sending bills
 def close_amount():
+    # this function will reset the amount selected
     global selected_w1, selected_w2, selected_w5, selected_w10, selected_w20
     global selected_w100, selected_w200, selected_w500, selected_w1000, selected_w2000
     global selected_w5000, selected_w10000, selected_w20000, selected_w50000, selected_w100000
@@ -1334,6 +1396,7 @@ def close_amount():
     count_selected = False
     start_bills()
 def close_bill_claimer():
+    # close the qr code scanner
     serial_num.place_forget(), public_key_entry.place_forget(), check_validity_button.place_forget()
     claim_bills_amount.place_forget(), webcam_scanner.place_forget(), close_button.place_forget()
     claim_bill.place_forget(), add_bill_button.place_forget(), private_key_entry.place_forget()
@@ -1345,8 +1408,9 @@ close_img = PhotoImage(file=path_button_close)
 close_button = Button(root, image=close_img, bd=0, highlightthickness=0, cursor='hand2', command=close_bill_claimer)
 close_amount_img = PhotoImage(file=path_button_close_amount)
 close_amount_button = Button(root, image=close_amount_img, bd=0, highlightthickness=0, cursor='hand2', command=close_amount)
-#add bills to your wallet with qr code scan or manual input
+
 def plus_bills():
+    # this function opens up the claim bills window, invoked by the "Scan Qr code" button in wallet
     claim_bill.place(x=335 * reso, y=154 * reso)
     claim_bills_amount.place()
     close_button.place(x=785 * reso, y=163 * reso)
@@ -1373,10 +1437,10 @@ claim_bill = Label(root, image=claim_bill_img, bd=0, highlightthickness=0)
 claim_bills_amount = Entry(root, font=('ind', 26 * reso, 'bold'), fg='white', bg='black', highlightthickness=0, bd=0)
 claim_bills_amount.insert(0, '0$')
 
-#claim bills (paper wallets)
 used_codes = []
 num_of_times_clicked = 0
 def claim_bills():
+    # this function claims bills that have been scanned or manually inputed again under "Scan Qr code" button
     t_num2 = 1
     for bill in used_codes:
         split = bill.splitlines()
@@ -1386,13 +1450,17 @@ def claim_bills():
         number = split[3]
         for w in os.listdir('wallet_folder'):
             if w.startswith('wallet_decrypted'):
+                # format: "(serial number)\n(number)\n(sender public key)\n(receiver address)\n
+                # (digital signature)"
                 full_transaction = sm + '\n' + str(int(number) + 1) + '\n' + pubk + '\n' + w[17:].replace('.txt', '') + '\n'
                 read_tn = full_transaction.encode('utf-8')
                 private_key_decode = base64.b85decode(privk)
+                # define ECDSA signing key
                 sk = ecdsa.SigningKey.from_string(private_key_decode, curve=ecdsa.SECP256k1, hashfunc=hashlib.sha3_256)
                 sign = sk.sign(read_tn)
                 signature = base64.b85encode(sign).decode('utf-8')
                 full_transaction += str(signature)
+                # write the fully signed transaction to the transaction folder
                 with open('transaction_folder/transaction_' + str(t_num2) + '.txt', 'w') as tn:
                     tn.seek(0)
                     tn.truncate()
@@ -1404,6 +1472,7 @@ def claim_bills():
     update_balance()
 
 def add_bill():
+    # this function manually adds a bill without the need forqr code scan
     global used_codes
     full_code = serial_num.get(0, END) + '\n' + private_key_entry.get(0, END) + '\n' + public_key_entry.get(0, END) + '\n' + number_entry.get(0, END)
     if full_code not in used_codes:
@@ -1426,8 +1495,9 @@ public_key_entry = Entry(root, font=('ind', 22 * reso), bg='light grey')
 private_key_entry = Entry(root, font=('ind', 22 * reso), bg='light grey')
 number_entry = Entry(root, font=('ind', 22 * reso), bg='light grey')
 
-#these functions scan qr codes, and use them to claim them into your local wallet
+
 def qr_decoder(qrimage):
+    # this function will decode scanned qr codes
     global used_codes
     for code in decode(qrimage):
         decoded_qrcode = code.data.decode('utf-8')
@@ -1451,6 +1521,8 @@ def qr_decoder(qrimage):
 
 
 def qr_scan():
+    # this function will access the webcam, and scan for qr codes
+    # you can also choose a picture from laptop hardrive, or drag and drop images
     global num_of_times_clicked, cap
     num_of_times_clicked += 1
     webcam_scanner.config(cursor='watch')
@@ -1496,6 +1568,7 @@ webcam_scanner = Button(root, image=webcam_scanner_img, cursor='hand2', highligh
 
 
 def drop(event):
+    # drag and drop qr code images
     qr_path = event.data.strip('{}')
     qr_path_tk = Image.open(qr_path)
     resized = qr_path_tk.resize((280 * reso, 177 * reso), Image.Resampling.LANCZOS)
@@ -1507,7 +1580,8 @@ def drop(event):
 webcam_scanner.drop_target_register(DND_FILES)
 webcam_scanner.dnd_bind('<<Drop>>', drop)
 
-#main 4 buttons, to switch between tabs: Node terminal, Information, Win/Print, Wallet
+#######################################
+# main buttons for 4 major tabs 'Node Terminal', 'Information', 'Win/Print', 'Wallet'
 button = Button(root, command=node_terminal_button, text='Node Terminal', bg='black', fg='white',
                 font=('ind', 24 * reso), cursor='hand2', bd=0, activebackground='white', highlightthickness=0,)
 button.place(x=577 * reso, y=100 * reso, width=169 * reso, height=50 * reso)
@@ -1528,23 +1602,26 @@ button_sign_in = PhotoImage(file=path_button_sign_in)
 button6 = Button(root, command=sign_in_button, image=button_sign_in, bd=0, highlightthickness=0, cursor='hand2')
 button6.place(x=1120 * reso, y=18 * reso)
 international_dollar.lift()
-
-#this function handles the closing of the tkinter program
+#######################################
 def on_closing():
+    # this function will be invoked upon closing the tkinter GUI
     try:
         with open('node_class.txt', 'r') as nc:
             lines = nc.readlines()
             run_in_background = lines[2].strip()
             run_on_startup = lines[1].strip()
+        # check if the user wants to run his node in the background
         if run_in_background == 'NO':
             with open('kill_node.txt', 'w') as kn1:
                 kn1.seek(0)
                 kn1.truncate()
                 kn1.write('True')
+        # check if the user wants to log out of his wallet
         with open('check_signed_in.txt', 'r') as csi:
             if csi.read() == 'False':
                 for wal in os.listdir('wallet_folder'):
                     if wal.startswith('wallet_decrypted'):
+                        # delete the decrypted wallet, and generate a new encrypted wallet in the wallet folder
                         with open('wallet_folder/' + wal, 'r') as wallet2:
                             w = wallet2.read()
                         with open('hashing.txt', 'w') as hashz:
@@ -1554,7 +1631,9 @@ def on_closing():
                         os.remove('wallet_folder/wallet_encrypted_' + wal[17:])
                         wallet_encryption.wallet_encrypt()
                         os.remove('wallet_folder/' + wal)
+                        # clear hashing.txtv file
                         open('hashing.txt', 'w').close()
+        # remove the bat path in case the user does no longer want to start the node on startup
         if run_on_startup == 'NO':
             os.remove(bat_path + '/ind_node.bat')
     except:
