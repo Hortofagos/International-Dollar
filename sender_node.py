@@ -96,7 +96,7 @@ def connect_udp(sm):
         rendezvous.sendto('client'.encode('utf-8'), (random.choice(ipf_2).replace('.txt', ''), 8888))
         # receive the address and port information
         msg_peer = rendezvous.recv(248).decode('utf-8').split(' ')
-        ip, sport, dport = msg_peer[0], msg_peer[1], msg_peer[2]
+        ip, sport, dport = msg_peer[0], int(msg_peer[1]), int(msg_peer[2])
         # create a p2p socket designed to punch a hole through the NAT and connect to a node also behind a NAT
         sock_p2p = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock_p2p.settimeout(5)
@@ -165,7 +165,6 @@ def check_validity(serial_num_list):
         comparison[serm] = []
     ct = str(int(time.time()))
     serial_num_list_join = '\n'.join(serial_num_list)
-    print(serial_num_list_join)
     def main_nodes(ipnl):
         # this function will only connect to main nodes (number '1')
         holder = connect('c', serial_num_list_join, ipnl)
@@ -190,7 +189,7 @@ def check_validity(serial_num_list):
         for bill in parts_holder:
             comparison[bill[0]].append(tuple(bill))
     def small_udp_node():
-        # this function only connects to UDP nodes (usally behind NAT number '3' nodes)
+        # this function only connects to UDP nodes (usually behind NAT number '3' nodes)
         holder = connect_udp(serial_num_list_join)
         hdlr_spl = holder.splitlines()
         # split the message from the node in multiple parts of 3 [serial_num, address, number]
@@ -204,7 +203,7 @@ def check_validity(serial_num_list):
     # split all number '2' IPs into 8 equal parts
     r2 = [ipnl2[ium:ium + 8] for ium in range(0, len(ipnl2), 8)]
     # udp connections
-    r3 = 0
+    r3 = 10
     # randomize ip lists
     random.shuffle(r1)
     random.shuffle(r2)
