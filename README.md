@@ -10,14 +10,14 @@ Setup process:
 
 
 Node setup:
-  1. $ mkdir transaction_folder
-  2. $ mkdir wallet_folder
-  3. Go to your router homepage. Search for "port forwarding" continue to forward PORT 8888 to your local ip.
-  4. $ python3 node_client.py 
+  1. Go to your router homepage. Search for "port forwarding" continue to forward PORT 8888 TCP & UDP + PORT 8887 UDP to your local ip.
+  2 python3 node_client.py 
 
 MacOS:
   1. brew install zbar
-  2. delete tkextrafont from requirements.txt
+  2. delete tkextrafont & zbar from requirements.txt
+  3. pip install -r /path/to/requirements.txt
+  4. python3 main.py
 
 If you want to convert your digital bills into physical ones, you can print them out yourself.
 Go to the the tab "Win/Print" and write the serial numbers of the bills you
