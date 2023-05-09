@@ -287,12 +287,18 @@ def start():
     # start a subprocess of the node_client.py file, using local pythonw.exe
     if class_var.get() == 'FULL NODE':
         def subp():
-            subprocess.run(['pythonw.exe', '-m', 'node_client'])
+            if platform.system() != 'Windows':
+                subprocess.run("python3 node_client.py", shell=True)
+            else:
+                subprocess.run("python node_client.py", shell=True)
         threading.Thread(target=subp).start()
         time.sleep(0.5)
     else:
         def subp():
-            subprocess.run(['pythonw.exe', '-m', 'udp_hole_client'])
+            if platform.system() != 'Windows':
+                subprocess.run("python3 udp_hole_client.py", shell=True)
+            else:
+                subprocess.run("python udp_hole_client.py", shell=True)
         threading.Thread(target=subp).start()
         time.sleep(0.5)
 
@@ -1127,7 +1133,10 @@ def log_in():
         for decrypted_wallet in os.listdir('wallet_folder'):
             if decrypted_wallet.startswith('wallet_decrypted'):
                 root.destroy()
-                subprocess.run(['pythonw.exe', '-m', 'main'])
+                if platform.system() != 'Windows':
+                    subprocess.run("python3 main.py", shell=True)
+                else:
+                    subprocess.run("python main.py", shell=True)
                 break
     check_decrypted()
 
@@ -1169,7 +1178,10 @@ def gen_ad():
         generate_address_text.delete(0, END),public_key.delete(0, END),private_key.delete(0, END)
         root.config(cursor='watch')
         generate_address_button.config(cursor='watch')
-        process = subprocess.run(['pythonw.exe', '-m', 'generate_address'])
+        if platform.system() != 'Windows':
+            subprocess.run("python3 generate_address.py", shell=True)
+        else:
+            subprocess.run("python generate_address.py", shell=True)
         # get the info of the generated wallet
         with open('hashing.txt', 'r') as hs:
             ha = hs.readlines()
