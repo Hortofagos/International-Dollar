@@ -5,7 +5,6 @@ import ecdsa
 from multiprocessing import Process, Manager, cpu_count
 import base64
 
-
 def hash_func(stop):
     while True:
         if stop:
@@ -30,8 +29,7 @@ def hash_func(stop):
             stop.append(addr)
             stop.append(sk_base85)
             stop.append(vk_base85)
-
-
+            
 if __name__ == "__main__":
     with Manager() as manager:
         st = manager.list()
@@ -39,14 +37,8 @@ if __name__ == "__main__":
         #8 seperate processes using up 8 cores
         p = Process(target=hash_func, args=(st, )).start()
         p2 = Process(target=hash_func, args=(st,)).start()
-        p3 = Process(target=hash_func, args=(st,)).start()
-        p4 = Process(target=hash_func, args=(st,)).start()
-        p5 = Process(target=hash_func, args=(st,)).start()
-        p6 = Process(target=hash_func, args=(st,)).start()
-        p7 = Process(target=hash_func, args=(st,)).start()
-        p8 = Process(target=hash_func, args=(st,)).start()
         hash_func(st)
-        time.sleep(0.2)
+        time.sleep(0.5)
         #write the final hashed address in hashing.txt
         #this address starts and ends with 'x'
         with open('hashing.txt', 'w') as hashx:
