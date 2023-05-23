@@ -348,7 +348,7 @@ def receive_bills():
                 # append the new bills to the wallet
                 with open('wallet_folder/' + wal, 'a') as wa2:
                     for b in new_bills:
-                        wa2.write(b[0] + ' ' + b[1] + ' ' + str(int(time.time())) + '\n')
+                        wa2.write(b[0] + ' ' + b[2] + ' ' + str(int(time.time())) + '\n')
 
 
 def ask_for_luck():
