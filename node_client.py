@@ -397,7 +397,7 @@ def download_bills(pos, transaction_pool):
             ipf_2 = os.listdir('ip_folder/2')
             used = []
             # connect to every known number '1' and '2' node known
-            with open('my_public_ip.txt', 'r') as whip
+            with open('my_public_ip.txt', 'r') as whip:
                 my_ip = whip.read()
             for count, ip in enumerate(ipf_1 + ipf_2):
                 if ip not in used and ip.replace('.txt', '') != my_ip:
