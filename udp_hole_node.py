@@ -120,7 +120,7 @@ def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
                     spam_count = sc.count(bill_serial_num)
                 num_bill = bill_serial_num.split('x')[1]
                 # check if spam count is under 6 and check if number of bill is below max of 50 million
-                if spam_count < 6 and 0 < int(num_bill) < 50000000:
+                if spam_count < 6 and 0 < int(num_bill) < 10000000:
                     db = access_database(bill_serial_num)
                     if db:
                         addr_old = db[0]
