@@ -432,7 +432,7 @@ def download_bills(pos, transaction_pool):
                 fa3.truncate()
                 fa3.write(str(number))
             # create 10,000 new keys in the bill comparison dictionary
-            for appnd_dict in range(40000):
+            for appnd_dict in range(20000):
                 bill_comparison[it + str(number + appnd_dict)] = []
             #######
             for new_thrd in range(2):
