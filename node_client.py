@@ -112,7 +112,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 num_bill = bill_serial_num.split('x')[1]
                 # check if bill has been transacted less than 6 times in the last 16 minutes (spam protection)
                 # check if the serial_num of the bill is in the allowed range of under 50 million
-                if spam_count1 < 6 and 0 < int(num_bill) < 500000000:
+                if spam_count1 < 6 and 0 < int(num_bill) < 100000000:
                     db = access_database(bill_serial_num)
                     if db:
                         addr_old = db[0]
@@ -417,9 +417,7 @@ def download_bills(pos, transaction_pool):
         # until 2024 the max download is up to 10 million per serial number starter in pos
         while True:
             current_time = int(str(int(time.time()))[:3])
-            if number == 10000000 and current_time <= 173:
-                break
-            if number == 50000000:
+            if number == 10000000:
                 break
             # check if the node has been turned off
             with open('kill_node.txt', 'r') as kn2:
@@ -437,7 +435,7 @@ def download_bills(pos, transaction_pool):
             for appnd_dict in range(40000):
                 bill_comparison[it + str(number + appnd_dict)] = []
             #######
-            for new_thrd in range(4):
+            for new_thrd in range(2):
                 threading.Thread(target=thrd2, args=(number, )).start()
                 number += 10000
             time.sleep(50)
