@@ -337,7 +337,7 @@ def receive_bills():
             # check all serial numbers that you this wallet address supposedly owns
             csm = []
             for sm in full_msgs:
-                if int(sm.split('x')[1]) < 50000000 and sm.strip() not in bills_in_wallet and sm not in csm:
+                if int(sm.split('x')[1]) < 10000000 and sm.strip() not in bills_in_wallet and sm not in csm:
                     csm.append(sm)
                     bills_to_confirm.append(sm)
             # split list of bills in multiple parts that contain 4 serial numbers each
