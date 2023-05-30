@@ -255,9 +255,12 @@ except Exception:
 def start():
     # these functions will try to forward PORTS 8888 and 8887, using UPNP
     # Note that this often fails, so it is recommended to manually forward ports in your router settings
-    forward_tcp = portforwardlib.forwardPort(8888, 8888, None, None, False, "TCP", 0, 'node_IND', 'yes')
-    forward_udp = portforwardlib.forwardPort(8888, 8888, None, None, False, "UDP", 0, 'node_IND', 'yes')
-    forward_udp_ipv6 = portforwardlib.forwardPort(8887, 8887, None, None, False, "UDP", 0, 'node_IND', 'yes')
+    try:
+        forward_tcp = portforwardlib.forwardPort(8888, 8888, None, None, False, "TCP", 0, 'node_IND', 'yes')
+        forward_udp = portforwardlib.forwardPort(8888, 8888, None, None, False, "UDP", 0, 'node_IND', 'yes')
+        forward_udp_ipv6 = portforwardlib.forwardPort(8887, 8887, None, None, False, "UDP", 0, 'node_IND', 'yes')
+    except:
+        pass
     # update node class
     with open('node_class.txt', 'w') as nc:
         nc.seek(0)
