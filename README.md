@@ -28,6 +28,41 @@ Dont forget to claim your free bills under "I'm feeling lucky".
 
 There is absolutley NO WARRANTY
 
+*Explanation for each file in the repo:
+	-full_activation: This folder contains information about the download state of the database (node_bills.db)
+	-img: This folder contains all GUI images and buttons
+	-ip_folder: This folder contains all IPs from the node network
+	-print_folder: This folder is used in generating printable bill documents
+	-transaction_folder: This folder is used to store generated transaction temporarily
+	-LICENSE.txt: This file contains the open source license
+	-README.md: The file you are currently reading
+	-check_signed_in.txt: This file contains information if the user wants to stay signed in or not
+	-confirm_validity.py: This python file confirms ecdsa signatures
+	-generate_address.py: This python file generates IND addresses
+	-hashing.txt: This file is used in the generation process
+	-ind_font.ttf: This file contains the font used
+	-kill_node.txt: This file is used to kill a running node
+	-last_luck.txt: This file contains UNIX time of last free bill request
+	-main.py: This python file is the MAIN application, it combines the Tkinter GUI with the backend.
+	-my_public_ip.txt: This file contains your public ip address incase you run a node
+	-node_bills.db: This file contains the entire database
+	-node_class.txt: This file contains the information if the user wants to run a full node or small node
+	-node_client.py: This python file contains the full_node
+	-passphrase.txt: This file is used to encode the wallet
+	-portforwardlib.py: This python file is used to UPNP forward PORT 8888 and 8887
+	-print.py: This python file generates printable paper wallets (IND bills)
+	-requirements.txt: This file contains all python dependencies
+	-rsa_private_key.txt: This file contains the RSA private key, used to decrypt data between node / client
+	-rsa_public_key.txt: This file contains the RSA private key, used to encrypt data between node / client
+	-sender_node.py: This python file is used by the client to communicate with nodes
+	-spam_protection.txt: This file is used by nodes to protect against spam
+	-udp_hole_node.py: This python file is used for small UDP nodes behind NAT
+	-wallet_decryption.py: This python file decrypts wallets stored in wallet_folder
+	-wallet_encryption.py: This python file encrypts wallets-
+
+
+
+
 About 5,000 years ago that the Mesopotamian people created the shekel,
 which is considered the first known form of currency. Since then,
 we have come a long way in our monetary system. From Gold and Silver
