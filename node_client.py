@@ -278,7 +278,7 @@ def database(rfb, rfb_response, transaction_pool):
                 if finder[1].startswith('x'):
                     c1.execute("SELECT serial_num FROM bills WHERE address MATCH ? LIMIT 1000", (finder[1], ))
                     data1 = c1.fetchall()
-                    data = random.sample(data1, 14)
+                    data = random.choices(data1, k=14)
                     full_return = []
                     for item in data:
                         full_return.append(item[0])
