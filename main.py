@@ -248,7 +248,6 @@ try:
     USER_NAME = getpass.getuser()
     disk = os.path.realpath(__file__)[0]
     bat_path = disk + r':\Users\%s\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup' % USER_NAME
-    print(bat_path)
 except Exception:
     pass
 
@@ -299,9 +298,9 @@ def start():
     else:
         def subp():
             if platform.system() != 'Windows':
-                subprocess.run("python3 udp_hole_client.py", shell=True)
+                subprocess.run("python3 udp_hole_node.py", shell=True)
             else:
-                subprocess.run("python udp_hole_client.py", shell=True)
+                subprocess.run("python udp_hole_node.py", shell=True)
         threading.Thread(target=subp).start()
         time.sleep(0.5)
 
@@ -542,14 +541,15 @@ def win_button():
     only_sm = ''
     try:
         dr, num_lines = update_wallet()
+        # update serial numbers in all_bills_text text field
+        for bsm in dr[4:]:
+            if not bsm.startswith('-'):
+                only_sm += bsm.split()[0] + '\n'
+        all_bills_text.delete(1.0, END)
+        all_bills_text.insert(1.0, only_sm[:-1])
     except:
         pass
-    # update serial numbers in all_bills_text text field
-    for bsm in dr[4:]:
-        if not bsm.startswith('-'):
-            only_sm += bsm.split()[0] + '\n'
-    all_bills_text.delete(1.0, END)
-    all_bills_text.insert(1.0, only_sm[:-1])
+    
 def wallet_button():
     # this button function opens the 'wallet' tab in the right upper corner
     close()
