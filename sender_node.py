@@ -245,7 +245,7 @@ def update_ip_list():
         def thrd():
             new_main = connect('u', 'main ip', main_ips)
             comparison_ip.append(new_main)
-        # iterate thorugh every known number '1' main node (172.86.121.72)
+        # iterate thorugh every known number '1' main node (45.61.142.21.txt)
         for _ in range(len(main_ips)):
             threading.Thread(target=thrd).start()
         time.sleep(10)
