@@ -3,6 +3,9 @@
 Github contributions will be rewarded with 1000-100000 International Dollars.
 Just comment your IND address.
 
+![Aufzeichnung-2023-08-26-213911](https://github.com/Hortofagos/International-Dollar/assets/120664745/7aaf7b25-1f2a-42f6-8ca0-838bfd39a762)
+
+
 Setup process:
   1. git clone https://github.com/Hortofagos/International-Dollar.git
   2. pip install -r /path/to/requirements.txt
