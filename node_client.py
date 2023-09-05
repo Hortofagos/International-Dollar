@@ -20,6 +20,7 @@ PORT = 8888
 def new_ip(v):
     # this function registers a new ip address with the rest of the node network
     public_ip = sender_node.public_ip()
+    print(public_ip)
     if public_ip:
         # ipv6 addresses are rejected
         if ipaddress.ip_address(public_ip).version == 6:
@@ -570,6 +571,7 @@ def udp_rendezvous(bill_pool):
 if __name__ == "__main__":
     for f in os.listdir('full_activation'):
         open('full_activation/' + f, 'w').close()
+    print('node is starting...')
     with Manager() as manager:
         # rf1 = rfb (find item in database request)
         rf1 = manager.list()
