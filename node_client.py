@@ -433,7 +433,7 @@ def download_bills(pos, transaction_pool):
             for new_thrd in range(2):
                 threading.Thread(target=thrd2, args=(number, )).start()
                 number += 10000
-            time.sleep(50)
+            time.sleep(61)
             #######
             bill_comparison.clear()
 
