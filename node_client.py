@@ -349,50 +349,43 @@ def download_bills(pos, transaction_pool):
             with open('rsa_public_key.txt', 'r') as rsk:
                 key = rsk.read()
             start_time = int(time.time())
-            while int(time.time()) - start_time <= 9:
-                if random.randrange(1000) == 9:
-                    already_tried.clear()
-                SERVER = ipnl
-                if SERVER not in already_tried:
-                    ADDR = (SERVER, PORT)
-                    try:
-                        # TCP socket with node
-                        client = socket.create_connection(ADDR, timeout=5)
-                        # set a timeout of 10 seconds after connection has been established
-                        client.settimeout(45)
-                        # send the node your public key
-                        client.sendall(key.encode('utf-8'))
-                        # receive the nodes public key
-                        recv_key = client.recv(1024).decode('utf-8')
-                        public_key_node = rsa.PublicKey.load_pkcs1(base64.b64decode(recv_key))
-                        encrypted_data = rsa.encrypt(('d' + serial_num_range).encode('utf-8'), public_key_node)
-                        encrypted_data_b64 = base64.b64encode(encrypted_data)
-                        # send the node the encrypted request
-                        client.sendall(encrypted_data_b64)
-                        full_msg = ''
-                        multi = 1
-                        ct2 = str(int(time.time()))
-                        # strengthen the importance of the opinion of number '1' main nodes (controlled by founder)
-                        # only in the early stages, until enough other nodes have entered the network
-                        if SERVER in os.listdir('ip_folder/1'):
-                            multi += int(max(0, 1800 - int(ct2[0:4])) / 12)
-                        # receive 300 - 400 1300 byte packages from the node, containing the (serial_num, address,
-                        # number) for 10000 bills
-                        for _ in range(432):
-                            recvv = client.recv(2048)
-                            if recvv == 'END':
-                                break
-                            full_msg += recvv.decode('utf-8')
-                        spl = full_msg.splitlines()
-                        # append the 10,000 bills to 'bill_comparison'
-                        for c in range(10000):
-                            for _ in range(multi):
-                                bill_comparison[it + str(int(num) + c)].append((spl[c * 3], spl[c * 3 + 1], spl[c * 3 + 2]))
-                        client.close()
+            SERVER = ipnl
+            try:
+                # TCP socket with node
+                client = socket.create_connection(ADDR, timeout=10)
+                # set a timeout of 10 seconds after connection has been established
+                client.settimeout(45)
+                # send the node your public key
+                client.sendall(key.encode('utf-8'))
+                # receive the nodes public key
+                recv_key = client.recv(1024).decode('utf-8')
+                public_key_node = rsa.PublicKey.load_pkcs1(base64.b64decode(recv_key))
+                encrypted_data = rsa.encrypt(('d' + serial_num_range).encode('utf-8'), public_key_node)
+                encrypted_data_b64 = base64.b64encode(encrypted_data)
+                # send the node the encrypted request
+                client.sendall(encrypted_data_b64)
+                full_msg = ''
+                multi = 1
+                ct2 = str(int(time.time()))
+                # strengthen the importance of the opinion of number '1' main nodes (controlled by founder)
+                # only in the early stages, until enough other nodes have entered the network
+                if SERVER in os.listdir('ip_folder/1'):
+                    multi += int(max(0, 1800 - int(ct2[0:4])) / 12)
+                # receive 300 - 400 1300 byte packages from the node, containing the (serial_num, address,
+                # number) for 10000 bills
+                for _ in range(432):
+                    recvv = client.recv(2048)
+                    if recvv == 'END':
                         break
-                    except TimeoutError:
-                        if SERVER not in already_tried:
-                            already_tried.append(SERVER)
+                    full_msg += recvv.decode('utf-8')
+                spl = full_msg.splitlines()
+                # append the 10,000 bills to 'bill_comparison'
+                for c in range(10000):
+                    for _ in range(multi):
+                        bill_comparison[it + str(int(num) + c)].append((spl[c * 3], spl[c * 3 + 1], spl[c * 3 + 2]))
+                client.close()
+            except TimeoutError as t:
+                print(t)
         def thrd2(number1):
             # this thread will start the main download process
             ipf_1 = os.listdir('ip_folder/1')
@@ -406,7 +399,7 @@ def download_bills(pos, transaction_pool):
                     threading.Thread(target=down, args=(str(number1), ip.replace('.txt', ''))).start()
                 used.append(ip)
             # wait for all different opinions of the nodes
-            time.sleep(48)
+            time.sleep(60)
             sorted_max_list = []
             # get a consensus based on the majority, for each individual bill
             for key_item in bill_comparison.values():
@@ -419,6 +412,13 @@ def download_bills(pos, transaction_pool):
         # until 2024 the max download is up to 10 million per serial number starter in pos
         while True:
             current_time = int(str(int(time.time()))[:3])
+            #update the corresponding .txt file in full activation folder. This will allow the node
+            # you are running, to know the status of your download. Therefore it wont give the client
+            # old information.
+            with open('full_activation/' + it.strip('x') + '.txt', 'w') as fa3:
+                fa3.seek(0)
+                fa3.truncate()
+                fa3.write(str(number))
             if number == 10000000:
                 break
             # check if the node has been turned off
@@ -426,13 +426,6 @@ def download_bills(pos, transaction_pool):
                 kill_node = kn2.read()
                 if kill_node == 'True':
                     return
-            # update the corresponding .txt file in full activation folder. This will allow the node
-            # you are running, to know the status of your download. Therefore it wont give the client
-            # old information.
-            with open('full_activation/' + it.strip('x') + '.txt', 'w') as fa3:
-                fa3.seek(0)
-                fa3.truncate()
-                fa3.write(str(number))
             # create 10,000 new keys in the bill comparison dictionary
             for appnd_dict in range(20000):
                 bill_comparison[it + str(number + appnd_dict)] = []
