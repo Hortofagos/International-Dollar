@@ -473,18 +473,21 @@ def maintain_connections(bill_pool):
             pass
 
     while True:
-        with open('kill_node.txt', 'r') as kn2:
-            if kn2.read() == 'True':
-                break
-        ip_f = os.listdir('ip_folder/1') + os.listdir('ip_folder/2')
-        # choose a random ip
-        with open('my_public_ip.txt', 'r') as mp:
-            my_ip = mp.read()
-        ip_addr = random.choice(ip_f).strip('.txt')
-        if ip_addr != my_ip:
-            threading.Thread(target=connection, args=(ip_addr, )).start()
-            time.sleep(4)
-        time.sleep(0.2)
+        try:
+            with open('kill_node.txt', 'r') as kn2:
+                if kn2.read() == 'True':
+                    break
+            ip_f = os.listdir('ip_folder/1') + os.listdir('ip_folder/2')
+            # choose a random ip
+            with open('my_public_ip.txt', 'r') as mp:
+                my_ip = mp.read()
+            ip_addr = random.choice(ip_f).strip('.txt')
+            if ip_addr != my_ip:
+                threading.Thread(target=connection, args=(ip_addr, )).start()
+                time.sleep(4)
+            time.sleep(0.2)
+        except Exception as e:
+            print(e)
 
 
 def udp_rendezvous(bill_pool):
