@@ -233,7 +233,6 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
             # clear spam every 10 seconds
             if str(int(time.time())).endswith('9'):
                 connections.clear()
-            print(conn1, addr1)
             # always check if the node has been turned off, in that case break the loop
             with open('kill_node.txt', 'r') as kn2:
                 kill_node = kn2.read()
@@ -385,8 +384,8 @@ def download_bills(pos, transaction_pool):
                     for _ in range(multi):
                         bill_comparison[it + str(int(num) + c)].append((spl[c * 3], spl[c * 3 + 1], spl[c * 3 + 2]))
                 client.close()
-            except TimeoutError as t:
-                print(t)
+            except:
+                pass
         def thrd2(number1):
             # this thread will start the main download process
             ipf_1 = os.listdir('ip_folder/1')
@@ -473,6 +472,7 @@ def maintain_connections(bill_pool):
             pass
 
     while True:
+        time.sleep(0.5)
         try:
             with open('kill_node.txt', 'r') as kn2:
                 if kn2.read() == 'True':
@@ -485,9 +485,8 @@ def maintain_connections(bill_pool):
             if ip_addr != my_ip:
                 threading.Thread(target=connection, args=(ip_addr, )).start()
                 time.sleep(4)
-            time.sleep(0.2)
-        except Exception as e:
-            print(e)
+        except:
+            pass
 
 
 def udp_rendezvous(bill_pool):
