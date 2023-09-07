@@ -350,6 +350,7 @@ def download_bills(pos, transaction_pool):
                 key = rsk.read()
             start_time = int(time.time())
             SERVER = ipnl
+            ADDR = (SERVER, PORT)
             try:
                 # TCP socket with node
                 client = socket.create_connection(ADDR, timeout=10)
