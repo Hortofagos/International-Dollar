@@ -201,7 +201,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 if sm2 <= max_num:
                     random_num2 = str(random.uniform(0.1, 99.9))
                     rfb.append((random_num2, '!' + msg))
-                    time.sleep(2)
+                    time.sleep(10)
                     item_respo = rfb_response.pop(random_num2)
                     join_list = ''
                     for ite in item_respo:
@@ -355,7 +355,7 @@ def download_bills(pos, transaction_pool):
                 # TCP socket with node
                 client = socket.create_connection(ADDR, timeout=10)
                 # set a timeout of 10 seconds after connection has been established
-                client.settimeout(45)
+                client.settimeout(55)
                 # send the node your public key
                 client.sendall(key.encode('utf-8'))
                 # receive the nodes public key
@@ -400,7 +400,7 @@ def download_bills(pos, transaction_pool):
                     threading.Thread(target=down, args=(str(number1), ip.replace('.txt', ''))).start()
                 used.append(ip)
             # wait for all different opinions of the nodes
-            time.sleep(60)
+            time.sleep(66)
             sorted_max_list = []
             # get a consensus based on the majority, for each individual bill
             for key_item in bill_comparison.values():
@@ -434,7 +434,7 @@ def download_bills(pos, transaction_pool):
             for new_thrd in range(2):
                 threading.Thread(target=thrd2, args=(number, )).start()
                 number += 10000
-            time.sleep(61)
+            time.sleep(67)
             #######
             bill_comparison.clear()
 
