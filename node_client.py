@@ -331,7 +331,8 @@ def database(rfb, rfb_response, transaction_pool):
                 datag.append((add_sm + plusf[f1] + (160000 * int(int(f2) / 10000)), serial_number2, address, number))
             except:
                 pass
-        c1.executemany("INSERT OR REPLACE INTO bills(rowid, serial_num, address, number) VALUES(?, ?, ?, ?)", datag)
+        if datag:
+            c1.executemany("INSERT OR REPLACE INTO bills(rowid, serial_num, address, number) VALUES(?, ?, ?, ?)", datag)
         # commit changes
         c1.execute("COMMIT")
 
@@ -456,7 +457,7 @@ def maintain_connections(bill_pool):
             recv_key = client.recv(1024).decode('utf-8')
             # this while loop only breaks after node has been shut off, or set timeout(120 seconds)
             while True:
-                time.sleep(0.1)
+                time.sleep(0.5)
                 if bill_pool:
                     # send a random bill in the bill pool
                     # note that other threads and other nodes will also send random bills
@@ -472,7 +473,7 @@ def maintain_connections(bill_pool):
             pass
 
     while True:
-        time.sleep(0.5)
+        time.sleep(5)
         try:
             with open('kill_node.txt', 'r') as kn2:
                 if kn2.read() == 'True':
@@ -498,7 +499,7 @@ def udp_rendezvous(bill_pool):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(('', 8888))
         while True:
-            time.sleep(0.1)
+            time.sleep(0.5)
             try:
                 # check if node is shut off
                 with open('kill_node.txt', 'r') as kn2:
@@ -539,7 +540,7 @@ def udp_rendezvous(bill_pool):
         sock6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
         sock6.bind(('', 8887))
         while True:
-            time.sleep(0.1)
+            time.sleep(0.5)
             try:
                 # check if node is shut off
                 with open('kill_node.txt', 'r') as kn2:
