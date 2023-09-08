@@ -291,7 +291,7 @@ def database(rfb, rfb_response, transaction_pool):
                              '500':80000, '1000':90000, '2000':100000, '5000':110000, '10000':120000, '20000':130000,
                              '50000':140000, '100000':150000}
                     serial_range = plusf[f1] + (160000 * int(int(f2) / 10000))
-                    c1.execute("SELECT * FROM bills WHERE rowid >= ? LIMIT 10000", (serial_range + 1, ))
+                    c1.execute("SELECT * FROM bills WHERE rowid >= ? LIMIT 10000", (serial_range, ))
                     rfb_response[finder[0]] = c1.fetchall()
                 # search for a serial number, this is the case in multiple client requests
                 elif finder[1]:
