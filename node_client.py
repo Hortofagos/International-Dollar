@@ -273,6 +273,7 @@ def database(rfb, rfb_response, transaction_pool):
             open('spam_protection.txt', 'w').close()
             #clear left over rad from daatabase
             rfb[:] = []
+            rfb_response = {}
         # iterate through the database requests
         for finder in rfb:
             try:
