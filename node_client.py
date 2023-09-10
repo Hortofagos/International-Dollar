@@ -271,6 +271,8 @@ def database(rfb, rfb_response, transaction_pool):
         if str(current_time).endswith('999'):
             # clear spam protection, every 16 minutes
             open('spam_protection.txt', 'w').close()
+            #clear left over rad from daatabase
+            rfb[:] = []
         # iterate through the database requests
         for finder in rfb:
             try:
