@@ -165,12 +165,12 @@ international_dollar.config(state='disabled', cursor='arrow')
 def generate_new_keys():
     # this function generates a new RSA key pair and writes them in the local files
     public_key_rsa, private_key_rsa = rsa.newkeys(2048)
-    with open('rsa_public_key.txt', 'w') as rk:
+    with open('files/rsa_public_key.txt', 'w') as rk:
         rk.write(base64.b64encode(public_key_rsa.save_pkcs1('PEM')).decode('utf-8'))
-    with open('rsa_private_key.txt', 'w') as rk2:
+    with open('files/rsa_private_key.txt', 'w') as rk2:
         rk2.write(base64.b64encode(private_key_rsa.save_pkcs1('PEM')).decode('utf-8'))
 
-with open('rsa_public_key.txt', 'r') as r:
+with open('files/rsa_public_key.txt', 'r') as r:
     f = r.read()
 if not f:
     generate_new_keys()
@@ -213,7 +213,7 @@ frame_w = Frame(root, bg='black')
 root.resizable(False, False)
 
 
-with open('node_class.txt', 'r') as ncl:
+with open('files/node_class.txt', 'r') as ncl:
     l1 = ncl.readlines()
     l2 = l1[0].strip()
     l3 = l1[1].strip()
@@ -261,7 +261,7 @@ def start():
     except:
         pass
     # update node class
-    with open('node_class.txt', 'w') as nc:
+    with open('files/node_class.txt', 'w') as nc:
         nc.seek(0)
         nc.truncate()
         nc.write(str(class_var.get()) + '\n')
@@ -280,7 +280,7 @@ def start():
         except:
             pass
 
-    with open('kill_node.txt', 'w') as kn:
+    with open('files/kill_node.txt', 'w') as kn:
         kn.seek(0)
         kn.truncate()
     start_button.place_forget()
@@ -314,7 +314,7 @@ def start():
 
 # shut the node off
 def end():
-    with open('kill_node.txt', 'w') as kn1:
+    with open('files/kill_node.txt', 'w') as kn1:
         kn1.seek(0)
         kn1.write('True')
     end_button.place_forget()
@@ -336,7 +336,7 @@ receiver_history.bind("<Key>", lambda e: "break")
 
 # request free bills in the Win/Print section
 def request_luck():
-    with open('last_luck.txt', 'r+') as lt:
+    with open('files/last_luck.txt', 'r+') as lt:
         last_timestamp = lt.read()
         lt.seek(0)
         lt.truncate()
@@ -488,7 +488,7 @@ def node_terminal_button():
     button.config(bg='white', fg='black'),button2.config(bg='black', fg='white'), button3.config(bg='black', fg='white')
     button4.config(bg='black', fg='white'), button_log_in.config(bg='black', fg='black')
     # check if node is already running
-    with open('kill_node.txt', 'r') as kn:
+    with open('files/kill_node.txt', 'r') as kn:
         if kn.read() == 'True':
             start_button.place(x=977 * reso, y=190 * reso)
         else:
@@ -511,7 +511,7 @@ def sign_in_button():
     enter_key.place(x=370 * reso, y=500 * reso, width=425 * reso, height=50 * reso)
     log_in_button2.place(x=500 * reso, y=650 * reso)
     # check if user wants to be signed in permanently
-    with open('check_signed_in.txt', 'r') as csi:
+    with open('files/check_signed_in.txt', 'r') as csi:
         if csi.read() == 'True':
             button_checkmark.place(x=465 * reso, y=602 * reso)
         else:
@@ -1109,7 +1109,7 @@ def show_password():
 
 def stay_signed():
     # this function upon button press will change if the user doesnt log out upon closing
-    with open('check_signed_in.txt', 'r+') as csig:
+    with open('files/check_signed_in.txt', 'r+') as csig:
         checkmark = csig.read()
         csig.seek(0)
         csig.truncate()
@@ -1124,7 +1124,7 @@ def stay_signed():
 
 def log_in():
     # this function will sign the user into a encrypted wallet
-    with open('passphrase.txt', 'w') as ps:
+    with open('files/passphrase.txt', 'w') as ps:
         ps.seek(0)
         ps.truncate(0)
         ps.write(str(enter_key.get()) + '\n')
@@ -1176,7 +1176,7 @@ button_checkmark = Button(root, image=button_checkmark_img, cursor='hand2', comm
 def gen_ad():
     # this function is responsible for invoking generate_address.py
     def t():
-        open('hashing.txt', 'w').close()
+        open('files/hashing.txt', 'w').close()
         generate_address_text.config(state='normal'),public_key.config(state='normal'),private_key.config(state='normal')
         generate_address_text.delete(0, END),public_key.delete(0, END),private_key.delete(0, END)
         root.config(cursor='watch')
@@ -1186,7 +1186,7 @@ def gen_ad():
         else:
             subprocess.run("python generate_address.py", shell=True)
         # get the info of the generated wallet
-        with open('hashing.txt', 'r') as hs:
+        with open('files/hashing.txt', 'r') as hs:
             ha = hs.readlines()
         h_address = ha[0].strip()
         h_private_key = ha[1].strip()
@@ -1198,13 +1198,13 @@ def gen_ad():
         root.config(cursor='arrow')
     threading.Thread(target=t).start()
 def generate_wallet_final():
-    with open('hashing.txt', 'a+') as hf:
+    with open('files/hashing.txt', 'a+') as hf:
         hf.write(str(choose_password.get()) + '\n')
         hf.seek(0)
         addr_hash = hf.readlines()[0].strip()
     # encrypt the new wallet
     wallet_encryption.wallet_encrypt()
-    open('hashing.txt', 'w').close()
+    open('files/hashing.txt', 'w').close()
     success.place(x=282 * reso, y=193 * reso)
     button_participate.place(x=680 * reso, y=650 * reso)
     button_not_participate.place(x=330 * reso, y=650 * reso)
@@ -1621,25 +1621,25 @@ international_dollar.lift()
 def on_closing():
     # this function will be invoked upon closing the tkinter GUI
     try:
-        with open('node_class.txt', 'r') as nc:
+        with open('files/node_class.txt', 'r') as nc:
             lines = nc.readlines()
             run_in_background = lines[2].strip()
             run_on_startup = lines[1].strip()
         # check if the user wants to run his node in the background
         if run_in_background == 'NO':
-            with open('kill_node.txt', 'w') as kn1:
+            with open('files/kill_node.txt', 'w') as kn1:
                 kn1.seek(0)
                 kn1.truncate()
                 kn1.write('True')
         # check if the user wants to log out of his wallet
-        with open('check_signed_in.txt', 'r') as csi:
+        with open('files/check_signed_in.txt', 'r') as csi:
             if csi.read() == 'False':
                 for wal in os.listdir('wallet_folder'):
                     if wal.startswith('wallet_decrypted'):
                         # delete the decrypted wallet, and generate a new encrypted wallet in the wallet folder
                         with open('wallet_folder/' + wal, 'r') as wallet2:
                             w = wallet2.read()
-                        with open('hashing.txt', 'w') as hashz:
+                        with open('files/hashing.txt', 'w') as hashz:
                             hashz.seek(0)
                             hashz.truncate()
                             hashz.write(w)
@@ -1647,7 +1647,7 @@ def on_closing():
                         wallet_encryption.wallet_encrypt()
                         os.remove('wallet_folder/' + wal)
                         # clear hashing.txtv file
-                        open('hashing.txt', 'w').close()
+                        open('files/hashing.txt', 'w').close()
         # remove the bat path in case the user does no longer want to start the node on startup
         if run_on_startup == 'NO':
             os.remove(bat_path + '/ind_node.bat')

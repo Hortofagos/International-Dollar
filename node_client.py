@@ -24,7 +24,7 @@ def new_ip(v):
     if public_ip:
         # ipv6 addresses are rejected
         if ipaddress.ip_address(public_ip).version == 6:
-            with open('kill_node.txt', 'w') as kn:
+            with open('files/kill_node.txt', 'w') as kn:
                 kn.seek(0)
                 kn.truncate()
                 kn.write('True')
@@ -32,7 +32,7 @@ def new_ip(v):
 
         ipnl = os.listdir('ip_folder/1') + os.listdir('ip_folder/2')
 
-        with open('my_public_ip.txt', 'r+') as mpi:
+        with open('files/my_public_ip.txt', 'r+') as mpi:
             mpi_lines = mpi.readlines()
             def newi():
                 mpi.seek(0)
@@ -50,7 +50,7 @@ def new_ip(v):
 
 def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
     new_ip('2')
-    with open('rsa_public_key.txt', 'r') as pk:
+    with open('files/rsa_public_key.txt', 'r') as pk:
         public_key_rsa = pk.read()
 
     def handle_client(conn, addr):
@@ -68,7 +68,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 conn.sendall(encrypted_data_b64)
 
             def add_spam(info):
-                with open('spam_protection.txt', 'a') as sp:
+                with open('files/spam_protection.txt', 'a') as sp:
                     sp.write(info + '\n')
 
             def access_database(serial_num_address):
@@ -86,7 +86,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
             # receive a encrypted message
             msg_encrypted = conn.recv(512).decode('utf-8')
             # use your private key to decrypt the message
-            with open('rsa_private_key.txt', 'r') as rsk:
+            with open('files/rsa_private_key.txt', 'r') as rsk:
                 private_key = rsk.read()
                 rsa_pk = rsa.PrivateKey.load_pkcs1(base64.b64decode(private_key))
             msg_decrypted = rsa.decrypt(base64.b64decode(msg_encrypted), rsa_pk).decode('utf-8')
@@ -107,7 +107,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
                 bill = msg.splitlines(keepends=True)[:5]
                 bill_serial_num,  bill_number, bill_addr = bill[0].strip(), bill[1].strip(), bill[3].strip()
                 bill_public_key, bill_digital_sig = bill[2].strip(), bill[4].strip()
-                with open('spam_protection.txt', 'r') as sc:
+                with open('files/spam_protection.txt', 'r') as sc:
                     sc = sc.read()
                     spam_count1 = sc.count(bill_serial_num)
                 num_bill = bill_serial_num.split('x')[1]
@@ -234,7 +234,7 @@ def node_protocol(rfb, rfb_response, transaction_pool, bill_pool):
             if str(int(time.time())).endswith('9'):
                 connections.clear()
             # always check if the node has been turned off, in that case break the loop
-            with open('kill_node.txt', 'r') as kn2:
+            with open('files/kill_node.txt', 'r') as kn2:
                 kill_node = kn2.read()
                 if kill_node == 'True':
                     conn1.close()
@@ -263,14 +263,14 @@ def database(rfb, rfb_response, transaction_pool):
         current_time_float = time.time()
         current_time = int(current_time_float)
         # check if the node has been turned off
-        with open('kill_node.txt', 'r') as kn1:
+        with open('files/kill_node.txt', 'r') as kn1:
             kill_node = kn1.read()
             if kill_node == 'True':
                 conn1.close()
                 break
         if str(current_time).endswith('999'):
             # clear spam protection, every 16 minutes
-            open('spam_protection.txt', 'w').close()
+            open('files/spam_protection.txt', 'w').close()
             #clear left over rad from daatabase
             rfb[:] = []
             rfb_response.clear()
@@ -349,7 +349,7 @@ def download_bills(pos, transaction_pool):
 
         def down(num, ipnl):
             serial_num_range = it + str(num)
-            with open('rsa_public_key.txt', 'r') as rsk:
+            with open('files/rsa_public_key.txt', 'r') as rsk:
                 key = rsk.read()
             start_time = int(time.time())
             SERVER = ipnl
@@ -396,7 +396,7 @@ def download_bills(pos, transaction_pool):
             ipf_2 = os.listdir('ip_folder/2')
             used = []
             # connect to every known number '1' and '2' node known
-            with open('my_public_ip.txt', 'r') as whip:
+            with open('files/my_public_ip.txt', 'r') as whip:
                 my_ip = whip.read()
             for count, ip in enumerate(ipf_1 + ipf_2):
                 if ip not in used and ip.replace('.txt', '') != my_ip:
@@ -426,7 +426,7 @@ def download_bills(pos, transaction_pool):
             if number == 10000000:
                 break
             # check if the node has been turned off
-            with open('kill_node.txt', 'r') as kn2:
+            with open('files/kill_node.txt', 'r') as kn2:
                 kill_node = kn2.read()
                 if kill_node == 'True':
                     return
@@ -454,7 +454,7 @@ def maintain_connections(bill_pool):
         try:
             client = socket.create_connection(ADDR, timeout=4)
             client.settimeout(120)
-            with open('rsa_public_key.txt', 'r') as rsk:
+            with open('files/rsa_public_key.txt', 'r') as rsk:
                 key = rsk.read()
             client.sendall(key.encode('utf-8'))
             recv_key = client.recv(1024).decode('utf-8')
@@ -478,12 +478,12 @@ def maintain_connections(bill_pool):
     while True:
         time.sleep(5)
         try:
-            with open('kill_node.txt', 'r') as kn2:
+            with open('files/kill_node.txt', 'r') as kn2:
                 if kn2.read() == 'True':
                     break
             ip_f = os.listdir('ip_folder/1') + os.listdir('ip_folder/2')
             # choose a random ip
-            with open('my_public_ip.txt', 'r') as mp:
+            with open('files/my_public_ip.txt', 'r') as mp:
                 my_ip = mp.read()
             ip_addr = random.choice(ip_f).strip('.txt')
             if ip_addr != my_ip:
@@ -505,7 +505,7 @@ def udp_rendezvous(bill_pool):
             time.sleep(0.5)
             try:
                 # check if node is shut off
-                with open('kill_node.txt', 'r') as kn2:
+                with open('files/kill_node.txt', 'r') as kn2:
                     kill_node = kn2.read()
                     if kill_node == 'True':
                         break
@@ -546,7 +546,7 @@ def udp_rendezvous(bill_pool):
             time.sleep(0.5)
             try:
                 # check if node is shut off
-                with open('kill_node.txt', 'r') as kn2:
+                with open('files/kill_node.txt', 'r') as kn2:
                     kill_node = kn2.read()
                     if kill_node == 'True':
                         break

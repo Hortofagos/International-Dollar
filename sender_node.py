@@ -16,7 +16,7 @@ PORT = 8888
 
 def connect(indicator, data, ipnl):
     # connect to TCP nodes
-    with open('rsa_public_key.txt', 'r') as rsk:
+    with open('files/rsa_public_key.txt', 'r') as rsk:
         key = rsk.read()
     start_time = int(time.time())
     # search for a connection for max 20 seconds
@@ -46,7 +46,7 @@ def connect(indicator, data, ipnl):
                     # wait for server response, blocking mode
                     msg = client.recv(512).decode('utf-8')
                     client.close()
-                    with open('rsa_private_key.txt', 'r') as rsk:
+                    with open('files/rsa_private_key.txt', 'r') as rsk:
                         private_key = rsk.read()
                         rsa_pk = rsa.PrivateKey.load_pkcs1(base64.b64decode(private_key))
                     # decrypt the response from the node with our ptivate key

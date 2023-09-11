@@ -7,7 +7,7 @@ import os
 
 
 def wallet_decrypt():
-    with open('passphrase.txt', 'r+') as p:
+    with open('files/passphrase.txt', 'r+') as p:
         passphrase = p.readlines()
         p.seek(0)
         p.truncate()

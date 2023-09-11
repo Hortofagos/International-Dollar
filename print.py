@@ -114,7 +114,7 @@ def full_bill(list_bills):
             subprocess.run('python3 generate_address.py', shell=True)
         else:
             subprocess.run('python generate_address.py', shell=True)
-        with open('hashing.txt', 'r+') as new_addr:
+        with open('files/hashing.txt', 'r+') as new_addr:
             new_address = new_addr.readlines()
             used_addr.append(new_address[0])
             bill_gen_back(i[0] + '\n' + ''.join(new_address[1:]) + i[1])
@@ -161,7 +161,7 @@ def only_qr(list_bills):
             subprocess.run('python3 generate_address.py', shell=True)
         else:
             subprocess.run('python generate_address.py', shell=True)
-        with open('hashing.txt', 'r+') as new_addr:
+        with open('files/hashing.txt', 'r+') as new_addr:
             new_address = new_addr.readlines()
             used_addr.append(new_address[0])
             bill_gen_qr(i[0] + '\n' + ''.join(new_address[1:] + i[1]))

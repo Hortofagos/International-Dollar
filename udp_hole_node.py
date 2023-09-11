@@ -75,7 +75,7 @@ def udp_node(rfb, rfb_response, potential_conns):
 
     while True:
         time.sleep(0.1)
-        with open('kill_node.txt', 'r') as kn1:
+        with open('files/kill_node.txt', 'r') as kn1:
             if kn1.read() == 'True':
                 break
         for new in potential_conns:
@@ -115,7 +115,7 @@ def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
                 bill = msg.splitlines(keepends=True)[:5]
                 bill_serial_num, bill_number, bill_addr = bill[0].strip(), bill[1].strip(), bill[3].strip()
                 bill_public_key, bill_digital_sig = bill[2].strip(), bill[4].strip()
-                with open('spam_protection.txt', 'r') as sc:
+                with open('files/spam_protection.txt', 'r') as sc:
                     sc = sc.read()
                     spam_count = sc.count(bill_serial_num)
                 num_bill = bill_serial_num.split('x')[1]
@@ -133,12 +133,12 @@ def client_udp(rfb, rfb_response, transaction_pool, potential_conns2):
                             v_sig = confirm_validity.verify_ecdsa(bill_digital_sig, ''.join(bill[:4]),
                                                                   bill_public_key)
                             if v_sig == 'valid':
-                                with open('spam_protection.txt', 'a') as sp:
+                                with open('files/spam_protection.txt', 'a') as sp:
                                     sp.write(bill_serial_num + '\n')
                                 transaction_pool.append((bill_serial_num, bill_addr, bill_number))
     # connect to all '2' nodes saved in the ip_folder/2
     while True:
-        with open('kill_node.txt', 'r') as kn2:
+        with open('files/kill_node.txt', 'r') as kn2:
             if kn2.read() == 'True':
                 break
         ip_f = os.listdir('ip_folder/2')

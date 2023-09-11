@@ -49,7 +49,7 @@ if __name__ == "__main__":
         time.sleep(0.2)
         #write the final hashed address in hashing.txt
         #this address starts and ends with 'x'
-        with open('hashing.txt', 'w') as hashx:
+        with open('files/hashing.txt', 'w') as hashx:
             hashx.seek(0)
             hashx.truncate()
             hashx.write(st[0] + '\n' + st[1] + '\n' + st[2] + '\n')
