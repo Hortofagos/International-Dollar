@@ -31,7 +31,7 @@ python3 main.py
 #### Node Setup
 If you intend to run a node, please ensure you set up port forwarding for PORT 8888 (TCP & UDP) and PORT 8887 (UDP) on your router. This is necessary for node communication. Then, run the node client:
 
-```bash
+1. Ensure the "files/kill_node.txt" file is written "False"
 python3 node_client.py
 ```
 
