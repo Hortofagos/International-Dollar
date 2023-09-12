@@ -62,6 +62,17 @@ Please note that there is absolutely NO WARRANTY provided with this project.
 
 ## Repository File Explanation
 
+- **files**: contains all the .txt files needed for node and main.py operation
+      - *check_signed_in.txt*: Contains information if the user wants to stay signed in or not.
+      - *hashing.txt*: Used in the generation process.
+      - *kill_node.txt*: Used to kill a running node.
+      - *last_luck.txt*: Contains UNIX time of the last free bill request.
+      - *my_public_ip.txt*: Contains your public IP address in case you run a node.
+      - *node_class.txt*: Contains information if the user wants to run a full node or a small node.
+      - *passphrase.txt*: Used to encode the wallet.
+      - *rsa_private_key.txt*: Contains the RSA private key used to decrypt data between node/client.
+      - *rsa_public_key.txt*: Contains the RSA public key used to encrypt data between node/client.
+      - *spam_protection.txt*: Used by nodes to protect against spam.
 - **full_activation**: Contains information about the download state of the database (node_bills.db).
 - **img**: Contains all GUI images and buttons.
 - **ip_folder**: Stores all IPs from the node network.
@@ -69,26 +80,16 @@ Please note that there is absolutely NO WARRANTY provided with this project.
 - **transaction_folder**: Stores generated transactions temporarily.
 - **LICENSE.txt**: Contains the open-source license.
 - **README.md**: The file you are currently reading.
-- **check_signed_in.txt**: Contains information if the user wants to stay signed in or not.
 - **confirm_validity.py**: Confirms ECDSA signatures.
 - **generate_address.py**: Generates IND addresses.
-- **hashing.txt**: Used in the generation process.
 - **ind_font.ttf**: Contains the font used.
-- **kill_node.txt**: Used to kill a running node.
-- **last_luck.txt**: Contains UNIX time of the last free bill request.
 - **main.py**: The main application that combines the Tkinter GUI with the backend.
-- **my_public_ip.txt**: Contains your public IP address in case you run a node.
 - **node_bills.db**: Contains the entire database.
-- **node_class.txt**: Contains information if the user wants to run a full node or a small node.
 - **node_client.py**: The python file containing the full node.
-- **passphrase.txt**: Used to encode the wallet.
 - **portforwardlib.py**: Used to UPNP forward PORT 8888 and 8887.
 - **print.py**: Generates printable paper wallets (IND bills).
 - **requirements.txt**: Contains all python dependencies.
-- **rsa_private_key.txt**: Contains the RSA private key used to decrypt data between node/client.
-- **rsa_public_key.txt**: Contains the RSA public key used to encrypt data between node/client.
 - **sender_node.py**: Used by the client to communicate with nodes.
-- **spam_protection.txt**: Used by nodes to protect against spam.
 - **udp_hole_node.py**: Used for small UDP nodes behind NAT.
 - **wallet_decryption.py**: Decrypts wallets stored in wallet_folder.
 - **wallet_encryption.py**: Encrypts wallets.
