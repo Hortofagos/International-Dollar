@@ -63,16 +63,17 @@ Please note that there is absolutely NO WARRANTY provided with this project.
 ## Repository File Explanation
 
 - **files**: contains all the .txt files needed for node and main.py operation
-      - *check_signed_in.txt*: Contains information if the user wants to stay signed in or not.  
-      - *hashing.txt*: Used in the generation process.  
-      - *kill_node.txt*: Used to kill a running node.  
-      - *last_luck.txt*: Contains UNIX time of the last free bill request.  
-      - *my_public_ip.txt*: Contains your public IP address in case you run a node.  
-      - *node_class.txt*: Contains information if the user wants to run a full node or a small node.  
-      - *passphrase.txt*: Used to encode the wallet.  
-      - *rsa_private_key.txt*: Contains the RSA private key used to decrypt data between node/client.  
-      - *rsa_public_key.txt*: Contains the RSA public key used to encrypt data between node/client.  
-      - *spam_protection.txt*: Used by nodes to protect against spam.  
+  - *check_signed_in.txt*: Contains information if the user wants to stay signed in or not.
+  - *hashing.txt*: Used in the generation process.
+  - *kill_node.txt*: Used to kill a running node.
+  - *last_luck.txt*: Contains UNIX time of the last free bill request.
+  - *my_public_ip.txt*: Contains your public IP address in case you run a node.
+  - *node_class.txt*: Contains information if the user wants to run a full node or a small node.
+  - *passphrase.txt*: Used to encode the wallet.
+  - *rsa_private_key.txt*: Contains the RSA private key used to decrypt data between node/client.
+  - *rsa_public_key.txt*: Contains the RSA public key used to encrypt data between node/client.
+  - *spam_protection.txt*: Used by nodes to protect against spam.
+
 - **full_activation**: Contains information about the download state of the database (node_bills.db).
 - **img**: Contains all GUI images and buttons.
 - **ip_folder**: Stores all IPs from the node network.
