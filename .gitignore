@@ -1,0 +1,105 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Environment / logs / scratch files
+.env
+.env.*
+!.env.example
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# Local backups made during cleanup
+.local_secrets_backup/
+
+# Local genesis generation output
+genesis/*
+!genesis/.gitignore
+!genesis/README.md
+
+# Runtime databases and node state
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+ind_gossip.db
+node_bills.db
+full_activation/*
+!full_activation/.gitkeep
+
+# Local keys, passphrases, wallet scratch data, and generated state
+files/hashing.txt
+files/wallet_generation.json
+files/last_luck.txt
+files/my_public_ip.txt
+files/passphrase.txt
+files/passphrase.json
+files/runtime_state.json
+files/check_signed_in.txt
+files/kill_node.txt
+files/node_class.txt
+files/rsa_private_key.txt
+files/rsa_public_key.txt
+files/noise_private_key.txt
+files/noise_public_key.txt
+files/noise_private_key.json
+files/noise_public_key.json
+files/log_operator_private_key.txt
+files/log_operator_public_key.txt
+files/log_operator_private_key.json
+files/log_operator_public_key.json
+files/noise_peers/
+files/security_settings.json
+files/spam_protection.txt
+files/*.tmp
+files/*.db
+files/*.db-shm
+files/*.db-wal
+files/*.sqlite
+files/*.sqlite3
+files/*.log
+
+# Peer discovery cache
+ip_folder/**/*.txt
+ip_folder/**/*.json
+ip_folder/**/*.tmp
+
+# User wallet / print / transaction artifacts
+wallet_folder/*
+!wallet_folder/.gitkeep
+transaction_folder/*
+!transaction_folder/.gitkeep
+print_folder/*
+!print_folder/.gitkeep
+
+# Transparency operator generated mirrors / archives
+operator/
+operator_tools/*-placeholder/
+operator_tools/*_state.json

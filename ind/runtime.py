@@ -1,0 +1,633 @@
+import json
+import os
+import time
+from pathlib import Path
+
+
+RUNTIME_DIRS = (
+    "files",
+    "wallet_folder",
+    "transaction_folder",
+    "print_folder",
+    "ip_folder/1",
+    "ip_folder/2",
+    "ip_folder/3",
+    "full_activation",
+)
+
+RUNTIME_STATE_PATH = Path("files/runtime_state.json")
+WALLET_GENERATION_PATH = Path("files/wallet_generation.json")
+PASSPHRASE_REQUEST_PATH = Path("files/passphrase.json")
+WALLET_DIR = Path("wallet_folder")
+TRANSACTION_DIR = Path("transaction_folder")
+PEER_ROOT = Path("ip_folder")
+
+WALLET_ENCRYPTED_PREFIX = "wallet_encrypted_"
+WALLET_DECRYPTED_PREFIX = "wallet_decrypted_"
+_DECRYPTED_WALLETS = {}
+_PASSPHRASE_REQUEST = None
+_WALLET_GENERATION = None
+
+DEFAULT_STATE = {
+    "schema": 1,
+    "last_luck": 0,
+    "my_public_ip": "",
+    "spam_protection": "",
+    "kill_node": True,
+    "check_signed_in": False,
+    "node": {
+        "class": "FULL NODE",
+        "run_on_startup": "NO",
+        "run_in_background": "NO",
+    },
+}
+
+DEFAULT_WALLET_GENERATION = {
+    "schema": 1,
+    "address": "",
+    "private_key": "",
+    "public_key": "",
+    "passphrase": "",
+    "tokens": [],
+}
+
+DEFAULT_PASSPHRASE_REQUEST = {
+    "schema": 1,
+    "passphrase": "",
+    "address": "",
+}
+
+
+def _clone(data):
+    return json.loads(json.dumps(data))
+
+
+def _write_json(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(
+        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(tmp_path, path)
+
+
+def _read_json(path, default=None):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return _clone(default) if default is not None else None
+
+
+def _read_legacy_text(path):
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError, UnicodeDecodeError):
+        return ""
+
+
+def _parse_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n", ""}:
+        return False
+    return default
+
+
+def _merge_state(data):
+    merged = _clone(DEFAULT_STATE)
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key == "node" and isinstance(value, dict):
+                merged["node"].update(value)
+            elif key in merged:
+                merged[key] = value
+    merged["kill_node"] = _parse_bool(merged["kill_node"], default=True)
+    merged["check_signed_in"] = _parse_bool(merged["check_signed_in"], default=False)
+    try:
+        merged["last_luck"] = int(merged["last_luck"])
+    except (TypeError, ValueError):
+        merged["last_luck"] = 0
+    return merged
+
+
+def _state_from_legacy_files():
+    state = _clone(DEFAULT_STATE)
+    legacy_node = _read_legacy_text("files/node_class.txt").splitlines()
+    if legacy_node:
+        state["node"]["class"] = legacy_node[0].strip() or "FULL NODE"
+    if len(legacy_node) > 1:
+        state["node"]["run_on_startup"] = legacy_node[1].strip() or "NO"
+    if len(legacy_node) > 2:
+        state["node"]["run_in_background"] = legacy_node[2].strip() or "NO"
+
+    kill_node = _read_legacy_text("files/kill_node.txt")
+    if kill_node != "":
+        state["kill_node"] = _parse_bool(kill_node, default=True)
+
+    check_signed_in = _read_legacy_text("files/check_signed_in.txt")
+    if check_signed_in != "":
+        state["check_signed_in"] = _parse_bool(check_signed_in, default=False)
+
+    last_luck = _read_legacy_text("files/last_luck.txt").strip()
+    if last_luck:
+        try:
+            state["last_luck"] = int(last_luck)
+        except ValueError:
+            state["last_luck"] = 0
+
+    state["my_public_ip"] = _read_legacy_text("files/my_public_ip.txt").strip()
+    state["spam_protection"] = _read_legacy_text("files/spam_protection.txt")
+    return _merge_state(state)
+
+
+def ensure_runtime_files():
+    for directory in RUNTIME_DIRS:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+    if RUNTIME_STATE_PATH.exists():
+        _write_json(RUNTIME_STATE_PATH, _merge_state(_read_json(RUNTIME_STATE_PATH, DEFAULT_STATE)))
+    else:
+        _write_json(RUNTIME_STATE_PATH, _state_from_legacy_files())
+    if not WALLET_GENERATION_PATH.exists():
+        _write_json(WALLET_GENERATION_PATH, DEFAULT_WALLET_GENERATION)
+    if not PASSPHRASE_REQUEST_PATH.exists():
+        _write_json(PASSPHRASE_REQUEST_PATH, DEFAULT_PASSPHRASE_REQUEST)
+
+
+def read_state():
+    if not RUNTIME_STATE_PATH.exists():
+        ensure_runtime_files()
+    return _merge_state(_read_json(RUNTIME_STATE_PATH, DEFAULT_STATE))
+
+
+def write_state(state):
+    _write_json(RUNTIME_STATE_PATH, _merge_state(state))
+
+
+def read_node_config():
+    node = read_state()["node"]
+    return (
+        str(node.get("class", "FULL NODE")),
+        str(node.get("run_on_startup", "NO")),
+        str(node.get("run_in_background", "NO")),
+    )
+
+
+def write_node_config(node_class, run_on_startup, run_in_background):
+    state = read_state()
+    state["node"] = {
+        "class": str(node_class),
+        "run_on_startup": str(run_on_startup),
+        "run_in_background": str(run_in_background),
+    }
+    write_state(state)
+
+
+def get_kill_node():
+    return read_state()["kill_node"]
+
+
+def set_kill_node(value):
+    state = read_state()
+    state["kill_node"] = bool(value)
+    write_state(state)
+
+
+def get_check_signed_in():
+    return read_state()["check_signed_in"]
+
+
+def set_check_signed_in(value):
+    state = read_state()
+    state["check_signed_in"] = bool(value)
+    write_state(state)
+
+
+def toggle_check_signed_in():
+    next_value = not get_check_signed_in()
+    set_check_signed_in(next_value)
+    return next_value
+
+
+def get_public_ip():
+    return str(read_state().get("my_public_ip", "")).strip()
+
+
+def set_public_ip(value):
+    state = read_state()
+    state["my_public_ip"] = str(value).strip()
+    write_state(state)
+
+
+def _wallet_generation_from_legacy():
+    payload = _read_legacy_text("files/hashing.txt")
+    if not payload:
+        return _clone(DEFAULT_WALLET_GENERATION)
+    return wallet_generation_from_payload(payload)
+
+
+def wallet_generation_from_payload(payload):
+    lines = str(payload).splitlines()
+    data = _clone(DEFAULT_WALLET_GENERATION)
+    if lines:
+        data["address"] = lines[0].strip()
+    if len(lines) > 1:
+        data["private_key"] = lines[1].strip()
+    if len(lines) > 2:
+        data["public_key"] = lines[2].strip()
+    data["tokens"] = [line.rstrip("\n") for line in wallet_token_lines(lines)]
+    return data
+
+
+def is_wallet_token_line(line):
+    parts = str(line).strip().split()
+    if not parts:
+        return False
+    display_id = parts[0].lstrip("-")
+    value, separator, index = display_id.partition("x")
+    return separator == "x" and value.isdigit() and bool(index)
+
+
+def wallet_token_start_index(lines):
+    lines = list(lines or [])
+    if len(lines) <= 3:
+        return len(lines)
+    return 3 if is_wallet_token_line(lines[3]) else 4
+
+
+def wallet_token_lines(lines):
+    lines = list(lines or [])
+    return lines[wallet_token_start_index(lines):]
+
+
+def write_wallet_generation(address, private_key, public_key, passphrase="", tokens=None):
+    global _WALLET_GENERATION
+    _WALLET_GENERATION = {
+        "schema": 1,
+        "address": str(address).strip(),
+        "private_key": str(private_key).strip(),
+        "public_key": str(public_key).strip(),
+        "passphrase": "",
+        "tokens": list(tokens or []),
+    }
+    _write_json(WALLET_GENERATION_PATH, DEFAULT_WALLET_GENERATION)
+
+
+def write_wallet_generation_from_payload(payload):
+    global _WALLET_GENERATION
+    _WALLET_GENERATION = wallet_generation_from_payload(payload)
+    _write_json(WALLET_GENERATION_PATH, DEFAULT_WALLET_GENERATION)
+
+
+def read_wallet_generation():
+    if _WALLET_GENERATION is not None:
+        return _clone(_WALLET_GENERATION)
+    if not WALLET_GENERATION_PATH.exists():
+        ensure_runtime_files()
+    data = _read_json(WALLET_GENERATION_PATH, DEFAULT_WALLET_GENERATION)
+    merged = _clone(DEFAULT_WALLET_GENERATION)
+    if isinstance(data, dict):
+        merged.update(data)
+    merged["tokens"] = list(merged.get("tokens") or [])
+    return merged
+
+
+def clear_wallet_generation():
+    global _WALLET_GENERATION
+    _WALLET_GENERATION = None
+    _write_json(WALLET_GENERATION_PATH, DEFAULT_WALLET_GENERATION)
+
+
+def set_wallet_generation_passphrase(passphrase):
+    global _WALLET_GENERATION
+    data = read_wallet_generation()
+    data["passphrase"] = ""
+    _WALLET_GENERATION = data
+    _write_json(WALLET_GENERATION_PATH, DEFAULT_WALLET_GENERATION)
+
+
+def wallet_generation_lines(include_passphrase=False):
+    data = read_wallet_generation()
+    lines = [
+        str(data.get("address", "")).strip(),
+        str(data.get("private_key", "")).strip(),
+        str(data.get("public_key", "")).strip(),
+    ]
+    if include_passphrase or data.get("passphrase") or data.get("tokens"):
+        lines.append(str(data.get("passphrase", "")).strip())
+    lines.extend(str(line).rstrip("\n") for line in data.get("tokens", []))
+    return [line + "\n" for line in lines if line != ""]
+
+
+def wallet_generation_payload():
+    data = read_wallet_generation()
+    required = ("address", "private_key", "public_key", "passphrase")
+    if any(not str(data.get(key, "")).strip() for key in required):
+        raise ValueError("wallet generation JSON is missing required wallet fields")
+    lines = [
+        str(data["address"]).strip(),
+        str(data["private_key"]).strip(),
+        str(data["public_key"]).strip(),
+        str(data["passphrase"]).strip(),
+    ]
+    lines.extend(str(line).rstrip("\n") for line in data.get("tokens", []))
+    return "\n".join(lines) + "\n"
+
+
+def wallet_generation_secret_payload():
+    data = read_wallet_generation()
+    required = ("address", "private_key", "public_key")
+    if any(not str(data.get(key, "")).strip() for key in required):
+        raise ValueError("wallet generation JSON is missing required wallet fields")
+    lines = [
+        str(data["address"]).strip(),
+        str(data["private_key"]).strip(),
+        str(data["public_key"]).strip(),
+    ]
+    lines.extend(str(line).rstrip("\n") for line in data.get("tokens", []))
+    return "\n".join(lines) + "\n"
+
+
+def write_passphrase_request(passphrase, address):
+    global _PASSPHRASE_REQUEST
+    _PASSPHRASE_REQUEST = {
+        "schema": 1,
+        "passphrase": str(passphrase),
+        "address": str(address).strip(),
+    }
+    _write_json(PASSPHRASE_REQUEST_PATH, DEFAULT_PASSPHRASE_REQUEST)
+
+
+def read_passphrase_request():
+    if _PASSPHRASE_REQUEST is not None:
+        return _clone(_PASSPHRASE_REQUEST)
+    if not PASSPHRASE_REQUEST_PATH.exists():
+        legacy = _read_legacy_text("files/passphrase.txt").splitlines()
+        if legacy:
+            return {
+                "schema": 1,
+                "passphrase": legacy[0],
+                "address": legacy[1].strip() if len(legacy) > 1 else "",
+            }
+        ensure_runtime_files()
+    data = _read_json(PASSPHRASE_REQUEST_PATH, DEFAULT_PASSPHRASE_REQUEST)
+    merged = _clone(DEFAULT_PASSPHRASE_REQUEST)
+    if isinstance(data, dict):
+        merged.update(data)
+    return merged
+
+
+def clear_passphrase_request():
+    global _PASSPHRASE_REQUEST
+    _PASSPHRASE_REQUEST = None
+    _write_json(PASSPHRASE_REQUEST_PATH, DEFAULT_PASSPHRASE_REQUEST)
+
+
+def consume_passphrase_request():
+    request = read_passphrase_request()
+    clear_passphrase_request()
+    return request
+
+
+def wallet_address_from_name(name):
+    value = Path(name).name
+    if value.startswith(WALLET_ENCRYPTED_PREFIX):
+        value = value[len(WALLET_ENCRYPTED_PREFIX):]
+    elif value.startswith(WALLET_DECRYPTED_PREFIX):
+        value = value[len(WALLET_DECRYPTED_PREFIX):]
+    for suffix in (".json", ".txt"):
+        if value.endswith(suffix):
+            value = value[: -len(suffix)]
+            break
+    return value
+
+
+def encrypted_wallet_path(address):
+    return WALLET_DIR / f"{WALLET_ENCRYPTED_PREFIX}{address}.json"
+
+
+def decrypted_wallet_path(address):
+    return WALLET_DIR / f"{WALLET_DECRYPTED_PREFIX}{address}.json"
+
+
+def _iter_wallet_files(prefix):
+    if not WALLET_DIR.exists():
+        return []
+    files = []
+    for path in WALLET_DIR.iterdir():
+        if path.is_file() and path.name.startswith(prefix) and path.suffix.lower() in {".json", ".txt"}:
+            files.append(path)
+    return sorted(files)
+
+
+def iter_encrypted_wallet_files():
+    return _iter_wallet_files(WALLET_ENCRYPTED_PREFIX)
+
+
+def iter_decrypted_wallet_files():
+    files = _iter_wallet_files(WALLET_DECRYPTED_PREFIX)
+    existing = {wallet_address_from_name(path.name) for path in files}
+    for address in sorted(_DECRYPTED_WALLETS):
+        if address not in existing:
+            files.append(decrypted_wallet_path(address))
+    return sorted(files)
+
+
+def _payload_json(address, payload):
+    lines = str(payload).splitlines()
+    return {
+        "format": "IND_UNLOCKED_SESSION",
+        "address": address,
+        "private_key": lines[1].strip() if len(lines) > 1 else "",
+        "public_key": lines[2].strip() if len(lines) > 2 else "",
+        "tokens": [line.rstrip("\n") for line in wallet_token_lines(lines)],
+        "payload": str(payload),
+    }
+
+
+def write_decrypted_wallet(address, payload):
+    if isinstance(payload, bytes):
+        payload = payload.decode("utf-8")
+    address = str(address).strip()
+    _DECRYPTED_WALLETS[address] = str(payload)
+    for path in (
+        decrypted_wallet_path(address),
+        WALLET_DIR / f"{WALLET_DECRYPTED_PREFIX}{address}.txt",
+    ):
+        try:
+            if path.exists():
+                size = path.stat().st_size
+                with open(path, "r+b") as handle:
+                    handle.write(b"\x00" * size)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                path.unlink()
+        except OSError:
+            pass
+
+
+def read_decrypted_wallet_payload(path):
+    path = Path(path)
+    address = wallet_address_from_name(path.name)
+    if address in _DECRYPTED_WALLETS:
+        return _DECRYPTED_WALLETS[address]
+    if path.suffix.lower() == ".json":
+        data = _read_json(path, {})
+        if isinstance(data, dict) and "payload" in data:
+            return str(data.get("payload", ""))
+        if isinstance(data, dict):
+            lines = [
+                str(data.get("address", "")).strip(),
+                str(data.get("private_key", "")).strip(),
+                str(data.get("public_key", "")).strip(),
+                str(data.get("passphrase", "")).strip(),
+            ]
+            lines.extend(str(line).rstrip("\n") for line in data.get("tokens", []))
+            return "\n".join(line for line in lines if line != "") + "\n"
+        return ""
+    return _read_legacy_text(path)
+
+
+def read_decrypted_wallet_lines(path):
+    return read_decrypted_wallet_payload(path).splitlines(keepends=True)
+
+
+def write_decrypted_wallet_lines(path, lines):
+    path = Path(path)
+    address = wallet_address_from_name(path.name)
+    payload = "".join(line if str(line).endswith("\n") else str(line) + "\n" for line in lines)
+    write_decrypted_wallet(address, payload)
+    if path.suffix.lower() == ".txt":
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def clear_decrypted_wallet(address):
+    _DECRYPTED_WALLETS.pop(str(address).strip(), None)
+
+
+def clear_decrypted_wallets():
+    _DECRYPTED_WALLETS.clear()
+
+
+def write_encrypted_wallet(address, salt_b64, ciphertext):
+    if isinstance(salt_b64, bytes):
+        salt_b64 = salt_b64.decode("ascii")
+    if isinstance(ciphertext, bytes):
+        ciphertext = ciphertext.decode("ascii")
+    _write_json(
+        encrypted_wallet_path(address),
+        {
+            "format": "INDW1",
+            "address": str(address).strip(),
+            "cipher": "Fernet",
+            "kdf": "PBKDF2-HMAC-SHA3-256",
+            "iterations": 1000000,
+            "salt": salt_b64,
+            "ciphertext": ciphertext,
+        },
+    )
+
+
+def write_encrypted_wallet_record(record):
+    address = str(record.get("address", "")).strip()
+    if not address:
+        raise ValueError("encrypted wallet record is missing address")
+    _write_json(encrypted_wallet_path(address), record)
+
+
+def read_encrypted_wallet_record(path):
+    path = Path(path)
+    if path.suffix.lower() == ".json":
+        return _read_json(path, {})
+    return {}
+
+
+def read_encrypted_wallet_bytes(path, prefix=b"INDW1:"):
+    path = Path(path)
+    if path.suffix.lower() == ".json":
+        data = _read_json(path, {})
+        if isinstance(data, dict) and data.get("format") == "INDW1":
+            return prefix + str(data.get("salt", "")).encode("ascii") + b":" + str(data.get("ciphertext", "")).encode("ascii")
+        return b""
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return b""
+
+
+def remove_encrypted_wallet(address):
+    for path in (
+        encrypted_wallet_path(address),
+        WALLET_DIR / f"{WALLET_ENCRYPTED_PREFIX}{address}.txt",
+    ):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def transaction_files():
+    if not TRANSACTION_DIR.exists():
+        return []
+    return sorted(
+        path
+        for path in TRANSACTION_DIR.iterdir()
+        if path.is_file() and path.name.startswith("transaction_") and path.suffix.lower() in {".json", ".txt"}
+    )
+
+
+def has_pending_transactions():
+    return bool(transaction_files())
+
+
+def _transaction_index(path):
+    stem = Path(path).stem
+    try:
+        return int(stem.split("_", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def next_transaction_path():
+    next_index = max([_transaction_index(path) for path in transaction_files()] or [0]) + 1
+    return TRANSACTION_DIR / f"transaction_{next_index}.json"
+
+
+def write_transaction_message(message):
+    path = next_transaction_path()
+    if isinstance(message, str):
+        data = json.loads(message)
+    else:
+        data = message
+    _write_json(path, data)
+    return path
+
+
+def read_transaction_message(path):
+    path = Path(path)
+    if path.suffix.lower() == ".json":
+        return _read_json(path, {})
+    return _read_legacy_text(path)
+
+
+def peer_path(ip, version="2"):
+    return PEER_ROOT / str(version) / f"{ip}.json"
+
+
+def write_peer(ip, version="2"):
+    _write_json(
+        peer_path(ip, version),
+        {
+            "schema": 1,
+            "ip": str(ip),
+            "version": str(version),
+            "added_at": int(time.time()),
+        },
+    )
