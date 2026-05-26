@@ -10,6 +10,7 @@ from PyPDF2 import PdfMerger
 import platform
 import sys
 from pathlib import Path
+from functools import lru_cache
 
 from . import address_generation as generate_address
 from . import runtime as runtime_json
@@ -17,6 +18,14 @@ from . import runtime as runtime_json
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FONT_PATH = BASE_DIR / 'Teko-Light.ttf'
+PRINT_ARTWORK_DIR = Path('img/bills_to_print')
+PRINT_PAGE_CROP_RIGHT = 70
+PRINT_PAGE_CROP_BOTTOM = 20
+BILL_GRID_COLUMNS = 3
+BILL_GRID_ROWS = 2
+BILLS_PER_PRINT_PAGE = BILL_GRID_COLUMNS * BILL_GRID_ROWS
+BILL_GRID_X_STEP = 351
+BILL_GRID_Y_STEP = 805
 
 
 def bill_font(size):
@@ -49,42 +58,76 @@ def _generate_address_lines():
     return [generated_wallet[0] + '\n', generated_wallet[1] + '\n', generated_wallet[2] + '\n']
 
 
+@lru_cache(maxsize=1)
+def _bill_slot_size():
+    sizes = []
+    for bill_artwork in PRINT_ARTWORK_DIR.glob('*.png'):
+        if bill_artwork.name == 'a4.png':
+            continue
+        with Image.open(bill_artwork) as img:
+            sizes.append(img.size)
+    if not sizes:
+        raise FileNotFoundError("No bill artwork found in img/bills_to_print.")
+    return max(width for width, _height in sizes), max(height for _width, height in sizes)
+
+
+def _bill_grid_origin(page, slot_size=None):
+    slot_width, slot_height = slot_size or _bill_slot_size()
+    print_width = page.width - PRINT_PAGE_CROP_RIGHT
+    print_height = page.height - PRINT_PAGE_CROP_BOTTOM
+    grid_width = BILL_GRID_X_STEP * (BILL_GRID_COLUMNS - 1) + slot_width
+    grid_height = BILL_GRID_Y_STEP * (BILL_GRID_ROWS - 1) + slot_height
+    return (print_width - grid_width) // 2, (print_height - grid_height) // 2
+
+
+def _bill_position(slot_index, page, bill_size):
+    slot_width, slot_height = _bill_slot_size()
+    origin_x, origin_y = _bill_grid_origin(page, (slot_width, slot_height))
+    column = slot_index % BILL_GRID_COLUMNS
+    row = slot_index // BILL_GRID_COLUMNS
+    bill_width, bill_height = bill_size
+    return (
+        origin_x + column * BILL_GRID_X_STEP + (slot_width - bill_width) // 2,
+        origin_y + row * BILL_GRID_Y_STEP + (slot_height - bill_height) // 2,
+    )
+
+
+def _render_print_page(page):
+    width, height = page.size
+    crop_box = (0, 0, width - PRINT_PAGE_CROP_RIGHT, height - PRINT_PAGE_CROP_BOTTOM)
+    return page.crop(crop_box).resize((width, height), Image.Resampling.LANCZOS)
+
+
+def _save_print_page(page, output_path):
+    _render_print_page(page).save(output_path)
+
+
+def _clear_print_page(page):
+    page.paste(Image.new(page.mode, page.size, color='white'))
+
+
 def full_bill(list_bills):
-    global x_pos, y_pos, count, count5
-    x_pos = 35
-    y_pos = 20
+    global count, count5
     a4_png = Image.open('img/bills_to_print/a4.png')
     count = 0
     count5 = 0
 
     def bill_gen_front():
-        x_pos2 = 35
-        y_pos2 = 20
         c6 = 0
         c7 = 0
         for bill in list_bills:
             img = Image.open('img/bills_to_print/' + bill[0].split('x')[0] + '.png')
-            a4_png.paste(img, (x_pos2, y_pos2))
-            if c7 == 5 or c6 == len(list_bills) - 1:
-                w, h = a4_png.size
-                crop_top = a4_png.crop((0, 0, w - 70, h - 20))
-                resized = crop_top.resize((w, h), Image.Resampling.LANCZOS)
+            a4_png.paste(img, _bill_position(c7, a4_png, img.size))
+            if c7 == BILLS_PER_PRINT_PAGE - 1 or c6 == len(list_bills) - 1:
                 len_list = float(c6 / 5) * 2
-                resized.save('print_folder/' + str(len_list) + '.pdf')
-                a4_png.paste(Image.new('L', (1190, 1680), color='white'))
-                x_pos2 = 35
-                y_pos2 = 20
-                c7 -= 6
-            elif c7 == 2:
-                y_pos2 += 805
-                x_pos2 -= 702
-            else:
-                x_pos2 += 351
+                _save_print_page(a4_png, 'print_folder/' + str(len_list) + '.pdf')
+                _clear_print_page(a4_png)
+                c7 -= BILLS_PER_PRINT_PAGE
             c6 += 1
             c7 += 1
 
     def bill_gen_back(bill):
-        global x_pos, y_pos, count, count5
+        global count, count5
         sm = bill.splitlines()[0]
         img = Image.open('img/bills_to_print/' + sm.split('x')[0] + '_back.png')
         address_qr = qrcode.QRCode(version=1, box_size=6, border=2, error_correction=qrcode.constants.ERROR_CORRECT_L)
@@ -110,21 +153,11 @@ def full_bill(list_bills):
         img.paste(ImageOps.colorize(rot, (255,255,255), (255,255,255)), (20,10),  rot)
         img.paste(qr_resize.rotate(90, expand=1), (55, 290))
         img.paste(qr_resize.rotate(90, expand=1), (55, 290))
-        a4_png.paste(img, (x_pos, y_pos))
-        if count == 5 or count5 == len(list_bills) - 1:
-            w, h = a4_png.size
-            crop_top = a4_png.crop((0, 0, w - 70, h - 20))
-            resized = crop_top.resize((w, h), Image.Resampling.LANCZOS)
-            resized.save('print_folder/' + str(float(count5 / 5) * 2 + 0.5) + '.pdf')
-            a4_png.paste(Image.new('L', (1190, 1680), color='white'))
-            x_pos = 35
-            y_pos = 20
+        a4_png.paste(img, _bill_position(count, a4_png, img.size))
+        if count == BILLS_PER_PRINT_PAGE - 1 or count5 == len(list_bills) - 1:
+            _save_print_page(a4_png, 'print_folder/' + str(float(count5 / 5) * 2 + 0.5) + '.pdf')
+            _clear_print_page(a4_png)
             count = -1
-        elif count == 2:
-            y_pos += 805
-            x_pos -= 702
-        else:
-            x_pos += 351
         count += 1
         count5 += 1
 

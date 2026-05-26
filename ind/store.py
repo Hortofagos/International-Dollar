@@ -22,6 +22,7 @@ from .protocol import (
     _store_json,
 )
 from . import settings as ind_settings
+from . import transparency_client as log_client
 
 STORE_SCHEMA_VERSION = 1
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class INDLocalStore:
 
     def __init__(
         self,
-        db_path=DEFAULT_STORE_PATH,
+        db_path=None,
         transparency_verifier=None,
         transparency_submitter=None,
         require_transparency=None,
@@ -41,17 +42,17 @@ class INDLocalStore:
     ):
         """Open or create a local IND gossip store."""
 
+        if db_path is None:
+            db_path = ind_settings.default_store_path()
         self.db_path = str(Path(db_path))
         if require_transparency is None:
             try:
-                from . import settings as ind_settings
                 self.require_transparency = ind_settings.require_transparency_log()
             except Exception:
                 self.require_transparency = _env_true("IND_REQUIRE_TRANSPARENCY_LOG")
         else:
             self.require_transparency = bool(require_transparency)
         try:
-            from . import settings as ind_settings
             self.transparency_root_gossip = ind_settings.transparency_root_gossip()
         except Exception:
             self.transparency_root_gossip = os.environ.get("IND_LOG_ROOT_GOSSIP", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -357,12 +358,13 @@ class INDLocalStore:
         if not token:
             return None
         if message["message_type"] == TRANSFER_ANNOUNCEMENT_TYPE:
-            return {
+            expanded = {
                 "type": TRANSFER_ANNOUNCEMENT_TYPE,
                 "version": TOKEN_VERSION,
                 "token": token,
                 "announced_at": int(message.get("announced_at", time.time())),
             }
+            return expanded
         if message["message_type"] == RECEIPT_ANNOUNCEMENT_TYPE:
             return {
                 "type": RECEIPT_ANNOUNCEMENT_TYPE,
@@ -395,10 +397,15 @@ class INDLocalStore:
 
         if not self.transparency_submitter or message.get("type") != TRANSFER_ANNOUNCEMENT_TYPE:
             return None
-        expected_entry_hash = transfer_hash(_last_transfer(token))
+        latest_transfer = _last_transfer(token)
+        expected_entry_hash = transfer_hash(latest_transfer)
         try:
             response = self.transparency_submitter.submit_transfer_announcement(message)
-            leaf_index, _tree_size = self._validate_transparency_append_response(response, expected_entry_hash)
+            leaf_index, _tree_size = self._validate_transparency_append_response(
+                response,
+                expected_entry_hash,
+                log_client.spend_key_for_transfer(latest_transfer),
+            )
             if self.transparency_verifier is None:
                 raise ValidationError("transparency submission cannot be verified without root mirrors")
             # Duplicate append responses are still operator claims. Verify them
@@ -411,17 +418,19 @@ class INDLocalStore:
             logger.warning("transparency log submission failed for %s: %s", expected_entry_hash, exc)
             return {"accepted": False, "status": "unlogged", "error": str(exc)}
 
-    def _validate_transparency_append_response(self, response, expected_entry_hash):
+    def _validate_transparency_append_response(self, response, expected_entry_hash, expected_spend_key):
         """Require the operator append response to identify the exact logged leaf."""
 
         if not isinstance(response, dict) or not response.get("accepted"):
             raise ValidationError("transparency log did not accept the transfer")
-        required = {"entry_hash", "leaf_index", "tree_size"}
+        required = {"entry_hash", "leaf_index", "tree_size", "spend_key"}
         if not required.issubset(response):
             raise ValidationError("transparency log append response is missing verification fields")
         entry_hash = str(response["entry_hash"]).lower()
         if entry_hash != expected_entry_hash:
             raise ValidationError("transparency log appended a different transfer hash")
+        if str(response["spend_key"]) != expected_spend_key:
+            raise ValidationError("transparency log accepted a different spend key")
         leaf_index = int(response["leaf_index"])
         tree_size = int(response["tree_size"])
         if leaf_index < 0 or tree_size < leaf_index + 1:
@@ -447,6 +456,17 @@ class INDLocalStore:
                     root,
                     operator_public_key=self.transparency_verifier.operator_public_key,
                 )
+                latest_transfer = _last_transfer(token)
+                spend_proof = self.transparency_verifier.operator.spend_map_proof(
+                    log_client.spend_key_for_transfer(latest_transfer),
+                    int(root["tree_size"]),
+                )
+                log_client.verify_spend_map_proof_for_transfer(
+                    latest_transfer,
+                    spend_proof,
+                    root,
+                    operator_public_key=self.transparency_verifier.operator_public_key,
+                )
                 return True
             except Exception as exc:
                 last_error = exc
@@ -465,11 +485,20 @@ class INDLocalStore:
             "SELECT first_seen, status, finalized_at, sequence, last_transfer_hash FROM tokens WHERE token_id = ?",
             (state.token_id,),
         ).fetchone()
+        hard_dissent = conn.execute(
+            """
+            SELECT proof_hash FROM conflicts WHERE token_id = ?
+            LIMIT 1
+            """,
+            (state.token_id,),
+        ).fetchone()
         if existing and int(existing["sequence"]) > int(state.sequence):
             return
         first_seen = existing["first_seen"] if existing else now
         finalized_at = existing["finalized_at"] if existing else None
-        if existing and existing["status"] == "invalid":
+        if hard_dissent:
+            status = "invalid"
+        elif existing and existing["status"] == "invalid":
             status = "invalid"
         elif existing and existing["status"] == "settled" and existing["last_transfer_hash"] == state.last_transfer_hash:
             status = "settled"
@@ -520,6 +549,15 @@ class INDLocalStore:
         for transfer, th in reversed(transfers_to_store):
             last_hash = th
             transfer_status = status if th == state.last_transfer_hash else "settled"
+            hard_dissent = conn.execute(
+                """
+                SELECT proof_hash FROM conflicts WHERE token_id = ?
+                LIMIT 1
+                """,
+                (state.token_id,),
+            ).fetchone()
+            if hard_dissent:
+                transfer_status = "invalid"
             existing = conn.execute(
                 "SELECT first_seen, status, finalized_at FROM transfers WHERE transfer_hash = ?",
                 (th,),
@@ -611,7 +649,6 @@ class INDLocalStore:
         )
         conn.execute("UPDATE tokens SET status = 'invalid', updated_at = ? WHERE token_id = ?", (int(time.time()), proof["token_id"]))
         conn.execute("UPDATE transfers SET status = 'invalid' WHERE token_id = ?", (proof["token_id"],))
-        self._record_message(conn, proof)
 
     def _drain_transparency_gossip(self):
         if self.transparency_verifier is None:
@@ -642,7 +679,12 @@ class INDLocalStore:
         with self._connect() as conn:
             message_type = message["type"]
             if message_type == TRANSFER_ANNOUNCEMENT_TYPE:
-                _require_exact_fields(message, TRANSFER_ANNOUNCEMENT_FIELDS, "transfer announcement")
+                _require_exact_fields(
+                    message,
+                    TRANSFER_ANNOUNCEMENT_FIELDS,
+                    "transfer announcement",
+                    optional=TRANSFER_ANNOUNCEMENT_OPTIONAL_FIELDS,
+                )
                 if _require_int(message["version"], "transfer announcement version") != TOKEN_VERSION:
                     raise ValidationError("unsupported transfer announcement version")
                 _require_int(message["announced_at"], "transfer announcement announced_at", minimum=0)
@@ -865,7 +907,8 @@ class INDLocalStore:
                 (token_id,),
             ).fetchone()
         if conflict or record["status"] == "invalid":
-            return {"accepted": False, "level": "conflict", "reason": "token has a known conflict proof"}
+            reason = "token has a known conflict proof"
+            return {"accepted": False, "level": "conflict", "reason": reason}
         if expected_owner and record["owner_address"] != expected_owner:
             return {"accepted": False, "level": "wrong_owner", "reason": "token owner does not match expected owner"}
         if record["status"] != "settled" or not record.get("finalized_at"):
@@ -881,6 +924,7 @@ class INDLocalStore:
         return {
             "accepted": True,
             "level": "strong_local",
+            "finality": "local_confidence",
             "reason": "token is settled locally with no known conflict",
             "settled_age": settled_age,
             "sequence": int(record["sequence"]),

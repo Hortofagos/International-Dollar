@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from . import settings as ind_settings
 from . import token as ind_token
 
 
@@ -57,7 +58,18 @@ def _private_bytes(private_key):
 
 def _peer_key_path(peer_ip):
     safe = peer_ip.replace(":", "_").replace("/", "_").replace("\\", "_")
-    return NOISE_PEER_KEY_DIR / (safe + ".json")
+    return _network_path(NOISE_PEER_KEY_DIR) / (safe + ".json")
+
+
+def _network_path(path):
+    path = Path(path)
+    namespace = ind_settings.network_runtime_namespace()
+    if not namespace or path.is_absolute():
+        return path
+    parts = path.parts
+    if parts and parts[0] == "files":
+        return Path("files") / namespace / Path(*parts[1:])
+    return path
 
 
 def _legacy_text_path(path):
@@ -100,27 +112,30 @@ def _read_key_json_or_legacy(path, field):
 def ensure_transport_keypair():
     """Create the node's long-term X25519 transport keypair if it is missing."""
 
-    NOISE_PRIVATE_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    NOISE_PEER_KEY_DIR.mkdir(parents=True, exist_ok=True)
-    existing_private = _read_key_json_or_legacy(NOISE_PRIVATE_KEY_PATH, "private_key")
-    existing_public = _read_key_json_or_legacy(NOISE_PUBLIC_KEY_PATH, "public_key")
+    private_path = _network_path(NOISE_PRIVATE_KEY_PATH)
+    public_path = _network_path(NOISE_PUBLIC_KEY_PATH)
+    peer_key_dir = _network_path(NOISE_PEER_KEY_DIR)
+    private_path.parent.mkdir(parents=True, exist_ok=True)
+    peer_key_dir.mkdir(parents=True, exist_ok=True)
+    existing_private = _read_key_json_or_legacy(private_path, "private_key")
+    existing_public = _read_key_json_or_legacy(public_path, "public_key")
     if existing_private and existing_public:
-        if not NOISE_PRIVATE_KEY_PATH.exists():
-            _write_key_json(NOISE_PRIVATE_KEY_PATH, "private_key", existing_private)
-        if not NOISE_PUBLIC_KEY_PATH.exists():
-            _write_key_json(NOISE_PUBLIC_KEY_PATH, "public_key", existing_public)
+        if not private_path.exists():
+            _write_key_json(private_path, "private_key", existing_private)
+        if not public_path.exists():
+            _write_key_json(public_path, "public_key", existing_public)
         return
     private_key = x25519.X25519PrivateKey.generate()
     public_key = private_key.public_key()
-    _write_key_json(NOISE_PRIVATE_KEY_PATH, "private_key", _b64(_private_bytes(private_key)))
-    _write_key_json(NOISE_PUBLIC_KEY_PATH, "public_key", _b64(_public_bytes(public_key)))
+    _write_key_json(private_path, "private_key", _b64(_private_bytes(private_key)))
+    _write_key_json(public_path, "public_key", _b64(_public_bytes(public_key)))
 
 
 def load_static_private_key():
     """Load the node's long-term X25519 transport private key."""
 
     ensure_transport_keypair()
-    raw = _unb64(_read_key_json_or_legacy(NOISE_PRIVATE_KEY_PATH, "private_key"))
+    raw = _unb64(_read_key_json_or_legacy(_network_path(NOISE_PRIVATE_KEY_PATH), "private_key"))
     return x25519.X25519PrivateKey.from_private_bytes(raw)
 
 
@@ -128,7 +143,7 @@ def load_static_public_key_bytes():
     """Return the node's long-term X25519 transport public key bytes."""
 
     ensure_transport_keypair()
-    return _unb64(_read_key_json_or_legacy(NOISE_PUBLIC_KEY_PATH, "public_key"))
+    return _unb64(_read_key_json_or_legacy(_network_path(NOISE_PUBLIC_KEY_PATH), "public_key"))
 
 
 def is_noise_hello(first_packet):
@@ -142,7 +157,7 @@ def verify_or_pin_peer_key(peer_ip, public_key_bytes):
 
     if not peer_ip:
         return
-    NOISE_PEER_KEY_DIR.mkdir(parents=True, exist_ok=True)
+    _network_path(NOISE_PEER_KEY_DIR).mkdir(parents=True, exist_ok=True)
     key_path = _peer_key_path(peer_ip)
     encoded = _b64(public_key_bytes)
     previous = _read_key_json_or_legacy(key_path, "public_key")

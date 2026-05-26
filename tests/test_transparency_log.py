@@ -1,16 +1,18 @@
-import base64
+﻿import base64
 import copy
 import os
 import tempfile
 import unittest
 from unittest import mock
 from hashlib import sha3_256
+from pathlib import Path
 
 import ecdsa
 
 import ind_token
 import log_client
 import log_server
+from ind import settings as ind_settings
 
 
 os.environ.setdefault("IND_ALLOW_UNTRUSTED_GENESIS", "1")
@@ -129,10 +131,9 @@ class TransparencyLogTests(unittest.TestCase):
 
     def test_ind_token_validation_accepts_logged_history(self):
         token = signed_transfer_token(index=9002, timestamp=1_700_000_010)
-        entry_hash = ind_token.transfer_hash(token["history"][-1])
         with tempfile.TemporaryDirectory() as temp_dir:
             log, _log_private, log_public = self.make_log(temp_dir)
-            log.append_entry_hash(entry_hash)
+            log.append_transfer_announcement(ind_token.create_transfer_announcement(token))
             root = log.publish_root(1_700_000_040)
             verifier = log_client.TransparencyVerifier(
                 log_client.LocalTransparencyOperator(log),
@@ -146,6 +147,83 @@ class TransparencyLogTests(unittest.TestCase):
             state = ind_token.verify_token(token, transparency_verifier=verifier, now=1_700_000_050)
 
             self.assertEqual(state.sequence, 1)
+
+    def test_history_verification_uses_root_that_contains_transfer_leaf(self):
+        token = signed_transfer_token(index=9020, timestamp=1_700_000_010)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log, _log_private, log_public = self.make_log(temp_dir)
+            log.append_entry_hash(ind_token.sha3_hex(b"unrelated-before-transfer"))
+            early_root = log.publish_root(1_700_000_010)
+            log.append_transfer_announcement(ind_token.create_transfer_announcement(token))
+            later_root = log.publish_root(1_700_000_040)
+            mirrors = [
+                log_client.StaticRootMirror([early_root, later_root], identity_id="test-root-mirror-a"),
+                log_client.StaticRootMirror([early_root, later_root], identity_id="test-root-mirror-b"),
+            ]
+            verifier = log_client.TransparencyVerifier(
+                log_client.LocalTransparencyOperator(log),
+                mirrors,
+                operator_public_key=log_public,
+                max_root_lag_seconds=60,
+                observed_root_store=in_memory_root_store(),
+                run_startup_check=False,
+            )
+
+            state = ind_token.verify_token(token, transparency_verifier=verifier, now=1_700_000_050)
+
+            self.assertEqual(state.sequence, 1)
+
+    def test_spend_key_is_token_state_not_sender_public_key(self):
+        token = signed_transfer_token(index=9021, timestamp=1_700_000_010)
+        transfer = token["history"][-1]
+        mutated = copy.deepcopy(transfer)
+        mutated["sender_public_key"] = "different-proof-key"
+
+        self.assertEqual(
+            log_client.spend_key_for_transfer(transfer),
+            log_client.spend_key_for_transfer(mutated),
+        )
+
+    def test_transparency_schemas_reject_extra_fields_and_numeric_strings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log, log_private, log_public = self.make_log(temp_dir)
+            entry_hash = ind_token.sha3_hex(b"entry")
+            log.append_entry_hash(entry_hash)
+            root = log.publish_root(1_700_000_060)
+            proof = log.inclusion_proof(entry_hash, root["tree_size"])
+
+            extra_root = copy.deepcopy(root)
+            extra_root["unknown"] = True
+            with self.assertRaisesRegex(log_client.RootVerificationError, "unknown field"):
+                log_client.verify_signed_root(extra_root, log_public)
+
+            string_tree_size = copy.deepcopy(root)
+            string_tree_size["tree_size"] = str(string_tree_size["tree_size"])
+            with self.assertRaisesRegex(log_client.RootVerificationError, "integer"):
+                log_client.verify_signed_root(string_tree_size, log_public)
+
+            extra_proof = copy.deepcopy(proof)
+            extra_proof["unknown"] = True
+            with self.assertRaisesRegex(log_client.InclusionProofError, "unknown field"):
+                log_client.verify_inclusion_proof(entry_hash, extra_proof, root, log_public)
+
+            string_proof = copy.deepcopy(proof)
+            string_proof["tree_size"] = str(string_proof["tree_size"])
+            with self.assertRaisesRegex(log_client.InclusionProofError, "integer"):
+                log_client.verify_inclusion_proof(entry_hash, string_proof, root, log_public)
+
+            new_private, new_public, _new_address = keypair()
+            rotation = log_client.make_key_rotation(
+                log_private,
+                log_public,
+                new_private,
+                new_public,
+                rotation_timestamp=1_700_000_100,
+                effective_from_tree_size=1,
+            )
+            rotation["rotation_timestamp"] = str(rotation["rotation_timestamp"])
+            with self.assertRaisesRegex(log_client.KeyRotationError, "integer"):
+                log_client.verify_key_rotation(rotation)
 
     def test_local_store_can_submit_validated_transfers_to_operator(self):
         token = signed_transfer_token(index=9004, timestamp=1_700_000_010)
@@ -164,6 +242,186 @@ class TransparencyLogTests(unittest.TestCase):
             root = log.publish_root(1_700_000_040)
             proof = log.inclusion_proof(entry_hash, root["tree_size"])
             self.assertEqual(proof["entry_hash"], entry_hash)
+
+    def test_operator_logs_conflicting_sibling_spend_claims(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        alice_private, alice_public, alice_address = keypair()
+        _bob_private, _bob_public, bob_address = keypair()
+        _carol_private, _carol_public, carol_address = keypair()
+        token = ind_token.make_genesis_token(
+            9010,
+            alice_address,
+            issuer_private,
+            issuer_public,
+            issued_at=1_700_000_000,
+        )
+        to_bob = ind_token.create_transfer(
+            token,
+            alice_private,
+            alice_public,
+            bob_address,
+            timestamp=1_700_000_010,
+        )
+        to_carol = ind_token.create_transfer(
+            token,
+            alice_private,
+            alice_public,
+            carol_address,
+            timestamp=1_700_000_011,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log, _log_private, _log_public = self.make_log(temp_dir)
+
+            first = log.append_transfer_announcement(ind_token.create_transfer_announcement(to_bob))
+
+            self.assertTrue(first["accepted"])
+            self.assertFalse(first["duplicate"])
+            conflicting = log.append_transfer_announcement(ind_token.create_transfer_announcement(to_carol))
+            self.assertTrue(conflicting["accepted"])
+            self.assertFalse(conflicting["duplicate"])
+            duplicate = log.append_transfer_announcement(ind_token.create_transfer_announcement(to_bob))
+            self.assertTrue(duplicate["duplicate"])
+            root = log.publish_root(1_700_000_040)
+            proof = log.spend_map_proof(first["spend_key"], root["tree_size"])
+            self.assertEqual(root["spend_map_size"], 2)
+            self.assertEqual(len(proof["spend_claims"]), 2)
+            with self.assertRaisesRegex(log_client.InclusionProofError, "conflicting sibling"):
+                log_client.verify_spend_map_proof_for_transfer(
+                    to_bob["history"][-1],
+                    proof,
+                    root,
+                    operator_public_key=root["operator_public_key"],
+                )
+
+    def test_current_spend_key_check_catches_later_double_spend(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        alice_private, alice_public, alice_address = keypair()
+        _bob_private, _bob_public, bob_address = keypair()
+        _carol_private, _carol_public, carol_address = keypair()
+        token = ind_token.make_genesis_token(
+            9025,
+            alice_address,
+            issuer_private,
+            issuer_public,
+            issued_at=1_700_000_000,
+        )
+        to_bob = ind_token.create_transfer(
+            token,
+            alice_private,
+            alice_public,
+            bob_address,
+            timestamp=1_700_000_010,
+        )
+        to_carol = ind_token.create_transfer(
+            token,
+            alice_private,
+            alice_public,
+            carol_address,
+            timestamp=1_700_000_011,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log, _log_private, log_public = self.make_log(temp_dir)
+            log.append_transfer_announcement(ind_token.create_transfer_announcement(to_bob))
+            historical_root = log.publish_root(1_700_000_040)
+            log.append_transfer_announcement(ind_token.create_transfer_announcement(to_carol))
+            current_root = log.publish_root(1_700_000_080)
+
+            class RootMirror:
+                def __init__(self, identity_id):
+                    self.identity_id = identity_id
+
+                def root_at(self, timestamp):
+                    if int(timestamp) <= int(historical_root["timestamp"]):
+                        return historical_root
+                    return current_root
+
+                def latest_root(self):
+                    return current_root
+
+            verifier = log_client.TransparencyVerifier(
+                log_client.LocalTransparencyOperator(log),
+                [RootMirror("double-spend-mirror-a"), RootMirror("double-spend-mirror-b")],
+                operator_public_key=log_public,
+                max_root_lag_seconds=60,
+                observed_root_store=in_memory_root_store(),
+                run_startup_check=False,
+            )
+
+            self.assertTrue(verifier.verify_token_history(to_bob))
+            with self.assertRaisesRegex(ind_token.ValidationError, "conflicting sibling"):
+                ind_token.verify_token(to_bob, transparency_verifier=verifier, now=1_700_000_090)
+
+    def test_spend_map_proof_verifies_transfer_winner(self):
+        token = signed_transfer_token(index=9011, timestamp=1_700_000_010)
+        transfer = token["history"][-1]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log, _log_private, log_public = self.make_log(temp_dir)
+            append_result = log.append_transfer_announcement(ind_token.create_transfer_announcement(token))
+            root = log.publish_root(1_700_000_040)
+
+            proof = log.spend_map_proof(append_result["spend_key"], root["tree_size"])
+
+            self.assertEqual(root["spend_map_size"], 1)
+            self.assertTrue(
+                log_client.verify_spend_map_proof_for_transfer(
+                    transfer,
+                    proof,
+                    root,
+                    operator_public_key=log_public,
+                )
+            )
+            tampered = copy.deepcopy(proof)
+            tampered["spend_claims"][0]["transfer_hash"] = "00" * 32
+            with self.assertRaises(log_client.InclusionProofError):
+                log_client.verify_spend_map_proof_for_transfer(
+                    transfer,
+                    tampered,
+                    root,
+                    operator_public_key=log_public,
+                )
+
+    def test_directory_proof_archive_verifies_when_operator_withholds_proofs(self):
+        class WithholdingOperator:
+            identity_id = ("withholding-operator", "test")
+
+            def latest_root(self):
+                raise log_client.TransparencyLogError("operator withheld latest root")
+
+            def inclusion_proof(self, entry_hash, tree_size):
+                raise log_client.TransparencyLogError("operator withheld inclusion proof")
+
+            def spend_map_proof(self, spend_key, tree_size):
+                raise log_client.TransparencyLogError("operator withheld spend proof")
+
+        token = signed_transfer_token(index=9024, timestamp=1_700_000_010)
+        transfer = token["history"][-1]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mirror_dir = temp_dir + "/mirror"
+            log, _log_private, log_public = self.make_log(temp_dir)
+            log.mirror_dirs = [Path(mirror_dir)]
+            log.append_transfer_announcement(ind_token.create_transfer_announcement(token))
+            root = log.publish_root(1_700_000_040)
+            mirror = log_client.DirectoryRootMirror(mirror_dir)
+            verifier = log_client.TransparencyVerifier(
+                WithholdingOperator(),
+                [mirror],
+                operator_public_key=log_public,
+                max_root_lag_seconds=60,
+                min_mirrors=1,
+                allow_unsafe_single_mirror=True,
+                observed_root_store=in_memory_root_store(),
+                proof_archives=[mirror],
+                run_startup_check=False,
+            )
+
+            self.assertTrue(verifier.verify_transfer(transfer, now=1_700_000_050))
+            self.assertTrue(log_client.verify_proof_archive(log.proof_archive(root["tree_size"]), root, log_public))
+
+    def test_verifier_environment_propagates_settings_errors(self):
+        with mock.patch.object(ind_settings, "load_security_settings", side_effect=ValueError("bad production config")):
+            with self.assertRaisesRegex(ValueError, "bad production config"):
+                log_client.verifier_from_environment()
 
     def test_strict_store_verifies_submission_against_mirrored_root_before_accepting(self):
         token = signed_transfer_token(index=9005, timestamp=1_700_000_010)
@@ -208,7 +466,7 @@ class TransparencyLogTests(unittest.TestCase):
         entry_hash = ind_token.transfer_hash(token["history"][-1])
         with tempfile.TemporaryDirectory() as temp_dir:
             log, _log_private, log_public = self.make_log(temp_dir)
-            log.append_entry_hash(entry_hash)
+            log.append_transfer_announcement(announcement)
             root = log.publish_root(1_700_000_040)
             verifier = log_client.TransparencyVerifier(
                 log_client.LocalTransparencyOperator(log),
@@ -233,10 +491,9 @@ class TransparencyLogTests(unittest.TestCase):
 
     def test_retroactive_forgery_is_rejected_when_root_is_too_late(self):
         token = signed_transfer_token(index=9003, timestamp=1_700_000_010)
-        entry_hash = ind_token.transfer_hash(token["history"][-1])
         with tempfile.TemporaryDirectory() as temp_dir:
             log, _log_private, log_public = self.make_log(temp_dir)
-            log.append_entry_hash(entry_hash)
+            log.append_transfer_announcement(ind_token.create_transfer_announcement(token))
             late_root = log.publish_root(1_700_001_000)
             verifier = log_client.TransparencyVerifier(
                 log_client.LocalTransparencyOperator(log),

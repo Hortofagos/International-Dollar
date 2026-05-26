@@ -10,6 +10,7 @@ import ecdsa
 from ecdsa import util as ecdsa_util
 
 import ind_token
+from ind import settings as ind_settings
 
 
 def keypair(seed=None):
@@ -203,6 +204,43 @@ class ProtocolHardeningTests(unittest.TestCase):
                 conn.close()
         self.assertEqual(user_version, 1)
         self.assertEqual(row[0], "1")
+
+    def test_production_security_profile_requires_strict_trust_pins(self):
+        unsafe = ind_settings.default_settings()
+        unsafe["security_profile"] = "production"
+        with self.assertRaisesRegex(ValueError, "production IND security settings are incomplete"):
+            ind_settings.assert_production_security(unsafe)
+
+        _operator_private, operator_public, _operator_address = keypair()
+        _issuer_private, issuer_public, _issuer_address = keypair()
+        strict = ind_settings.default_settings()
+        strict.update(
+            {
+                "security_profile": "production",
+                "require_transparency_log": True,
+                "transparency_operator_url": "https://operator.example",
+                "transparency_operator_public_key": operator_public,
+                "trusted_root_mirrors": ["https://mirror-a.example", "https://mirror-b.example"],
+                "transparency_proof_archives": ["https://archive-a.example"],
+                "trusted_genesis_issuer_keys": [issuer_public],
+            }
+        )
+
+        with temporary_env(IND_ALLOW_UNTRUSTED_GENESIS=None):
+            self.assertTrue(ind_settings.assert_production_security(strict))
+
+        operator_settings = dict(strict)
+        operator_settings["security_role"] = "operator"
+        with temporary_env(IND_ALLOW_UNTRUSTED_GENESIS=None):
+            self.assertTrue(ind_settings.assert_production_security(operator_settings))
+
+    def test_security_settings_malformed_json_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings_path = os.path.join(temp_dir, "security_settings.json")
+            with open(settings_path, "w", encoding="utf-8") as handle:
+                handle.write('{"security_profile": "production",')
+            with self.assertRaisesRegex(ValueError, "invalid IND security settings JSON"):
+                ind_settings.load_security_settings(settings_path)
 
 
 if __name__ == "__main__":

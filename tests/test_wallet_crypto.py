@@ -36,6 +36,37 @@ class WalletCryptoTests(unittest.TestCase):
         os.makedirs("files", exist_ok=True)
         os.makedirs("wallet_folder", exist_ok=True)
 
+    def test_wallet_password_minimum_is_six_characters(self):
+        wallet_crypto.validate_wallet_password("aB3!xY")
+
+        with self.assertRaisesRegex(wallet_crypto.PasswordPolicyError, "at least 6 characters"):
+            wallet_crypto.validate_wallet_password("aB3!x")
+
+    def test_sign_in_choice_cannot_be_persisted(self):
+        with tempfile.TemporaryDirectory() as temp_dir, temporary_cwd(temp_dir):
+            self._make_runtime_dirs()
+            runtime_json.ensure_runtime_files()
+
+            runtime_json.set_check_signed_in(True)
+
+            self.assertFalse(runtime_json.get_check_signed_in())
+            self.assertFalse(runtime_json.read_state()["check_signed_in"])
+
+    def test_plaintext_wallet_cleanup_removes_files_and_unlocked_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir, temporary_cwd(temp_dir):
+            self._make_runtime_dirs()
+            runtime_json.ensure_runtime_files()
+            stale_path = runtime_json.decrypted_wallet_path("addr123")
+            stale_path.write_text("addr123\nprivate-key\npublic-key\n", encoding="utf-8")
+            runtime_json.write_decrypted_wallet("addr456", "addr456\nprivate-key\npublic-key\n")
+            wallet_crypto.set_session_mwk("addr456", b"\x01" * wallet_crypto.MWK_BYTES)
+
+            wallet_decryption.clear_plaintext_wallet_files(clear_memory=True)
+
+            self.assertFalse(stale_path.exists())
+            self.assertEqual(runtime_json.iter_decrypted_wallet_files(), [])
+            self.assertIsNone(wallet_crypto.get_session_mwk("addr456"))
+
     def test_wallet_encryption_uses_indw2_wrapped_mwk_and_decrypts_in_memory(self):
         with tempfile.TemporaryDirectory() as temp_dir, temporary_cwd(temp_dir):
             self._make_runtime_dirs()

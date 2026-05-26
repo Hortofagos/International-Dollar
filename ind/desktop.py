@@ -69,10 +69,16 @@ def decode(qrimage):
 
 def ensure_runtime_files_light():
     runtime_json.ensure_runtime_files()
+    runtime_json.set_check_signed_in(False)
+    runtime_json.clear_passphrase_request()
     for path, default in RUNTIME_FILES.items():
         if not os.path.exists(path):
             with open(path, 'w') as handle:
                 handle.write(default)
+    try:
+        wallet_decryption.clear_plaintext_wallet_files(clear_memory=True)
+    except Exception:
+        pass
 
 
 ensure_runtime_files_light()
@@ -183,7 +189,10 @@ def relaunch_application():
 
 APP_BASE_WIDTH = 1214
 APP_BASE_HEIGHT = 771
-APP_HIDPI_SCALE = 2
+APP_SCALE_PRESETS = (2.0, 1.5, 1.25, 1.0)
+APP_HIDPI_ASSET_SCALE = 1.75
+APP_MIN_UPSCALE_WIDTH = 2000
+APP_MIN_UPSCALE_HEIGHT = 1100
 HEADER_BUTTON_X_NUDGE = -1
 HEADER_BUTTON_Y_NUDGE = -2
 SIGN_IN_PAGE_Y_NUDGE = -2
@@ -203,13 +212,48 @@ def enable_high_dpi_awareness():
         pass
 
 
-def choose_app_scale(screen_width, screen_height):
-    if (
-        screen_width >= APP_BASE_WIDTH * APP_HIDPI_SCALE
-        and screen_height >= APP_BASE_HEIGHT * APP_HIDPI_SCALE
-    ):
-        return APP_HIDPI_SCALE
-    return 1
+def scaled_px(value, scale):
+    return int(round(value * scale))
+
+
+def windows_work_area_size():
+    if platform.system() != 'Windows':
+        return None
+
+    try:
+        import ctypes
+
+        class RECT(ctypes.Structure):
+            _fields_ = (
+                ('left', ctypes.c_long),
+                ('top', ctypes.c_long),
+                ('right', ctypes.c_long),
+                ('bottom', ctypes.c_long),
+            )
+
+        work_area = RECT()
+        if ctypes.windll.user32.SystemParametersInfoW(48, 0, ctypes.byref(work_area), 0):
+            return work_area.right - work_area.left, work_area.bottom - work_area.top
+    except Exception:
+        pass
+    return None
+
+
+def monitor_work_area_size(tk_root):
+    return windows_work_area_size() or (tk_root.winfo_screenwidth(), tk_root.winfo_screenheight())
+
+
+def choose_app_scale(work_area_width, work_area_height):
+    if work_area_width < APP_MIN_UPSCALE_WIDTH or work_area_height < APP_MIN_UPSCALE_HEIGHT:
+        return 1.0
+
+    for scale in APP_SCALE_PRESETS:
+        if (
+            scaled_px(APP_BASE_WIDTH, scale) <= work_area_width
+            and scaled_px(APP_BASE_HEIGHT, scale) <= work_area_height
+        ):
+            return scale
+    return APP_SCALE_PRESETS[-1]
 
 
 # the main.py file is more or less just the tkinter GUI implementation
@@ -226,11 +270,10 @@ root.title('International Dollar')
 root.tk.call('tk', 'scaling', 1.36)
 
 # reso determines the high-resolution GUI multiplier.
-screen_width = root.winfo_screenwidth()
-screen_height = root.winfo_screenheight()
-reso = choose_app_scale(screen_width, screen_height)
-res = '4' if reso == APP_HIDPI_SCALE else ''
-root.geometry(f'{APP_BASE_WIDTH * reso}x{APP_BASE_HEIGHT * reso}')
+work_area_width, work_area_height = monitor_work_area_size(root)
+reso = choose_app_scale(work_area_width, work_area_height)
+res = '4' if reso >= APP_HIDPI_ASSET_SCALE else ''
+root.geometry(f'{scaled_px(APP_BASE_WIDTH, reso)}x{scaled_px(APP_BASE_HEIGHT, reso)}')
 try:
     root.iconbitmap(str(BASE_DIR / 'img' / 'logo.ico'))
 except Exception:
@@ -243,7 +286,66 @@ IND_ORANGE = '#f15a24'
 IND_BLACK = '#000000'
 IND_WHITE = '#ffffff'
 IND_MUTED = '#bfbfbf'
+IND_PENDING = '#777777'
 WALLET_SEND_Y_OFFSET = 30
+PRINT_AVAILABLE_X = 104
+PRINT_QUEUE_X = 654
+PRINT_LIST_Y = 378
+PRINT_LIST_WIDTH = 456
+PRINT_LIST_HEIGHT = 222
+PRINT_PRIMARY_BUTTON_WIDTH = 291
+PRINT_QR_BUTTON_WIDTH = 187
+PRINT_CHARGE_BUTTON_WIDTH = 267
+PRINT_ACTION_GAP = 22
+PRINT_ACTION_GROUP_WIDTH = PRINT_PRIMARY_BUTTON_WIDTH + PRINT_ACTION_GAP + PRINT_QR_BUTTON_WIDTH
+PRINT_PRIMARY_BUTTON_X = PRINT_QUEUE_X + (PRINT_LIST_WIDTH - PRINT_ACTION_GROUP_WIDTH) // 2
+PRINT_QR_BUTTON_X = PRINT_PRIMARY_BUTTON_X + PRINT_PRIMARY_BUTTON_WIDTH + PRINT_ACTION_GAP
+PRINT_ACTION_Y = 654
+PRINT_CHARGE_BUTTON_X = PRINT_QUEUE_X + (PRINT_LIST_WIDTH - PRINT_CHARGE_BUTTON_WIDTH) // 2
+GENERATE_WALLET_PANEL_LEFT = 282
+GENERATE_WALLET_PANEL_RIGHT = 933
+GENERATE_WALLET_PANEL_WIDTH = GENERATE_WALLET_PANEL_RIGHT - GENERATE_WALLET_PANEL_LEFT
+GENERATE_WALLET_FIELD_X = 360
+GENERATE_WALLET_FIELD_WIDTH = 400
+GENERATE_WALLET_BUTTON_GAP = 12
+GENERATE_WALLET_SIDE_BUTTON_WIDTH = 100
+GENERATE_WALLET_SUBMIT_BUTTON_WIDTH = 267
+GENERATE_WALLET_SIDE_BUTTON_X = GENERATE_WALLET_FIELD_X + GENERATE_WALLET_FIELD_WIDTH + GENERATE_WALLET_BUTTON_GAP
+GENERATE_WALLET_SUBMIT_BUTTON_X = GENERATE_WALLET_PANEL_LEFT + (
+    GENERATE_WALLET_PANEL_WIDTH - GENERATE_WALLET_SUBMIT_BUTTON_WIDTH
+) // 2
+GENERATE_WALLET_ADDRESS_Y = 312
+GENERATE_WALLET_PUBLIC_KEY_Y = 405
+GENERATE_WALLET_PRIVATE_KEY_Y = 498
+GENERATE_WALLET_PASSWORD_Y = 591
+GENERATE_WALLET_KEY_FIELD_HEIGHT = 38
+GENERATE_WALLET_FIELD_HEIGHT = 42
+CLAIM_MODAL_X = 335
+CLAIM_MODAL_Y = 154
+CLAIM_ENTRY_X = CLAIM_MODAL_X + 29
+CLAIM_ENTRY_WIDTH = 440
+CLAIM_SERIAL_Y = CLAIM_MODAL_Y + 126
+CLAIM_PUBLIC_Y = CLAIM_MODAL_Y + 216
+CLAIM_PRIVATE_Y = CLAIM_MODAL_Y + 306
+CLAIM_DETAIL_X = CLAIM_MODAL_X + 325
+CLAIM_DETAIL_WIDTH = 144
+LOCAL_OPERATOR_URL = 'http://127.0.0.1:8890'
+LOCAL_OPERATOR_MIRROR_DIR = 'files/transparency_roots'
+LOCAL_OPERATOR_ROOT_INTERVAL_SECONDS = 2
+LOCAL_OPERATOR_SUBMISSION_VERIFY_TIMEOUT_SECONDS = 8
+LOCAL_OPERATOR_ENV_KEYS = (
+    'IND_SUBMIT_TO_TRANSPARENCY_LOG',
+    'IND_LOG_OPERATOR_URL',
+    'IND_LOG_MIRROR_URLS',
+    'IND_LOG_MIRROR_DIRS',
+    'IND_LOG_PROOF_ARCHIVES',
+    'IND_LOG_UNSAFE_SINGLE_MIRROR',
+    'IND_LOG_MIN_MIRRORS',
+    'IND_LOG_HOST',
+    'IND_LOG_PORT',
+    'IND_LOG_ROOT_INTERVAL_SECONDS',
+    'IND_LOG_SUBMISSION_VERIFY_TIMEOUT_SECONDS',
+)
 INFO_MAX_SUPPLY = f'{ind_token.MASTER_SUPPLY_NUMBER} Billion'
 
 GUI_TEXT = {
@@ -252,13 +354,21 @@ GUI_TEXT = {
     'home_code_open': '(',
     'home_code_body': '"Hello World!"',
     'home_code_suffix': ')',
-    'node_labels': ('Node class:', 'Run on startup:', 'Run in background:'),
+    'node_labels': ('Node class:', 'Run on startup:', 'Run in background:', 'Full operator:'),
     'node_forwarding': (
         'If you are running a full node make sure to\n'
-        'forward TCP port 8888 to your local machine\n'
+        f'forward TCP port {ind_settings.node_port()} to your local machine\n'
         'via your router terminal.'
     ),
-    'node_ipv4': 'Only IPv4 addresses are supported\ndue to their limited availability.',
+    'node_description': (
+        'A node keeps the IND gossip network alive: it accepts peer\n'
+        'connections, relays transfers and receipts, stores local token\n'
+        'state, and forwards double-spend proofs.'
+    ),
+    'node_operator_description': (
+        'Full operator mode also runs the local Merkle transparency log.\n'
+        'It appends validated transfer hashes and publishes signed roots.'
+    ),
     'info_features': (
         'No miner voting',
         '33 Billion max supply',
@@ -286,13 +396,17 @@ GUI_TEXT = {
     'info_supply_label': 'max supply',
     'info_inflation': '0%\ninflation',
     'print_title': 'Print bills from your wallet!',
+    'print_available_label': 'Available bills',
+    'print_available_meta': 'Unlocked wallet',
+    'print_queue_label': 'Bills to print',
+    'print_queue_meta': 'Selected bill IDs',
     'wallet_send_title': 'Send IND',
     'wallet_receiver_label': 'Receiver address:',
     'wallet_amount_label': 'Amount (select bills):',
     'wallet_receive_title': 'Receive IND',
+    'wallet_locked_message': 'No wallet unlocked.\nGo to Sign In to unlock one.',
     'signin_wallet_label': 'Enter wallet address',
     'signin_password_label': 'Enter wallet password',
-    'signin_stay_label': 'Remember sign-in choice',
     'generate_wallet_address': 'Wallet address',
     'generate_public_key': 'Public key',
     'generate_private_key': 'Private key',
@@ -309,9 +423,11 @@ GUI_TEXT = {
     'settings_root_lag': 'Max root lag (s)',
     'settings_min_mirrors': 'Min mirrors',
     'claim_title': 'Claim new bills',
-    'claim_serial': 'Serial number:',
-    'claim_public': 'Public key:',
-    'claim_private': 'Private key:',
+    'claim_serial': 'Serial number',
+    'claim_public': 'Public key',
+    'claim_private': 'Private key',
+    'claim_number': 'Number',
+    'claim_total': 'Total',
     'qr_drop': 'Drop QR image\nor use webcam',
     'success_title': 'Success!',
     'success_body': (
@@ -323,7 +439,45 @@ GUI_TEXT = {
 
 
 def px(value):
-    return int(value * reso)
+    return scaled_px(value, reso)
+
+
+def error_detail(error):
+    """Return a readable one-line error for wallet action popups."""
+
+    if isinstance(error, Exception):
+        message = str(error).strip()
+        if message:
+            return f"{error.__class__.__name__}: {message}"
+        return error.__class__.__name__
+    return str(error).strip() or "Unknown error"
+
+
+def show_error_popup(title, error):
+    """Show a simple error popup, safely scheduling it from worker threads."""
+
+    detail = error_detail(error)
+
+    def show():
+        messagebox.showerror(title, detail)
+
+    try:
+        if threading.current_thread() is threading.main_thread():
+            show()
+        else:
+            root.after(0, show)
+    except Exception:
+        pass
+
+
+def refresh_wallet_view():
+    """Refresh visible wallet state and report refresh failures."""
+
+    try:
+        update_balance()
+        page()
+    except Exception as exc:
+        show_error_popup('Wallet refresh failed', exc)
 
 
 def place_scaled(widget, x, y, width=None, height=None, x_nudge=0, y_nudge=0):
@@ -373,11 +527,6 @@ def canvas_text(canvas, x, y, text, size, fill=IND_WHITE, anchor='nw', justify='
     if width is not None:
         kwargs['width'] = px(width)
     return canvas.create_text(px(x), px(y), **kwargs)
-
-
-def make_icon_button(text, command, font_size=18, bg=IND_BLACK, fg=IND_WHITE):
-    return make_text_button(text, command, font_size=font_size, bg=bg, fg=fg, bd=1, relief=SOLID)
-
 
 class GuiScreen(Canvas):
     def __init__(self, master, screen_name, width=APP_BASE_WIDTH, height=APP_BASE_HEIGHT):
@@ -430,10 +579,11 @@ class GuiScreen(Canvas):
         canvas_text(self, 781, 420, GUI_TEXT['home_code_suffix'], 45, fill=IND_WHITE)
 
     def draw_node_terminal(self):
-        for y, label in zip((260, 400, 540), GUI_TEXT['node_labels']):
-            canvas_text(self, 52, y, label, 34)
-        canvas_text(self, 832, 260, GUI_TEXT['node_forwarding'], 20, width=330)
-        canvas_text(self, 832, 405, GUI_TEXT['node_ipv4'], 20, width=330)
+        for y, label in zip((260, 380, 500, 620), GUI_TEXT['node_labels']):
+            canvas_text(self, 70, y, label, 31)
+        canvas_text(self, 832, 250, GUI_TEXT['node_forwarding'], 19, width=330)
+        canvas_text(self, 832, 390, GUI_TEXT['node_description'], 17, width=345)
+        canvas_text(self, 832, 548, GUI_TEXT['node_operator_description'], 17, width=345)
 
     def draw_info(self):
         self.line(362, 152, 362, APP_BASE_HEIGHT)
@@ -441,10 +591,10 @@ class GuiScreen(Canvas):
         y = 215
         for feature in GUI_TEXT['info_features']:
             self.checkmark(20, y)
-            canvas_text(self, 85, y, feature, 35)
+            canvas_text(self, 85, y + 4, feature, 31)
             y += 90
-        canvas_text(self, 682, 175, GUI_TEXT['info_title'], 42, anchor='n', justify='center')
-        canvas_text(self, 382, 235, GUI_TEXT['info_body'], 18, fill=IND_WHITE, width=575)
+        canvas_text(self, 682, 176, GUI_TEXT['info_title'], 38, anchor='n', justify='center')
+        canvas_text(self, 382, 238, GUI_TEXT['info_body'], 17, fill=IND_WHITE, width=575)
         self.create_oval(px(1003), px(184), px(1183), px(364), outline=IND_RED, width=px(16))
         self.line(1030, 330, 1159, 210, color=IND_RED, width=14)
         canvas_text(self, 1093, 254, GUI_TEXT['info_blockchain'], 28, anchor='n', justify='center')
@@ -454,30 +604,37 @@ class GuiScreen(Canvas):
         canvas_text(self, 1093, 620, GUI_TEXT['info_inflation'], 43, anchor='n', justify='center')
 
     def draw_print_page(self):
-        canvas_text(self, 637, 195, GUI_TEXT['print_title'], 40)
+        canvas_text(self, 607, 184, GUI_TEXT['print_title'], 36, anchor='n', justify='center')
+        self.rect(72, 278, 584, 626, fill='#090909', outline='#363636', width=1)
+        self.rect(630, 278, 1142, 626, fill='#111111', outline='#363636', width=1)
+        canvas_text(self, 104, 306, GUI_TEXT['print_available_label'], 26)
+        canvas_text(self, 104, 337, GUI_TEXT['print_available_meta'], 18, fill=IND_MUTED)
+        canvas_text(self, 654, 306, GUI_TEXT['print_queue_label'], 26)
+        canvas_text(self, 654, 337, GUI_TEXT['print_queue_meta'], 18, fill=IND_MUTED)
+        self.line(607, 318, 607, 584, color='#525252', width=1)
 
     def draw_wallet(self):
         self.line(825, 151, 825, APP_BASE_HEIGHT)
-        canvas_text(self, 1020, 135 + WALLET_SEND_Y_OFFSET, GUI_TEXT['wallet_send_title'], 32, anchor='n',
+        canvas_text(self, 1020, 138 + WALLET_SEND_Y_OFFSET, GUI_TEXT['wallet_send_title'], 30, anchor='n',
                     justify='center')
-        canvas_text(self, 852, 180 + WALLET_SEND_Y_OFFSET, GUI_TEXT['wallet_receiver_label'], 24)
-        canvas_text(self, 852, 261 + WALLET_SEND_Y_OFFSET, GUI_TEXT['wallet_amount_label'], 24)
-        canvas_text(self, 1024, 420, GUI_TEXT['wallet_receive_title'], 32, anchor='n', justify='center')
+        canvas_text(self, 852, 176 + WALLET_SEND_Y_OFFSET, GUI_TEXT['wallet_receiver_label'], 22)
+        canvas_text(self, 852, 257 + WALLET_SEND_Y_OFFSET, GUI_TEXT['wallet_amount_label'], 22)
+        canvas_text(self, 1024, 420, GUI_TEXT['wallet_receive_title'], 30, anchor='n', justify='center')
 
     def draw_settings(self):
-        canvas_text(self, 62, 176, GUI_TEXT['settings_title'], 42)
-        canvas_text(self, 62, 245, GUI_TEXT['settings_peer_servers'], 22)
+        canvas_text(self, 62, 176, GUI_TEXT['settings_title'], 38)
+        canvas_text(self, 62, 240, GUI_TEXT['settings_peer_servers'], 20)
         self.rect(60, 280, 520, 410, fill='#101010', outline=IND_MUTED, width=1)
-        canvas_text(self, 62, 475, GUI_TEXT['settings_finality'], 22)
-        canvas_text(self, 62, 529, GUI_TEXT['settings_timeout'], 22)
-        canvas_text(self, 62, 583, GUI_TEXT['settings_require_log'], 22)
+        canvas_text(self, 62, 475, GUI_TEXT['settings_finality'], 20)
+        canvas_text(self, 62, 529, GUI_TEXT['settings_timeout'], 20)
+        canvas_text(self, 62, 583, GUI_TEXT['settings_require_log'], 20)
         self.line(575, 170, 575, 716, color=IND_MUTED, width=1)
-        canvas_text(self, 620, 176, GUI_TEXT['settings_root_domains'], 22)
+        canvas_text(self, 620, 171, GUI_TEXT['settings_root_domains'], 20)
         self.rect(618, 210, 1142, 292, fill='#101010', outline=IND_MUTED, width=1)
-        canvas_text(self, 620, 312, GUI_TEXT['settings_root_mirrors'], 22)
+        canvas_text(self, 620, 307, GUI_TEXT['settings_root_mirrors'], 20)
         self.rect(618, 346, 1142, 438, fill='#101010', outline=IND_MUTED, width=1)
-        canvas_text(self, 620, 460, GUI_TEXT['settings_operator_url'], 22)
-        canvas_text(self, 620, 512, GUI_TEXT['settings_operator_key'], 22)
+        canvas_text(self, 620, 460, GUI_TEXT['settings_operator_url'], 20)
+        canvas_text(self, 620, 512, GUI_TEXT['settings_operator_key'], 20)
         self.rect(618, 546, 1142, 612, fill='#101010', outline=IND_MUTED, width=1)
         canvas_text(self, 620, 632, GUI_TEXT['settings_root_lag'], 20)
         canvas_text(self, 860, 632, GUI_TEXT['settings_min_mirrors'], 20)
@@ -486,14 +643,23 @@ class GuiScreen(Canvas):
         self.rect(282, 190, 933, 740, fill=IND_BLACK, outline=IND_WHITE, width=3)
         self.rect(282, 190, 933, 253, fill=IND_WHITE, outline=IND_WHITE, width=1)
         if generate:
-            canvas_text(self, 607, 276, GUI_TEXT['generate_wallet_address'], 28, anchor='n', justify='center')
-            canvas_text(self, 607, 386, GUI_TEXT['generate_public_key'], 21, anchor='n', justify='center')
-            canvas_text(self, 607, 467, GUI_TEXT['generate_private_key'], 21, anchor='n', justify='center')
-            canvas_text(self, 607, 549, GUI_TEXT['generate_password'], 29, anchor='n', justify='center')
+            for label, y in (
+                (GUI_TEXT['generate_wallet_address'], GENERATE_WALLET_ADDRESS_Y),
+                (GUI_TEXT['generate_public_key'], GENERATE_WALLET_PUBLIC_KEY_Y),
+                (GUI_TEXT['generate_private_key'], GENERATE_WALLET_PRIVATE_KEY_Y),
+                (GUI_TEXT['generate_password'], GENERATE_WALLET_PASSWORD_Y),
+            ):
+                canvas_text(self, GENERATE_WALLET_FIELD_X, y - 36, label, 19, fill=IND_MUTED)
+            for y in (
+                GENERATE_WALLET_ADDRESS_Y + 58,
+                GENERATE_WALLET_PUBLIC_KEY_Y + 58,
+                GENERATE_WALLET_PRIVATE_KEY_Y + 58,
+                GENERATE_WALLET_PASSWORD_Y + 58,
+            ):
+                self.line(348, y, 872, y, color='#242424', width=1)
         else:
-            canvas_text(self, 607, 303, GUI_TEXT['signin_wallet_label'], 28, anchor='n', justify='center')
-            canvas_text(self, 607, 448, GUI_TEXT['signin_password_label'], 28, anchor='n', justify='center')
-            canvas_text(self, 607, 598, GUI_TEXT['signin_stay_label'], 18, anchor='n', justify='center')
+            canvas_text(self, 607, 297, GUI_TEXT['signin_wallet_label'], 28, anchor='n', justify='center')
+            canvas_text(self, 607, 442, GUI_TEXT['signin_password_label'], 28, anchor='n', justify='center')
 
     def draw_sign_in(self):
         self.draw_sign_in_panel(generate=False)
@@ -521,11 +687,13 @@ class ModalCanvas(Canvas):
         self.create_rectangle(px(1), px(1), px(self.width - 1), px(self.height - 1), outline=IND_WHITE,
                               width=px(2), fill=self['bg'])
         if self.modal_name == 'claim':
-            canvas_text(self, 246, 32, GUI_TEXT['claim_title'], 34, anchor='n', justify='center')
-            canvas_text(self, 30, 108, GUI_TEXT['claim_serial'], 28)
-            canvas_text(self, 30, 200, GUI_TEXT['claim_public'], 28)
-            canvas_text(self, 30, 292, GUI_TEXT['claim_private'], 28)
+            canvas_text(self, 246, 24, GUI_TEXT['claim_title'], 32, anchor='n', justify='center')
+            canvas_text(self, 29, 90, GUI_TEXT['claim_serial'], 22, fill=IND_MUTED)
+            canvas_text(self, 29, 180, GUI_TEXT['claim_public'], 22, fill=IND_MUTED)
+            canvas_text(self, 29, 270, GUI_TEXT['claim_private'], 22, fill=IND_MUTED)
             self.create_rectangle(px(28), px(382), px(309), px(560), fill=IND_WHITE, outline=IND_WHITE)
+            canvas_text(self, 325, 350, GUI_TEXT['claim_number'], 20, fill=IND_MUTED)
+            canvas_text(self, 325, 450, GUI_TEXT['claim_total'], 20, fill=IND_MUTED)
         elif self.modal_name == 'success':
             self.create_rectangle(px(1), px(1), px(self.width - 1), px(self.height - 1), outline=IND_GREEN,
                                   width=px(2), fill='#007a3b')
@@ -541,7 +709,7 @@ class ModalCanvas(Canvas):
 
 def make_text_button(text, command, font_size=24, bg=IND_GREEN, fg='white', font_weight=None, bd=0,
                      relief=FLAT):
-    font = (APP_FONT_FAMILY, font_size * reso) if font_weight is None else (APP_FONT_FAMILY, font_size * reso, font_weight)
+    font = app_font(font_size, font_weight)
     return Button(
         root,
         text=text,
@@ -568,21 +736,48 @@ def control_image_path(folder, name):
     return BASE_DIR / 'img' / folder / f'{name}.png'
 
 
-def make_asset_button(folder, name, command, fallback_text, font_size=18, bg=IND_BLACK, fg=IND_WHITE):
-    try:
-        image = PhotoImage(file=str(control_image_path(folder, name)))
-        button = Button(
-            root,
-            image=image,
+def source_asset_image_path(folder, name):
+    high_res_path = BASE_DIR / 'img' / folder / f'{name}4.png'
+    if high_res_path.exists():
+        return high_res_path
+    return BASE_DIR / 'img' / folder / f'{name}.png'
+
+
+class ScaledAssetButton(Button):
+    def __init__(self, master, image_path, command, bg=IND_BLACK):
+        with Image.open(image_path) as source:
+            self.source_image = source.convert('RGBA')
+        self.current_image = None
+        self.current_size = None
+        super().__init__(
+            master,
             command=command,
             bd=0,
             highlightthickness=0,
             cursor='hand2',
+            bg=bg,
+            activebackground=bg,
             relief=FLAT,
             overrelief=FLAT,
+            padx=0,
+            pady=0,
         )
-        button.image = image
-        return button
+        self.bind('<Configure>', self.resize_asset)
+
+    def resize_asset(self, event=None):
+        width = event.width if event else self.winfo_width()
+        height = event.height if event else self.winfo_height()
+        if width <= 1 or height <= 1 or self.current_size == (width, height):
+            return
+        self.current_size = (width, height)
+        resized = self.source_image.resize((width, height), Image.Resampling.LANCZOS)
+        self.current_image = ImageTk.PhotoImage(resized)
+        self.config(image=self.current_image)
+
+
+def make_asset_button(folder, name, command, fallback_text, font_size=18, bg=IND_BLACK, fg=IND_WHITE):
+    try:
+        return ScaledAssetButton(root, source_asset_image_path(folder, name), command, bg=bg)
     except Exception:
         return make_text_button(fallback_text, command, font_size=font_size, bg=bg, fg=fg, bd=1, relief=SOLID)
 
@@ -605,6 +800,50 @@ def update_wallet():
         dr_w = runtime_json.read_decrypted_wallet_lines(wallet_path)
         num_lines_w = len(dr_w)
         return dr_w, num_lines_w
+
+
+def wallet_is_unlocked():
+    return any(
+        wallet_path.name.startswith('wallet_decrypted')
+        for wallet_path in runtime_json.iter_decrypted_wallet_files()
+    )
+
+
+def wallet_spendable_records():
+    wallet_lines, _ = update_wallet()
+    if not wallet_lines:
+        return []
+    wallet_address = wallet_lines[0].strip()
+    store = ind_token.INDLocalStore()
+    try:
+        store.finalize_pending(buffer_seconds=ind_settings.finality_buffer_seconds())
+    except Exception:
+        pass
+    return wallet_services.spendable_wallet_records(wallet_address, store=store)
+
+
+def wallet_pending_records():
+    wallet_lines, _ = update_wallet()
+    if not wallet_lines:
+        return []
+    wallet_address = wallet_lines[0].strip()
+    store = ind_token.INDLocalStore()
+    try:
+        store.finalize_pending(buffer_seconds=ind_settings.finality_buffer_seconds())
+    except Exception:
+        pass
+    return wallet_services.pending_wallet_records(wallet_address, store=store)
+
+
+def wallet_record_value(record):
+    try:
+        return int(record.get("value"))
+    except Exception:
+        try:
+            return int(str(record.get("display_id", "")).split("x", 1)[0].lstrip("-"))
+        except Exception:
+            return 0
+
 
 try:
     dr, num_lines = update_wallet()
@@ -640,10 +879,10 @@ def ensure_wallet_qr():
         )
         address_qr.add_data(wa_sliced)
         qr_make = address_qr.make_image(fill_color='black', back_color='#D3D3D3')
-        qr_resize = qr_make.resize((250 * reso, 250 * reso), Image.Resampling.LANCZOS)
+        qr_resize = qr_make.resize((px(250), px(250)), Image.Resampling.LANCZOS)
         qr_img = ImageTk.PhotoImage(qr_resize)
         qr = Label(root, image=qr_img, bd=0, highlightthickness=0)
-        address_txt = Text(root, font=(APP_FONT_FAMILY, 19 * reso), bg='black', fg='white', bd=0,
+        address_txt = Text(root, font=app_font(19), bg='black', fg='white', bd=0,
                            highlightthickness=0)
         return True
     except Exception:
@@ -676,34 +915,43 @@ def load_logo_image():
 
 
 root.after_idle(load_logo_image)
-receiver = Entry(root, font=(APP_FONT_FAMILY, 20 * reso), bg='light grey')
+receiver = Entry(root, font=app_font(20), bg='light grey')
 frame_w = Frame(root, bg='black')
 # disable window resize
 root.resizable(False, False)
 
 
 l2, l3, l4 = runtime_json.read_node_config()
+l_operator = runtime_json.read_node_operator_enabled()
 
 # Node Terminal notice. Nodes must be reachable over TCP; UDP hole punching is no longer used.
-node_port_notice = Text(root, font=(APP_FONT_FAMILY, 19 * reso), bg='black', fg='white', bd=0, highlightthickness=0)
-node_port_notice.insert(1.0, 'Open TCP port 8888\non your router/firewall')
+node_port_notice = Text(root, font=app_font(19), bg='black', fg='white', bd=0, highlightthickness=0)
+node_port_notice.insert(1.0, f'Open TCP port {ind_settings.node_port()}\non your router/firewall')
 node_port_notice.config(state='disabled', cursor='arrow')
 
 # run on startup option
 ron_var = StringVar(root)
 ron = OptionMenu(root, ron_var, 'YES', 'NO')
-ron.config(font=(APP_FONT_FAMILY, 24 * reso, 'bold'), cursor='hand2', bg='black', fg='white')
+ron.config(font=app_font(22, 'bold'), cursor='hand2', bg='black', fg='white')
 rons = root.nametowidget(ron.menuname)
-rons.config(font=(APP_FONT_FAMILY, 20 * reso))
+rons.config(font=app_font(20))
 ron_var.set(l3)
 
 # run in background option
 bak_var = StringVar(root)
 bak = OptionMenu(root, bak_var, 'YES', 'NO')
-bak.config(font=(APP_FONT_FAMILY, 24 * reso, 'bold'), cursor='hand2', bg='black', fg='white')
+bak.config(font=app_font(22, 'bold'), cursor='hand2', bg='black', fg='white')
 baks = root.nametowidget(bak.menuname)
-baks.config(font=(APP_FONT_FAMILY, 20 * reso))
+baks.config(font=app_font(20))
 bak_var.set(l4)
+
+# full operator option: run local Merkle transparency log and submit validated transfers
+full_operator_var = StringVar(root)
+full_operator = OptionMenu(root, full_operator_var, 'NO', 'YES')
+full_operator.config(font=app_font(22, 'bold'), cursor='hand2', bg='black', fg='white')
+full_operators = root.nametowidget(full_operator.menuname)
+full_operators.config(font=app_font(20))
+full_operator_var.set(l_operator)
 
 try:
     USER_NAME = getpass.getuser()
@@ -712,16 +960,142 @@ try:
 except Exception:
     pass
 
+
+node_process = None
+operator_process = None
+operator_env_previous = None
+
+
+def local_operator_settings():
+    mirror_dir = str(BASE_DIR / LOCAL_OPERATOR_MIRROR_DIR)
+    return {
+        'IND_SUBMIT_TO_TRANSPARENCY_LOG': '1',
+        'IND_LOG_OPERATOR_URL': LOCAL_OPERATOR_URL,
+        'IND_LOG_MIRROR_URLS': mirror_dir,
+        'IND_LOG_MIRROR_DIRS': mirror_dir,
+        'IND_LOG_PROOF_ARCHIVES': mirror_dir,
+        'IND_LOG_UNSAFE_SINGLE_MIRROR': '1',
+        'IND_LOG_MIN_MIRRORS': '1',
+        'IND_LOG_HOST': '127.0.0.1',
+        'IND_LOG_PORT': LOCAL_OPERATOR_URL.rsplit(':', 1)[-1],
+        'IND_LOG_ROOT_INTERVAL_SECONDS': str(LOCAL_OPERATOR_ROOT_INTERVAL_SECONDS),
+        'IND_LOG_SUBMISSION_VERIFY_TIMEOUT_SECONDS': str(LOCAL_OPERATOR_SUBMISSION_VERIFY_TIMEOUT_SECONDS),
+    }, mirror_dir
+
+
+def apply_operator_environment():
+    global operator_env_previous
+    settings, mirror_dir = local_operator_settings()
+    if operator_env_previous is None:
+        operator_env_previous = {key: os.environ.get(key) for key in LOCAL_OPERATOR_ENV_KEYS}
+    os.environ.update(settings)
+    return os.environ.copy(), mirror_dir
+
+
+def restore_operator_environment():
+    global operator_env_previous
+    if operator_env_previous is None:
+        return
+    for key, value in operator_env_previous.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    operator_env_previous = None
+
+
+def subprocess_kwargs(env=None):
+    kwargs = {
+        'cwd': str(BASE_DIR),
+        'env': env or os.environ.copy(),
+    }
+    if platform.system() == 'Windows' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
+        kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+    return kwargs
+
+
+def start_full_operator_if_enabled():
+    global operator_process
+    if full_operator_var.get() != 'YES':
+        restore_operator_environment()
+        return os.environ.copy()
+    env, mirror_dir = apply_operator_environment()
+    Path(mirror_dir).mkdir(parents=True, exist_ok=True)
+    if operator_process is None or operator_process.poll() is not None:
+        try:
+            operator_process = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(BASE_DIR / 'log_server.py'),
+                    '--host',
+                    '127.0.0.1',
+                    '--port',
+                    LOCAL_OPERATOR_URL.rsplit(':', 1)[-1],
+                    '--mirror-dir',
+                    mirror_dir,
+                    '--root-interval-seconds',
+                    str(LOCAL_OPERATOR_ROOT_INTERVAL_SECONDS),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                **subprocess_kwargs(env),
+            )
+        except Exception:
+            restore_operator_environment()
+            raise
+        time.sleep(1)
+    return env
+
+
+def stop_full_operator():
+    global operator_process
+    if operator_process is None or operator_process.poll() is not None:
+        operator_process = None
+        restore_operator_environment()
+        return
+    operator_process.terminate()
+    try:
+        operator_process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        operator_process.kill()
+    operator_process = None
+    restore_operator_environment()
+
+
+def stop_node_process():
+    global node_process
+    if node_process is not None and node_process.poll() is None:
+        try:
+            node_process.terminate()
+        except Exception:
+            pass
+    node_process = None
+
+
+def startup_bat_contents(node_script):
+    lines = ['@echo off', f'cd /d "{BASE_DIR}"']
+    if full_operator_var.get() == 'YES':
+        settings, mirror_dir = local_operator_settings()
+        lines.extend(f'set {key}={value}' for key, value in settings.items())
+        lines.append(
+            f'start "" "{sys.executable}" "{BASE_DIR / "log_server.py"}" '
+            f'--host 127.0.0.1 --port {LOCAL_OPERATOR_URL.rsplit(":", 1)[-1]} '
+            f'--mirror-dir "{mirror_dir}" --root-interval-seconds {LOCAL_OPERATOR_ROOT_INTERVAL_SECONDS}'
+        )
+    lines.append(f'start "" "{sys.executable}" "{node_script}"')
+    return '\n'.join(lines) + '\n'
+
+
 def start():
     # update node class
-    runtime_json.write_node_config('FULL NODE', ron_var.get(), bak_var.get())
+    runtime_json.write_node_config('FULL NODE', ron_var.get(), bak_var.get(), full_operator_var.get())
 
     # if run on startup is enabled 'YES', write a BAT file
     if ron_var.get() == 'YES':
         try:
-            file_path = str(os.path.dirname(os.path.realpath(__file__))) + '/node_client.pyw'
+            file_path = str(BASE_DIR / 'node_client.py')
             with open(bat_path + '\\' + 'ind_node.bat', 'w+') as bat_file:
-                bat_file.write(r'start "" "%s"' % file_path)
+                bat_file.write(startup_bat_contents(file_path))
         except:
             pass
 
@@ -731,10 +1105,13 @@ def start():
 
     # start a subprocess of the TCP gossip node
     def subp():
-        if platform.system() != 'Windows':
-            subprocess.run("python3 node_client.py", shell=True)
-        else:
-            subprocess.run("python node_client.py", shell=True)
+        global node_process
+        env = start_full_operator_if_enabled()
+        node_process = subprocess.Popen(
+            [sys.executable, str(BASE_DIR / 'node_client.py')],
+            **subprocess_kwargs(env),
+        )
+        node_process.wait()
     threading.Thread(target=subp).start()
     time.sleep(0.5)
 
@@ -749,18 +1126,20 @@ def start():
 # shut the node off
 def end():
     runtime_json.set_kill_node(True)
+    stop_node_process()
+    stop_full_operator()
     end_button.place_forget()
     start_button.place(x=977 * reso, y=190 * reso, width=177 * reso, height=54 * reso)
     time.sleep(1)
 # b = balance
-b = Text(root, font=(APP_FONT_FAMILY, 37 * reso), bg='black', fg='white', bd=0, highlightthickness=0)
-balance_top = Text(root, font=(APP_FONT_FAMILY, 26 * reso), bg='black', fg='white', bd=0, highlightthickness=0)
+b = Text(root, font=app_font(37), bg='black', fg='white', bd=0, highlightthickness=0)
+balance_top = Text(root, font=app_font(26), bg='black', fg='white', bd=0, highlightthickness=0)
 
 start_button = make_asset_button('different_buttons', 'start', start, 'Start', font_size=32, bg=IND_GREEN)
 end_button = make_asset_button('different_buttons', 'end', end, 'End', font_size=32, bg=IND_RED)
 
 
-def make_settings_text(font_size=16):
+def make_settings_text(font_size=15):
     return Text(
         root,
         font=app_font(font_size),
@@ -773,7 +1152,7 @@ def make_settings_text(font_size=16):
     )
 
 
-def make_settings_entry(font_size=18):
+def make_settings_entry(font_size=17):
     return Entry(
         root,
         font=app_font(font_size),
@@ -814,18 +1193,18 @@ def _set_ping_status(message, color=IND_WHITE):
     settings_ping_status.config(state='disabled')
 
 
-settings_peer_servers = make_settings_text(17)
-settings_root_domains = make_settings_text(17)
-settings_root_mirrors = make_settings_text(17)
+settings_peer_servers = make_settings_text(15)
+settings_root_domains = make_settings_text(15)
+settings_root_mirrors = make_settings_text(15)
 settings_operator_key = make_settings_text(14)
-settings_finality_entry = make_settings_entry(19)
-settings_timeout_entry = make_settings_entry(19)
+settings_finality_entry = make_settings_entry(17)
+settings_timeout_entry = make_settings_entry(17)
 settings_operator_url_entry = make_settings_entry(17)
 settings_root_lag_entry = make_settings_entry(17)
 settings_min_mirrors_entry = make_settings_entry(17)
-settings_status = make_settings_text(16)
+settings_status = make_settings_text(15)
 settings_status.config(state='disabled')
-settings_ping_status = make_settings_text(15)
+settings_ping_status = make_settings_text(14)
 settings_ping_status.config(state='disabled')
 settings_require_log_var = StringVar(root)
 settings_require_log = OptionMenu(root, settings_require_log_var, 'YES', 'NO')
@@ -942,8 +1321,8 @@ settings_widgets = (
 )
 
 # a = amount
-a = Entry(root, font=(APP_FONT_FAMILY, 22 * reso), bg='light grey')
-receiver_history = Text(root, font=(APP_FONT_FAMILY, 22 * reso), bg='black', fg='light grey', bd=0, highlightthickness=0)
+a = Entry(root, font=app_font(20), bg='light grey')
+receiver_history = Text(root, font=app_font(18), bg='black', fg='light grey', bd=0, highlightthickness=0)
 receiver_history.bind("<Key>", lambda e: "break")
 
 def write_transfer_announcement(wallet_lines, wallet_bill_line, recipient_address):
@@ -957,46 +1336,72 @@ def charge_bills():
 
     root.config(cursor='watch')
     charge_bills_button.config(cursor='watch')
-    list_sm = list(filter(None, selected_bills_text.get(1.0, END).splitlines()))
-    for wallet_path in runtime_json.iter_decrypted_wallet_files():
-        if wallet_path.name.startswith('wallet_decrypted'):
-            of = runtime_json.read_decrypted_wallet_lines(wallet_path)
-            updated = []
-            for wb in of:
-                if wb.split()[0] in list_sm:
-                    index_item = list_sm.index(wb.split()[0])
-                    try:
-                        state = write_transfer_announcement(of, wb, address_to_charge[index_item])
-                        if state:
-                            updated.append('-' + wb.split()[0] + ' ' + str(state.sequence) + ' ' + str(int(time.time())) + '\n')
-                        else:
+    sent_count = 0
+    errors = []
+    try:
+        list_sm = list(filter(None, selected_bills_text.get(1.0, END).splitlines()))
+        if not list_sm:
+            raise ValueError("No printed bills are selected.")
+        if len(address_to_charge) < len(list_sm):
+            raise ValueError("Printed bill addresses are missing. Print the bills again before charging them.")
+        for wallet_path in runtime_json.iter_decrypted_wallet_files():
+            if wallet_path.name.startswith('wallet_decrypted'):
+                of = runtime_json.read_decrypted_wallet_lines(wallet_path)
+                updated = []
+                for wb in of:
+                    parts = wb.split()
+                    if parts and parts[0] in list_sm:
+                        index_item = list_sm.index(parts[0])
+                        try:
+                            state = write_transfer_announcement(of, wb, address_to_charge[index_item])
+                            if not state:
+                                raise RuntimeError("bill is not spendable or is not settled")
+                            updated.append('-' + parts[0] + ' ' + str(state.sequence) + ' ' + str(int(time.time())) + '\n')
+                            sent_count += 1
+                        except Exception as exc:
+                            errors.append(f"{parts[0]}: {error_detail(exc)}")
                             updated.append(wb)
-                    except:
+                    else:
                         updated.append(wb)
-                else:
-                    updated.append(wb)
-            runtime_json.write_decrypted_wallet_lines(wallet_path, updated)
-    sender_node.send_bills()
-    charge_bills_button.place_forget()
-    button_print.place(x=640 * reso, y=650 * reso, width=291 * reso, height=59 * reso)
-    button_only_qr.place(x=950 * reso, y=650 * reso, width=187 * reso, height=59 * reso)
-    selected_bills_text.delete(1.0, END)
-    root.config(cursor='arrow')
-    update_balance()
-    page()
-    charge_bills_button.config(cursor='hand2')
+                runtime_json.write_decrypted_wallet_lines(wallet_path, updated)
+        if sent_count:
+            sender_node.send_bills()
+        if errors:
+            raise RuntimeError("\n".join(errors))
+        selected_bills_text.delete(1.0, END)
+    except Exception as exc:
+        show_error_popup('Charge bills failed', exc)
+    finally:
+        charge_bills_button.place_forget()
+        button_print.place(
+            x=PRINT_PRIMARY_BUTTON_X * reso,
+            y=PRINT_ACTION_Y * reso,
+            width=PRINT_PRIMARY_BUTTON_WIDTH * reso,
+            height=59 * reso,
+        )
+        button_only_qr.place(
+            x=PRINT_QR_BUTTON_X * reso,
+            y=PRINT_ACTION_Y * reso,
+            width=PRINT_QR_BUTTON_WIDTH * reso,
+            height=59 * reso,
+        )
+        root.config(cursor='arrow')
+        refresh_wallet_view()
+        charge_bills_button.config(cursor='hand2')
 
 def print_bills():
     # this function is responsible for creating a pdf file which the user can print
     if len(selected_bills_text.get(1.0, END)) <= 2:
         return
     list_bills = list(filter(None, selected_bills_text.get(1.0, END).splitlines()))
-    list_bills_2 = []
-    dr, _ = update_wallet()
-    # iterate through all bills in the wallet
-    for b in runtime_json.wallet_token_lines(dr):
-        if b.split()[0] in list_bills:
-            list_bills_2.append((b.split()[0], str(int(b.split()[1]) + 1)))
+    records_by_display_id = {record["display_id"]: record for record in wallet_spendable_records()}
+    list_bills_2 = [
+        (display_id, str(int(records_by_display_id[display_id]["sequence"]) + 1))
+        for display_id in list_bills
+        if display_id in records_by_display_id
+    ]
+    if not list_bills_2:
+        return
     root.config(cursor='watch')
     button_print.config(cursor='watch')
 
@@ -1016,7 +1421,12 @@ def print_bills():
     def show_charge_button():
         button_print.place_forget()
         button_only_qr.place_forget()
-        charge_bills_button.place(x=750 * reso, y=650 * reso, width=267 * reso, height=56 * reso)
+        charge_bills_button.place(
+            x=PRINT_CHARGE_BUTTON_X * reso,
+            y=PRINT_ACTION_Y * reso,
+            width=PRINT_CHARGE_BUTTON_WIDTH * reso,
+            height=56 * reso,
+        )
 
     root.after(60000, show_charge_button)
 
@@ -1025,12 +1435,14 @@ def print_only_qr():
     if len(selected_bills_text.get(1.0, END)) <= 2:
         return
     list_bills = list(filter(None, selected_bills_text.get(1.0, END).splitlines()))
-    list_bills_2 = []
-    dr, _ = update_wallet()
-    # iterate through all bills in the wallet
-    for b in runtime_json.wallet_token_lines(dr):
-        if b.split()[0] in list_bills:
-            list_bills_2.append((b.split()[0], str(int(b.split()[1]) + 1)))
+    records_by_display_id = {record["display_id"]: record for record in wallet_spendable_records()}
+    list_bills_2 = [
+        (display_id, str(int(records_by_display_id[display_id]["sequence"]) + 1))
+        for display_id in list_bills
+        if display_id in records_by_display_id
+    ]
+    if not list_bills_2:
+        return
     root.config(cursor='watch')
     button_print.config(cursor='watch')
     button_only_qr.config(cursor='watch')
@@ -1052,7 +1464,12 @@ def print_only_qr():
     def show_charge_button():
         button_print.place_forget()
         button_only_qr.place_forget()
-        charge_bills_button.place(x=750 * reso, y=650 * reso, width=267 * reso, height=56 * reso)
+        charge_bills_button.place(
+            x=PRINT_CHARGE_BUTTON_X * reso,
+            y=PRINT_ACTION_Y * reso,
+            width=PRINT_CHARGE_BUTTON_WIDTH * reso,
+            height=56 * reso,
+        )
 
     root.after(60000, show_charge_button)
 
@@ -1061,9 +1478,37 @@ button_print = make_asset_button('different_buttons', 'print_button', print_bill
                                  font_size=22, bg=IND_GREEN)
 button_only_qr = make_asset_button('different_buttons', 'only_qr_button', print_only_qr, 'Print only Qr',
                                    font_size=28, bg=IND_GREEN)
-all_bills_text = Text(root, font=(APP_FONT_FAMILY, 22 * reso), bg='black', fg='light grey')
-selected_bills_text = Text(root, font=(APP_FONT_FAMILY, 22 * reso), bg='#181818', fg='light grey')
-asl_text = Text(root, font=(APP_FONT_FAMILY, 26 * reso), bg='black', fg='light grey', bd=0)
+all_bills_text = Text(
+    root,
+    font=app_font(16),
+    bg='#050505',
+    fg='#e6e6e6',
+    insertbackground=IND_WHITE,
+    bd=0,
+    relief=FLAT,
+    highlightthickness=1,
+    highlightbackground='#555555',
+    highlightcolor=IND_GREEN,
+    padx=10 * reso,
+    pady=8 * reso,
+    wrap='none',
+)
+selected_bills_text = Text(
+    root,
+    font=app_font(16),
+    bg='#171717',
+    fg='#f2f2f2',
+    insertbackground=IND_WHITE,
+    bd=0,
+    relief=FLAT,
+    highlightthickness=1,
+    highlightbackground=IND_GREEN,
+    highlightcolor=IND_GREEN,
+    padx=10 * reso,
+    pady=8 * reso,
+    wrap='none',
+)
+asl_text = Text(root, font=app_font(26), bg='black', fg='light grey', bd=0)
 asl_text.insert(1.0, 'Copy bills\t\t   Paste bills to print')
 asl_text.config(state='disabled')
 charge_bills_button = make_asset_button('different_buttons', 'charge_bills_button', charge_bills, 'Charge bills',
@@ -1082,9 +1527,10 @@ def node_terminal_button():
     else:
         end_button.place(x=977 * reso, y=190 * reso, width=177 * reso, height=54 * reso)
     # Node networking notice and settings like "run in background: YES"
-    node_port_notice.place(x=420 * reso,  y=245 * reso, width=360 * reso, height=70 * reso)
-    ron.place(x=450 * reso,  y=395 * reso, width=230 * reso, height=45 * reso)
-    bak.place(x=450 * reso,  y=535 * reso, width=230 * reso, height=45 * reso)
+    node_port_notice.place(x=420 * reso,  y=245 * reso, width=360 * reso, height=80 * reso)
+    ron.place(x=450 * reso,  y=375 * reso, width=230 * reso, height=45 * reso)
+    bak.place(x=450 * reso,  y=495 * reso, width=230 * reso, height=45 * reso)
+    full_operator.place(x=450 * reso,  y=615 * reso, width=230 * reso, height=45 * reso)
     node_terminal.place(x=0, y=0)
 
 def sign_in_button():
@@ -1099,11 +1545,6 @@ def sign_in_button():
     place_sign_in_control(enter_address, 400, 355, 425, 50)
     place_sign_in_control(enter_key, 400, 500, 360, 50)
     place_sign_in_control(log_in_button2, 500, 650, 213, 58)
-    # check if user wants to be signed in permanently
-    if runtime_json.get_check_signed_in():
-        place_sign_in_control(button_checkmark, 465, 602, 26, 27)
-    else:
-        place_sign_in_control(button_checkbox, 465, 602, 26, 26)
     place_sign_in_control(button_show, 765, 500, 60, 50)
     sign_in.place(x=0, y=0)
 
@@ -1121,19 +1562,35 @@ def print_page_button():
     button.config(bg='black', fg='white'),button4.config(bg='black', fg='white'),button2.config(bg='black', fg='white')
     button3.config(bg='white', fg='black')
     button_settings.config(bg='black', fg='white')
-    button_print.place(x=640 * reso, y=650 * reso, width=291 * reso, height=59 * reso)
-    button_only_qr.place(x=950 * reso, y=650 * reso, width=187 * reso, height=59 * reso)
-    all_bills_text.place(x=640 * reso, y=310 * reso, width=240 * reso, height=300 * reso)
-    selected_bills_text.place(x=900 * reso, y=310 * reso, width=240 * reso, height=300 * reso)
-    asl_text.place(x=640 * reso, y=260 * reso, width=480 * reso, height=48 * reso)
+    button_print.place(
+        x=PRINT_PRIMARY_BUTTON_X * reso,
+        y=PRINT_ACTION_Y * reso,
+        width=PRINT_PRIMARY_BUTTON_WIDTH * reso,
+        height=59 * reso,
+    )
+    button_only_qr.place(
+        x=PRINT_QR_BUTTON_X * reso,
+        y=PRINT_ACTION_Y * reso,
+        width=PRINT_QR_BUTTON_WIDTH * reso,
+        height=59 * reso,
+    )
+    all_bills_text.place(
+        x=PRINT_AVAILABLE_X * reso,
+        y=PRINT_LIST_Y * reso,
+        width=PRINT_LIST_WIDTH * reso,
+        height=PRINT_LIST_HEIGHT * reso,
+    )
+    selected_bills_text.place(
+        x=PRINT_QUEUE_X * reso,
+        y=PRINT_LIST_Y * reso,
+        width=PRINT_LIST_WIDTH * reso,
+        height=PRINT_LIST_HEIGHT * reso,
+    )
     print_page.place(x=0, y=0)
     only_sm = ''
     try:
-        dr, num_lines = update_wallet()
-        # update serial numbers in all_bills_text text field
-        for bsm in runtime_json.wallet_token_lines(dr):
-            if not bsm.startswith('-'):
-                only_sm += bsm.split()[0] + '\n'
+        for record in wallet_spendable_records():
+            only_sm += record["display_id"] + '\n'
         all_bills_text.delete(1.0, END)
         all_bills_text.insert(1.0, only_sm[:-1])
     except:
@@ -1158,6 +1615,7 @@ def wallet_button():
     a.place(x=853 * reso, y=(295 + WALLET_SEND_Y_OFFSET) * reso, width=343 * reso, height=36 * reso)
     next_button.place(x=720 * reso, y=730 * reso, width=80 * reso, height=22 * reso)
     receiver_history.place(x=343 * reso, y=310 * reso, width=480 * reso, height=450 * reso)
+    page()
     wallet.place(x=0, y=0)
     try:
         ensure_wallet_qr()
@@ -1199,20 +1657,68 @@ def settings_button():
 def generate_wallet_button():
     # this button function opens the 'Generate address' tab in the sign in window
     button_show.place_forget(),enter_key.place_forget(),log_in_button2.place_forget()
-    enter_address.place_forget(),sign_in.place_forget(), button_checkmark.place_forget(), button_checkbox.place_forget()
+    enter_address.place_forget(),sign_in.place_forget()
     button_generate_wallet.config(bg='white', fg='black')
     button_log_in.config(bg='black', fg='white')
-    place_sign_in_control(generate_address_text, 380, 318, 370, 40)
-    place_sign_in_control(generate_address_button, 760, 318, 100, 41)
-    place_sign_in_control(public_key, 380, 420, 480, 30)
-    place_sign_in_control(private_key, 380, 500, 429, 30)
-    place_sign_in_control(button_show2, 819, 500, 41, 31)
-    place_sign_in_control(choose_password, 380, 600, 415, 40)
-    place_sign_in_control(generate_wallet_button2, 505, 660, 213, 58)
-    place_sign_in_control(button_show3, 805, 600, 54, 41)
+    place_sign_in_control(
+        generate_address_text,
+        GENERATE_WALLET_FIELD_X,
+        GENERATE_WALLET_ADDRESS_Y,
+        GENERATE_WALLET_FIELD_WIDTH,
+        GENERATE_WALLET_FIELD_HEIGHT,
+    )
+    place_sign_in_control(
+        generate_address_button,
+        GENERATE_WALLET_SIDE_BUTTON_X,
+        GENERATE_WALLET_ADDRESS_Y,
+        GENERATE_WALLET_SIDE_BUTTON_WIDTH,
+        GENERATE_WALLET_FIELD_HEIGHT,
+    )
+    place_sign_in_control(
+        public_key,
+        GENERATE_WALLET_FIELD_X,
+        GENERATE_WALLET_PUBLIC_KEY_Y,
+        GENERATE_WALLET_FIELD_WIDTH + GENERATE_WALLET_BUTTON_GAP + GENERATE_WALLET_SIDE_BUTTON_WIDTH,
+        GENERATE_WALLET_KEY_FIELD_HEIGHT,
+    )
+    place_sign_in_control(
+        private_key,
+        GENERATE_WALLET_FIELD_X,
+        GENERATE_WALLET_PRIVATE_KEY_Y,
+        GENERATE_WALLET_FIELD_WIDTH,
+        GENERATE_WALLET_KEY_FIELD_HEIGHT,
+    )
+    place_sign_in_control(
+        button_show2,
+        GENERATE_WALLET_SIDE_BUTTON_X,
+        GENERATE_WALLET_PRIVATE_KEY_Y,
+        GENERATE_WALLET_SIDE_BUTTON_WIDTH,
+        GENERATE_WALLET_KEY_FIELD_HEIGHT,
+    )
+    place_sign_in_control(
+        choose_password,
+        GENERATE_WALLET_FIELD_X,
+        GENERATE_WALLET_PASSWORD_Y,
+        GENERATE_WALLET_FIELD_WIDTH,
+        GENERATE_WALLET_FIELD_HEIGHT,
+    )
+    place_sign_in_control(
+        generate_wallet_button2,
+        GENERATE_WALLET_SUBMIT_BUTTON_X,
+        668,
+        GENERATE_WALLET_SUBMIT_BUTTON_WIDTH,
+        58,
+    )
+    place_sign_in_control(
+        button_show3,
+        GENERATE_WALLET_SIDE_BUTTON_X,
+        GENERATE_WALLET_PASSWORD_Y,
+        GENERATE_WALLET_SIDE_BUTTON_WIDTH,
+        GENERATE_WALLET_FIELD_HEIGHT,
+    )
     generate_wallet.place(x=0, y=0)
 
-tf_text = Text(font=(APP_FONT_FAMILY, 28 * reso), bg='black', fg='white', bd=0)
+tf_text = Text(font=app_font(28), bg='black', fg='white', bd=0)
 def transfer_wallet():
     # this function generates a qr code, containing wallet address, public key, private key and wallet password
     try:
@@ -1224,11 +1730,11 @@ def transfer_wallet():
                                   error_correction=qrcode.constants.ERROR_CORRECT_L)
         wallet_qr.add_data(data_wallet)
         wqr_make_security = wallet_qr.make_image(fill_color='#F5F5F5', back_color='white')
-        wqr_resize_security = wqr_make_security.resize((250 * reso, 250 * reso), Image.Resampling.LANCZOS)
+        wqr_resize_security = wqr_make_security.resize((px(250), px(250)), Image.Resampling.LANCZOS)
         wqr_security_img = ImageTk.PhotoImage(wqr_resize_security)
         qr.wqr_security_img = wqr_security_img
         qr.config(image=wqr_security_img)
-        qr.config(text='SECURITY RISK', font=(APP_FONT_FAMILY, 36 * reso, 'bold'), fg='red', compound='center')
+        qr.config(text='SECURITY RISK', font=app_font(36, 'bold'), fg='red', compound='center')
         tf_text.delete(1.0, END)
         tf_text.insert(1.0, 'Transfer wallet')
         tf_text.place(x=935 * reso, y=420 * reso, width=190 * reso, height=45 * reso)
@@ -1239,7 +1745,7 @@ def transfer_wallet():
     def config_normal():
         r_button.place(x=850 * reso, y=570 * reso, width=44 * reso, height=42 * reso)
         wqr_make = wallet_qr.make_image(fill_color='black', back_color='#D3D3D3')
-        wqr_resize = wqr_make.resize((250 * reso, 250 * reso), Image.Resampling.LANCZOS)
+        wqr_resize = wqr_make.resize((px(250), px(250)), Image.Resampling.LANCZOS)
         wqr_img = ImageTk.PhotoImage(wqr_resize)
         qr.wqr_img = wqr_img
         qr.config(image=wqr_img, text=' ')
@@ -1258,40 +1764,84 @@ r_button = make_asset_button('different_buttons', 'r_button', receive_qr, 'QR', 
 
 page_wallet = 1
 place_next_button = 0
+WALLET_HISTORY_ROWS_PER_PAGE = 4
+
+
+def wallet_history_entries():
+    entries = []
+    try:
+        dr_new, _ = update_wallet()
+        for line in runtime_json.wallet_token_lines(dr_new):
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            timestamp = int(parts[2])
+            entries.append({
+                "timestamp": timestamp,
+                "line": parts[0] + '\t\t        ' + str(datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d   %H:%M')),
+                "tag": "sent" if parts[0].startswith('-') else "wallet",
+            })
+    except Exception:
+        pass
+    try:
+        for record in wallet_pending_records():
+            timestamp = int(record.get("updated_at") or record.get("first_seen") or time.time())
+            entries.append({
+                "timestamp": timestamp,
+                "line": record["display_id"] + '\t\t        wallet        pending',
+                "tag": "pending",
+            })
+    except Exception:
+        pass
+    return sorted(entries, key=lambda entry: entry["timestamp"], reverse=True)
+
+
 def page():
     # this function is flips the pages between transaction history
-    global place_next_button
+    global place_next_button, page_wallet
     try:
-        conf = ''
-        num_of_bills = 0
-        try:
-            dr_new, _ = update_wallet()
-            for t in reversed(runtime_json.wallet_token_lines(dr_new)):
-                conf += t.split()[0] + '\t\t        ' + str(datetime.fromtimestamp(int(t.split()[2])).strftime('%Y-%m-%d   %H:%M')) + '\n\n'
-                num_of_bills += 1
-        except Exception:
-            pass
-        if place_next_button != 0:
+        receiver_history.delete(1.0, END)
+        receiver_history.tag_config('red', foreground='red')
+        receiver_history.tag_config('pending', foreground=IND_PENDING)
+        receiver_history.tag_config('empty', foreground=IND_MUTED, justify='center')
+        receiver_history.tag_config('empty_top', spacing1=px(170))
+        if not wallet_is_unlocked():
+            next_button.place_forget()
+            previous_button.place_forget()
+            place_next_button = 1
+            first_line, second_line = GUI_TEXT['wallet_locked_message'].split('\n', 1)
+            receiver_history.insert(INSERT, first_line, ('empty', 'empty_top'))
+            receiver_history.insert(INSERT, '\n' + second_line, 'empty')
+            return
+
+        entries = wallet_history_entries()
+        num_of_bills = len(entries)
+        total_pages = max(1, (num_of_bills + WALLET_HISTORY_ROWS_PER_PAGE - 1) // WALLET_HISTORY_ROWS_PER_PAGE)
+        if page_wallet > total_pages:
+            page_wallet = total_pages
+        if page_wallet < 1:
+            page_wallet = 1
+        if page_wallet < total_pages:
             next_button.place(x=720 * reso, y=730 * reso, width=80 * reso, height=22 * reso)
-            place_next_button -= 1
+            place_next_button = 0
+        else:
+            next_button.place_forget()
+            place_next_button = 1
         if page_wallet > 1:
             previous_button.place(x=345 * reso, y=730 * reso, width=80 * reso, height=22 * reso)
         else:
             previous_button.place_forget()
-        if page_wallet * 4 >= num_of_bills:
-            next_button.place_forget()
-            place_next_button += 1
 
-        conf_split = '\n'.join(conf.splitlines()[((page_wallet-1) * 12):(12*page_wallet)])
-        receiver_history.delete(1.0, END)
-        receiver_history.insert(1.0, conf_split)
-
-        num_paragraph = 0
-        for paragraph in conf_split.splitlines():
-            if paragraph.startswith('-'):
-                receiver_history.tag_add('red', str(num_paragraph) + '.end', str(num_paragraph + 1) + '.end')
-                receiver_history.tag_config('red', foreground='red')
-            num_paragraph += 1
+        start_index = (page_wallet - 1) * WALLET_HISTORY_ROWS_PER_PAGE
+        visible_entries = entries[start_index:start_index + WALLET_HISTORY_ROWS_PER_PAGE]
+        for entry in visible_entries:
+            row_start = receiver_history.index(INSERT)
+            receiver_history.insert(INSERT, entry["line"] + '\n\n')
+            row_end = receiver_history.index(INSERT)
+            if entry["tag"] == "sent":
+                receiver_history.tag_add('red', row_start, row_end)
+            elif entry["tag"] == "pending":
+                receiver_history.tag_add('pending', row_start, row_end)
     except:
         pass
 
@@ -1320,9 +1870,18 @@ def bill_var(value, prefix):
     return f'{prefix}_w{value}'
 
 
+def wallet_bill_button_size(value):
+    if value >= 2000:
+        return 149, 64
+    return 139, 59
+
+
 def wallet_bill_image_path(value, selected=False):
     selected_suffix = 'c' if selected else ''
-    return BASE_DIR / 'img' / 'wallet_bills' / f'_{value}{selected_suffix}{res}.png'
+    high_res_path = BASE_DIR / 'img' / 'wallet_bills' / f'_{value}{selected_suffix}4.png'
+    if high_res_path.exists():
+        return high_res_path
+    return BASE_DIR / 'img' / 'wallet_bills' / f'_{value}{selected_suffix}.png'
 
 
 def ensure_bill_images():
@@ -1333,7 +1892,10 @@ def ensure_bill_images():
         for selected in (False, True):
             image_path = wallet_bill_image_path(value, selected=selected)
             if image_path.exists():
-                BILL_IMAGES[(value, selected)] = PhotoImage(file=str(image_path))
+                width, height = wallet_bill_button_size(value)
+                with Image.open(image_path) as bill_image:
+                    resized = bill_image.convert('RGBA').resize((px(width), px(height)), Image.Resampling.LANCZOS)
+                BILL_IMAGES[(value, selected)] = ImageTk.PhotoImage(resized)
     BILL_IMAGES_LOADED = True
 
 
@@ -1360,37 +1922,51 @@ def make_bill_button(command):
     )
 
 
-def configure_bill_button(button, value, remaining, enabled):
+def bill_overlay_text(remaining, pending):
+    if remaining > 0 and pending > 0:
+        return '       ' + str(remaining) + '\n' + str(pending) + ' Pending'
+    if remaining > 0:
+        return '       ' + str(remaining)
+    if pending > 0:
+        return str(pending) + ' Pending'
+    return ''
+
+
+def configure_bill_button(button, value, remaining, enabled, pending=0):
     remaining = max(remaining, 0)
+    pending = max(pending, 0)
     image = BILL_IMAGES.get((value, enabled))
     if image is None and BILL_IMAGES_LOADED:
         image = BILL_IMAGES.get((value, False))
     if image is not None:
         button.config(
             image=image,
-            text='       ' + str(remaining) if remaining > 0 else '',
+            text=bill_overlay_text(remaining, pending),
             compound='center',
-            font=app_font(30),
+            font=app_font(20 if pending > 0 else 30),
             cursor='hand2' if enabled else '',
             state='normal' if enabled else 'disabled',
             bg=IND_BLACK,
-            fg=IND_WHITE,
-            disabledforeground=IND_WHITE,
+            fg=IND_WHITE if enabled else IND_PENDING,
+            disabledforeground=IND_PENDING if pending > 0 else IND_WHITE,
         )
     else:
         button.config(
             image='',
-            text=bill_button_text(value, remaining) if remaining > 0 else '',
+            text=bill_button_text(value, remaining) if remaining > 0 else (
+                f'{value:,}$   {pending} Pending' if pending > 0 else ''
+            ),
             compound='none',
             font=app_font(19),
             cursor='hand2' if enabled else '',
             state='normal' if enabled else 'disabled',
             bg=IND_GREEN if enabled else '#111111',
-            fg=IND_WHITE if enabled else IND_MUTED,
-            disabledforeground=IND_MUTED,
+            fg=IND_WHITE if enabled else IND_PENDING,
+            disabledforeground=IND_PENDING if pending > 0 else IND_MUTED,
         )
 
 amount = 0
+pending_bill_counts = {}
 bills_w1, bills_w2, bills_w5, bills_w10, bills_w20, bills_w50, bills_w100, bills_w200, bills_w500 = 0, 0, 0, 0, 0, 0, 0, 0, 0
 bills_w1000, bills_w2000, bills_w5000, bills_w10000, bills_w20000, bills_w50000, bills_w100000 = 0, 0, 0, 0, 0, 0, 0
 selected_w1, selected_w2, selected_w5, selected_w10, selected_w20 = 0, 0, 0, 0, 0
@@ -1399,50 +1975,31 @@ selected_w2000, selected_w5000, selected_w10000, selected_w20000 = 0, 0, 0, 0
 selected_w50000, selected_w100000 = 0, 0
 def update_balance():
     # this function updates all balance indicators for the user
-    global first_iteration, amount, count_selected
+    global first_iteration, amount, count_selected, pending_bill_counts
     global bills_w1, bills_w2, bills_w5, bills_w10, bills_w20, bills_w50, bills_w100, bills_w200, bills_w500
     global bills_w1000, bills_w2000, bills_w5000, bills_w10000, bills_w20000, bills_w50000, bills_w100000
     try:
-        dr_new2, _ = update_wallet()
+        spendable_records = wallet_spendable_records()
     except:
-        pass
+        spendable_records = []
+    try:
+        pending_records = wallet_pending_records()
+    except:
+        pending_records = []
+    pending_bill_counts = {value: 0 for value in BILL_VALUES}
+    for record in pending_records:
+        value = wallet_record_value(record)
+        if value in pending_bill_counts:
+            pending_bill_counts[value] += 1
     bills_w1 = bills_w2 = bills_w5 = bills_w10 = bills_w20 = bills_w50 = bills_w100 = bills_w200 = bills_w500 = 0
     bills_w1000 = bills_w2000 = bills_w5000 = bills_w10000 = bills_w20000 = bills_w50000 = bills_w100000 = 0
     # recount the existance of bills in the wallet
     try:
-        for az in dr_new2:
-            if az.startswith('1x'):
-                bills_w1 += 1
-            elif az.startswith('2x'):
-                bills_w2 += 1
-            elif az.startswith('5x'):
-                bills_w5 += 1
-            elif az.startswith('10x'):
-                bills_w10 += 1
-            elif az.startswith('20x'):
-                bills_w20 += 1
-            elif az.startswith('50x'):
-                bills_w50 += 1
-            elif az.startswith('100x'):
-                bills_w100 += 1
-            elif az.startswith('200x'):
-                bills_w200 += 1
-            elif az.startswith('500x'):
-                bills_w500 += 1
-            elif az.startswith('1000x'):
-                bills_w1000 += 1
-            elif az.startswith('2000x'):
-                bills_w2000 += 1
-            elif az.startswith('5000x'):
-                bills_w5000 += 1
-            elif az.startswith('10000x'):
-                bills_w10000 += 1
-            elif az.startswith('20000x'):
-                bills_w20000 += 1
-            elif az.startswith('50000x'):
-                bills_w50000 += 1
-            elif az.startswith('100000x'):
-                bills_w100000 += 1
+        for record in spendable_records:
+            value = wallet_record_value(record)
+            bills_name = bill_var(value, 'bills')
+            if bills_name in globals():
+                globals()[bills_name] += 1
     except Exception:
         pass
     balance = bills_w1+(bills_w2*2)+(bills_w5*5)+(bills_w10*10)+(bills_w20*20)+(bills_w50*50)+(bills_w100*100) \
@@ -1477,6 +2034,7 @@ def add_bill_value(value):
     selected = globals()[selected_name]
     available = globals()[bills_name]
     remaining = available - selected
+    pending = pending_bill_counts.get(value, 0)
     button_bill = globals()[f'w{value}']
 
     if remaining > 0:
@@ -1484,10 +2042,10 @@ def add_bill_value(value):
             globals()[selected_name] = selected + 1
             amount += value
             remaining -= 1
-        configure_bill_button(button_bill, value, remaining, remaining > 0)
+        configure_bill_button(button_bill, value, remaining, remaining > 0, pending)
 
     if remaining <= 0:
-        configure_bill_button(button_bill, value, 0, False)
+        configure_bill_button(button_bill, value, 0, False, pending)
     amount_config()
 
 
@@ -1615,24 +2173,31 @@ def receive_bills():
     # this function invokes receive_bills() which will ask the node network for new bills
     root.config(cursor='watch')
     receiver_button.config(cursor='watch')
-    def thrd():
-        sender_node.update_ip_list()
-    def thrd2():
-        sender_node.receive_bills()
-        time.sleep(12)
+
+    def worker():
+        errors = []
+        try:
+            sender_node.update_ip_list()
+        except Exception as exc:
+            errors.append(f"Peer refresh failed: {error_detail(exc)}")
+        try:
+            sender_node.receive_bills()
+        except Exception as exc:
+            errors.append(f"Wallet sync failed: {error_detail(exc)}")
 
         def finish():
-            update_balance()
-            page()
             root.config(cursor='arrow')
             receiver_button.config(cursor='hand2')
+            refresh_wallet_view()
+            if errors:
+                show_error_popup('Sync failed', RuntimeError("\n".join(errors)))
 
         root.after(0, finish)
-    threading.Thread(target=thrd, daemon=True).start()
-    threading.Thread(target=thrd2, daemon=True).start()
+
+    threading.Thread(target=worker, daemon=True).start()
 
 receiver_button = make_asset_button('different_buttons', 'reload_button', receive_bills, 'Sync', font_size=16,
-                                    bg=IND_GREEN)
+                                    bg=IND_BLACK)
 # visual of password or important private key to display as : ******** or : password123
 show = 0
 def show_key_s():
@@ -1659,25 +2224,16 @@ def show_password():
     else:
         choose_password.config(show='')
 
-
-def stay_signed():
-    # this function upon button press will change if the user doesnt log out upon closing
-    if runtime_json.toggle_check_signed_in():
-        button_checkbox.place_forget()
-        place_sign_in_control(button_checkmark, 465, 602, 26, 27)
-    else:
-        button_checkmark.place_forget()
-        place_sign_in_control(button_checkbox, 465, 602, 26, 26)
-
 def log_in():
     # this function will sign the user into a encrypted wallet
-    unlocked = wallet_decryption.wallet_decrypt(enter_key.get(), address_variable.get())
+    password = enter_key.get()
+    unlocked = wallet_decryption.wallet_decrypt(password, address_variable.get())
+    enter_key.delete(0, END)
     # check if the right password was entered
     def check_decrypted():
         global decrypted
         for decrypted_wallet in runtime_json.iter_decrypted_wallet_files():
             if decrypted_wallet.name.startswith('wallet_decrypted'):
-                enter_key.delete(0, END)
                 wallet_button()
                 break
     if unlocked:
@@ -1697,19 +2253,17 @@ if len(options_addr) == 1:
 else:
     men = 1
 enter_address = OptionMenu(root, address_variable, *options_addr[men:])
-enter_address.config(font=(APP_FONT_FAMILY, 21 * reso, 'bold'), cursor='hand2', bg='black', fg='white')
+enter_address.config(font=app_font(21, 'bold'), cursor='hand2', bg='black', fg='white')
 eadrr = root.nametowidget(enter_address.menuname)
-eadrr.config(font=(APP_FONT_FAMILY, 20 * reso))
+eadrr.config(font=app_font(20))
 
-enter_key = Entry(root, font=(APP_FONT_FAMILY, 26 * reso), show='*', bg='light grey')
+enter_key = Entry(root, font=app_font(26), show='*', bg='light grey')
 log_in_button2 = make_asset_button('different_buttons', 'log_in_button', log_in, 'Sign in', font_size=26,
                                    bg=IND_GREEN)
 button_show = make_asset_button('different_buttons', 'show_button', show_key_s, 'Show', font_size=16,
-                                bg=IND_BLACK)
+                                bg=IND_WHITE, fg=IND_BLACK)
 button_show3 = make_asset_button('different_buttons', 'show3_button', show_password, 'Show', font_size=16,
-                                 bg=IND_BLACK)
-button_checkbox = make_asset_button('different_buttons', 'checkbox', stay_signed, '', font_size=14, bg=IND_BLACK)
-button_checkmark = make_asset_button('different_buttons', 'checkmark', stay_signed, '', font_size=14, bg=IND_BLACK)
+                                 bg=IND_WHITE, fg=IND_BLACK)
 
 def gen_ad():
     # this function is responsible for invoking generate_address.py
@@ -1747,6 +2301,51 @@ def gen_ad():
             return
         root.after(0, lambda generated_wallet=generated_wallet: finish(generated_wallet))
     threading.Thread(target=t, daemon=True).start()
+SUCCESS_POPUP_DURATION_MS = 7000
+success_popup_hide_after_id = None
+
+
+def hide_success_popup():
+    global success_popup_hide_after_id
+    if success_popup_hide_after_id is not None:
+        try:
+            root.after_cancel(success_popup_hide_after_id)
+        except TclError:
+            pass
+        success_popup_hide_after_id = None
+    success_popup.withdraw()
+
+
+def raise_success_popup():
+    try:
+        success_popup.lift(root)
+        success_popup.attributes('-topmost', True)
+        success.lift()
+        success_popup.after(250, release_success_topmost)
+    except TclError:
+        pass
+
+
+def release_success_topmost():
+    try:
+        success_popup.attributes('-topmost', False)
+    except TclError:
+        pass
+
+
+def show_success_popup():
+    global success_popup_hide_after_id
+    hide_success_popup()
+    root.update_idletasks()
+    x = root.winfo_rootx() + px(282)
+    y = root.winfo_rooty() + px(193)
+    success_popup.geometry(f'{px(653)}x{px(550)}+{x}+{y}')
+    success_popup.deiconify()
+    raise_success_popup()
+    root.after_idle(raise_success_popup)
+    success_popup_hide_after_id = root.after(SUCCESS_POPUP_DURATION_MS, hide_success_popup)
+
+
 def generate_wallet_final():
     addr_hash = runtime_json.read_wallet_generation()["address"]
     # encrypt the new wallet
@@ -1762,48 +2361,115 @@ def generate_wallet_final():
     runtime_json.clear_wallet_generation()
     address_variable.set(addr_hash)
     sign_in_button()
-    success.place(x=282 * reso, y=193 * reso)
-    success.lift()
-    root.after(3500, success.place_forget)
+    show_success_popup()
 
-success = ModalCanvas(root, 'success', 653, 550, bg='#007a3b')
-generate_address_text = Entry(root, font=(APP_FONT_FAMILY, 21 * reso), bd=0, bg='light grey')
+success_popup = Toplevel(root)
+success_popup.withdraw()
+success_popup.overrideredirect(True)
+success_popup.configure(bg='#007a3b')
+success_popup.transient(root)
+success_popup.resizable(False, False)
+success = ModalCanvas(success_popup, 'success', 653, 550, bg='#007a3b')
+success.pack(fill=BOTH, expand=True)
+generate_address_text = Entry(
+    root,
+    font=app_font(21),
+    bd=0,
+    bg='#eeeeee',
+    fg='#111111',
+    insertbackground='#111111',
+    readonlybackground='#eeeeee',
+    highlightthickness=1,
+    highlightbackground='#555555',
+    highlightcolor=IND_GREEN,
+)
 generate_address_button = make_asset_button('different_buttons', 'generate_address_button', gen_ad, 'Generate',
                                             font_size=22, bg=IND_GREEN)
-public_key = Entry(root, font=(APP_FONT_FAMILY, 18 * reso), bd=0, bg='light grey')
-private_key = Entry(root, font=(APP_FONT_FAMILY, 18 * reso), bd=0, show='*', bg='light grey')
+public_key = Entry(
+    root,
+    font=app_font(18),
+    bd=0,
+    bg='#eeeeee',
+    fg='#111111',
+    insertbackground='#111111',
+    readonlybackground='#eeeeee',
+    highlightthickness=1,
+    highlightbackground='#555555',
+    highlightcolor=IND_GREEN,
+)
+private_key = Entry(
+    root,
+    font=app_font(18),
+    bd=0,
+    show='*',
+    bg='#eeeeee',
+    fg='#111111',
+    insertbackground='#111111',
+    readonlybackground='#eeeeee',
+    highlightthickness=1,
+    highlightbackground='#555555',
+    highlightcolor=IND_GREEN,
+)
 button_show2 = make_asset_button('different_buttons', 'show2_button', show_key_p, 'Show', font_size=16,
-                                 bg=IND_BLACK)
-choose_password = Entry(root, font=(APP_FONT_FAMILY, 22 * reso), bd=0, bg='light grey')
+                                 bg='#4d4d4d')
+choose_password = Entry(
+    root,
+    font=app_font(22),
+    bd=0,
+    bg='#eeeeee',
+    fg='#111111',
+    insertbackground='#111111',
+    highlightthickness=1,
+    highlightbackground='#555555',
+    highlightcolor=IND_GREEN,
+)
 generate_wallet_button2 = make_asset_button('different_buttons', 'generate_wallet_button', generate_wallet_final,
                                             'Generate Wallet', font_size=24, bg=IND_GREEN)
 
-button_log_in = Button(root, font=(APP_FONT_FAMILY, 30 * reso), text='Sign In', bd=0, highlightthickness=0, cursor='hand2',
+button_log_in = Button(root, font=app_font(30), text='Sign In', bd=0, highlightthickness=0, cursor='hand2',
                        bg='black', fg='white', command=sign_in_button)
-button_generate_wallet = Button(root, font=(APP_FONT_FAMILY, 30 * reso), text='Generate Wallet', bd=0, highlightthickness=0,
+button_generate_wallet = Button(root, font=app_font(30), text='Generate Wallet', bd=0, highlightthickness=0,
                                 cursor='hand2', bg='black', fg='white', command=generate_wallet_button)
 
 def send_bills(serial_num_start):
     """Select wallet tokens by denomination and queue signed sends to the receiver."""
 
+    errors = []
+    sent_count = 0
+    requested = list(serial_num_start)
     for wallet_path in runtime_json.iter_decrypted_wallet_files():
         if wallet_path.name.startswith('wallet_decrypted'):
             of = runtime_json.read_decrypted_wallet_lines(wallet_path)
             updated = []
             for wb in of:
-                if wb.split('x')[0] + 'x' in serial_num_start:
-                    serial_num_start.remove(wb.split('x')[0] + 'x')
+                parts = wb.split()
+                display_id = parts[0] if parts else ""
+                bill_prefix = wb.split('x')[0] + 'x'
+                if bill_prefix in requested:
+                    requested.remove(bill_prefix)
                     try:
                         state = write_transfer_announcement(of, wb, receiver.get())
-                        if state:
-                            updated.append('-' + wb.split()[0] + ' ' + str(state.sequence) + ' ' + str(int(time.time())) + '\n')
-                        else:
-                            updated.append(wb)
-                    except:
+                        if not state:
+                            raise RuntimeError("bill is not spendable or is not settled")
+                        updated.append('-' + display_id + ' ' + str(state.sequence) + ' ' + str(int(time.time())) + '\n')
+                        sent_count += 1
+                    except Exception as exc:
+                        errors.append(f"{display_id or bill_prefix}: {error_detail(exc)}")
                         updated.append(wb)
                 else:
                     updated.append(wb)
             runtime_json.write_decrypted_wallet_lines(wallet_path, updated)
+    if requested:
+        errors.append("Not enough settled bills for: " + ", ".join(requested))
+    return sent_count, errors
+
+
+def selected_bill_prefixes():
+    prefixes = []
+    for value in BILL_VALUES:
+        selected = globals()[bill_var(value, 'selected')]
+        prefixes.extend([f'{value}x'] * int(selected))
+    return prefixes
 
 def confirm_transaction():
     """Convert the selected UI amount into denomination prefixes and send them."""
@@ -1816,76 +2482,39 @@ def confirm_transaction():
     if runtime_json.has_pending_transactions():
         sender_node.send_bills()
 
-    starts_with = []
-    while True:
-        if selected_w1 > 0:
-            starts_with.append('1x')
-            selected_w1 -= 1
-        elif selected_w2 > 0:
-            starts_with.append('2x')
-            selected_w2 -= 1
-        elif selected_w5 > 0:
-            starts_with.append('5x')
-            selected_w5 -= 1
-        elif selected_w10 > 0:
-            starts_with.append('10x')
-            selected_w10 -= 1
-        elif selected_w20 > 0:
-            starts_with.append('20x')
-            selected_w20 -= 1
-        elif selected_w50 > 0:
-            starts_with.append('50x')
-            selected_w50 -= 1
-        elif selected_w100 > 0:
-            starts_with.append('100x')
-            selected_w100 -= 1
-        elif selected_w200 > 0:
-            starts_with.append('200x')
-            selected_w200 -= 1
-        elif selected_w500 > 0:
-            starts_with.append('500x')
-            selected_w500 -= 1
-        elif selected_w1000 > 0:
-            starts_with.append('1000x')
-            selected_w1000 -= 1
-        elif selected_w2000 > 0:
-            starts_with.append('2000x')
-            selected_w2000 -= 1
-        elif selected_w5000 > 0:
-            starts_with.append('5000x')
-            selected_w5000 -= 1
-        elif selected_w10000 > 0:
-            starts_with.append('10000x')
-            selected_w10000 -= 1
-        elif selected_w20000 > 0:
-            starts_with.append('20000x')
-            selected_w20000 -= 1
-        elif selected_w50000 > 0:
-            starts_with.append('50000x')
-            selected_w50000 -= 1
-        elif selected_w100000 > 0:
-            starts_with.append('100000x')
-            selected_w100000 -= 1
-        else:
-            break
-
-    send_bills(starts_with)
-    threading.Thread(target=sender_node.send_bills).start()
+    starts_with = selected_bill_prefixes()
+    if not starts_with:
+        raise ValueError("Select at least one bill before sending.")
+    sent_count, errors = send_bills(starts_with)
+    if sent_count:
+        threading.Thread(target=sender_node.send_bills, daemon=True).start()
+    if errors:
+        raise RuntimeError("\n".join(errors))
     receiver.delete(0, END)
-    close_amount()
-    update_balance()
-    page()
 
 def send_button():
+    root.config(cursor='watch')
+    send.config(cursor='watch')
     try:
         # get a few new nodes (30)
         for _ in range(3):
             sender_node.update_ip_list()
         recipient_address = ind_token.validate_address(receiver.get().strip(), "recipient address")
-        if amount != 0 and recipient_address != dr[0].strip():
-            confirm_transaction()
-    except:
-        pass
+        wallet_lines, _ = update_wallet()
+        if amount == 0:
+            raise ValueError("Select an amount before sending.")
+        if recipient_address == wallet_lines[0].strip():
+            raise ValueError("The recipient address is this wallet.")
+        confirm_transaction()
+    except Exception as exc:
+        show_error_popup('Send failed', exc)
+    finally:
+        close_amount()
+        root.config(cursor='arrow')
+        send.config(cursor='hand2')
+        refresh_wallet_view()
+
+
 def close():
     # this function will make all labels, buttons and images disappear.
     claim_bills_amount.place_forget(), webcam_scanner.place_forget(), private_key_entry.place_forget()
@@ -1900,13 +2529,13 @@ def close():
     button_show.place_forget(), generate_address_text.place_forget(), generate_address_button.place_forget()
     public_key.place_forget(), private_key.place_forget(), button_show2.place_forget(), choose_password.place_forget()
     generate_wallet_button2.place_forget(), node_terminal.place_forget(), tf_button.place_forget()
-    button_show3.place_forget(), button_checkmark.place_forget(), number_entry.place_forget()
-    button_checkbox.place_forget(), info.place_forget(), tf_text.place_forget(), button_print.place_forget()
+    button_show3.place_forget(), number_entry.place_forget()
+    info.place_forget(), tf_text.place_forget(), button_print.place_forget()
     add_bill_button.place_forget(), node_port_notice.place_forget(), charge_bills_button.place_forget()
-    ron.place_forget(), bak.place_forget(), asl_text.place_forget(), all_bills_text.place_forget()
+    ron.place_forget(), bak.place_forget(), full_operator.place_forget(), asl_text.place_forget(), all_bills_text.place_forget()
     selected_bills_text.place_forget(), button_only_qr.place_forget()
     settings_page.place_forget()
-    success.place_forget()
+    hide_success_popup()
     for settings_widget in settings_widgets:
         settings_widget.place_forget()
     try:
@@ -1933,46 +2562,45 @@ def close_bill_claimer():
     number_entry.place_forget()
 
 send = make_asset_button('different_buttons', 'send_button', send_button, 'Send', font_size=24, bg=IND_GREEN)
-try:
-    close_button_img = PhotoImage(file=str(BASE_DIR / 'img' / 'pop_up' / f'close{res}.png'))
-    close_button = Button(root, image=close_button_img, bd=0, highlightthickness=0, cursor='hand2',
-                          command=close_bill_claimer)
-except Exception:
-    close_button = make_icon_button('X', close_bill_claimer, font_size=18, bg=IND_BLACK, fg=IND_WHITE)
-try:
-    close_amount_button_img = PhotoImage(
-        file=str(BASE_DIR / 'img' / 'different_buttons' / f'close_amount{res}.png')
-    )
-    close_amount_button = Button(root, image=close_amount_button_img, bd=0, highlightthickness=0, cursor='hand2',
-                                 command=close_amount)
-except Exception:
-    close_amount_button = make_icon_button('X', close_amount, font_size=14, bg=IND_RED, fg=IND_WHITE)
+close_button = make_asset_button('pop_up', 'close', close_bill_claimer, 'X', font_size=18, bg=IND_BLACK,
+                                 fg=IND_RED)
+close_amount_button = make_asset_button('different_buttons', 'close_amount', close_amount, 'X', font_size=14,
+                                        bg='#d2d2d2', fg=IND_RED)
 
 def plus_bills():
     # this function opens up the claim bills window, invoked by the "Scan Qr code" button in wallet
     restore_webcam_scanner_prompt()
-    claim_bill.place(x=335 * reso, y=154 * reso)
-    claim_bills_amount.place()
+    claim_bill.place(x=CLAIM_MODAL_X * reso, y=CLAIM_MODAL_Y * reso)
     close_button.place(x=785 * reso, y=163 * reso, width=37 * reso, height=33 * reso)
-    close_button.lift()
     check_validity_button.place(x=366 * reso, y=727 * reso, width=198 * reso, height=30 * reso)
     add_bill_button.place(x=605 * reso, y=727 * reso, width=198 * reso, height=30 * reso)
-    serial_num.place(x=364 * reso, y=295 * reso, width=440 * reso, height=40 * reso)
-    public_key_entry.place(x=364 * reso, y=390 * reso, width=440 * reso, height=40 * reso)
-    private_key_entry.place(x=364 * reso, y=482 * reso, width=440 * reso, height=40 * reso)
+    serial_num.place(x=CLAIM_ENTRY_X * reso, y=CLAIM_SERIAL_Y * reso, width=CLAIM_ENTRY_WIDTH * reso, height=40 * reso)
+    public_key_entry.place(x=CLAIM_ENTRY_X * reso, y=CLAIM_PUBLIC_Y * reso, width=CLAIM_ENTRY_WIDTH * reso, height=40 * reso)
+    private_key_entry.place(x=CLAIM_ENTRY_X * reso, y=CLAIM_PRIVATE_Y * reso, width=CLAIM_ENTRY_WIDTH * reso, height=40 * reso)
     webcam_scanner.place(x=364 * reso, y=538 * reso, width=280 * reso, height=176 * reso)
-    claim_bills_amount.place(x=655 * reso, y=640 * reso, width=140 * reso, height=100 * reso)
+    claim_bills_amount.place(x=CLAIM_DETAIL_X * reso, y=646 * reso, width=CLAIM_DETAIL_WIDTH * reso, height=58 * reso)
     claim_bills_amount.bind("<Key>", lambda e: "break")
-    number_entry.place(x=655 * reso, y=539 * reso, width=150 * reso, height=42 * reso)
+    number_entry.place(x=CLAIM_DETAIL_X * reso, y=539 * reso, width=CLAIM_DETAIL_WIDTH * reso, height=40 * reso)
     number_entry.delete(0, END)
     number_entry.insert(0, 'Number:')
     number_entry.bind("<Key>", lambda e: number_entry.delete(0, END))
     webcam_scanner.lift()
+    for widget in (
+        serial_num,
+        public_key_entry,
+        private_key_entry,
+        number_entry,
+        claim_bills_amount,
+        check_validity_button,
+        add_bill_button,
+        close_button,
+    ):
+        widget.lift()
 
 plus_bills_button = make_asset_button('different_buttons', 'plus_bills_button', plus_bills, 'Scan Qr code',
-                                      font_size=18, bg='black', fg='white')
+                                      font_size=18, bg=IND_BLACK, fg=IND_WHITE)
 claim_bill = ModalCanvas(root, 'claim', 493, 620, bg=IND_BLACK)
-claim_bills_amount = Entry(root, font=(APP_FONT_FAMILY, 26 * reso, 'bold'), fg='white', bg='black', highlightthickness=0, bd=0)
+claim_bills_amount = Entry(root, font=app_font(24, 'bold'), fg='white', bg='black', highlightthickness=0, bd=0)
 claim_bills_amount.insert(0, '0$')
 
 used_codes = []
@@ -1980,41 +2608,62 @@ num_of_times_clicked = 0
 def claim_bills():
     """Claim scanned bills by issuing receipts or spending paper-wallet tokens."""
 
-    for bill in used_codes:
-        for wallet_path in runtime_json.iter_decrypted_wallet_files():
-            if wallet_path.name.startswith('wallet_decrypted'):
-                wallet_lines = runtime_json.read_decrypted_wallet_lines(wallet_path)
-                try:
+    errors = []
+    claim_count = 0
+    try:
+        if not used_codes:
+            raise ValueError("No scanned bills are ready to claim.")
+        for bill in used_codes:
+            claimed = False
+            for wallet_path in runtime_json.iter_decrypted_wallet_files():
+                if wallet_path.name.startswith('wallet_decrypted'):
+                    wallet_lines = runtime_json.read_decrypted_wallet_lines(wallet_path)
                     wallet_address = runtime_json.wallet_address_from_name(wallet_path.name)
-                    wallet_services.claim_bill_payload(bill, wallet_lines, wallet_address)
-                except Exception:
-                    continue
-    sender_node.send_bills()
-    time.sleep(2)
-    receive_bills()
-    update_balance()
+                    try:
+                        if wallet_services.claim_bill_payload(bill, wallet_lines, wallet_address):
+                            claimed = True
+                            claim_count += 1
+                    except Exception as exc:
+                        errors.append(f"{wallet_address}: {error_detail(exc)}")
+            if not claimed:
+                preview = str(bill).splitlines()[0] if str(bill).splitlines() else "scanned bill"
+                errors.append(f"{preview}: could not be claimed")
+        if claim_count:
+            sender_node.send_bills()
+            time.sleep(2)
+            receive_bills()
+        if errors:
+            raise RuntimeError("\n".join(errors))
+    except Exception as exc:
+        show_error_popup('Claim bills failed', exc)
+    finally:
+        refresh_wallet_view()
 
 def add_bill():
     """Add a manually entered bill payload to the pending claim list."""
 
     global used_codes
-    full_code = serial_num.get(0, END) + '\n' + private_key_entry.get(0, END) + '\n' + public_key_entry.get(0, END) + '\n' + number_entry.get(0, END)
-    if full_code not in used_codes:
-        used_codes.append(full_code)
-        am = int(claim_bills_amount.get().strip('$'))
-        claim_bills_amount.delete(0, END)
-        claim_bills_amount.insert(0, str(am + int(serial_num.get().split('x')[0])) + '$')
+    try:
+        full_code = serial_num.get(0, END) + '\n' + private_key_entry.get(0, END) + '\n' + public_key_entry.get(0, END) + '\n' + number_entry.get(0, END)
+        if full_code not in used_codes:
+            used_codes.append(full_code)
+            am = int(claim_bills_amount.get().strip('$'))
+            claim_bills_amount.delete(0, END)
+            claim_bills_amount.insert(0, str(am + int(serial_num.get().split('x')[0])) + '$')
+    except Exception as exc:
+        show_error_popup('Add bill failed', exc)
+        refresh_wallet_view()
 
 check_validity_button = make_asset_button('different_buttons', 'check_validity_button', claim_bills, 'Claim bills',
-                                          font_size=20, bg='white', fg='black')
+                                          font_size=20, bg=IND_WHITE, fg=IND_BLACK)
 add_bill_button = make_asset_button('different_buttons', 'add_bill_button', add_bill, 'Add bills', font_size=20,
-                                    bg='white', fg='black')
+                                    bg=IND_WHITE, fg=IND_BLACK)
 valid = ModalCanvas(root, 'valid', 493, 620, bg=IND_GREEN)
 not_valid = ModalCanvas(root, 'not_valid', 493, 620, bg=IND_RED)
-serial_num = Entry(root, font=(APP_FONT_FAMILY, 22 * reso), bg='light grey')
-public_key_entry = Entry(root, font=(APP_FONT_FAMILY, 22 * reso), bg='light grey')
-private_key_entry = Entry(root, font=(APP_FONT_FAMILY, 22 * reso), bg='light grey')
-number_entry = Entry(root, font=(APP_FONT_FAMILY, 22 * reso), bg='light grey')
+serial_num = Entry(root, font=app_font(19), bg='light grey')
+public_key_entry = Entry(root, font=app_font(19), bg='light grey')
+private_key_entry = Entry(root, font=app_font(19), bg='light grey')
+number_entry = Entry(root, font=app_font(19), bg='light grey')
 
 
 def qr_decoder(qrimage):
@@ -2038,8 +2687,8 @@ def qr_decoder(qrimage):
                     am = int(claim_bills_amount.get().strip('$'))
                     claim_bills_amount.delete(0, END)
                     claim_bills_amount.insert(0, str(state.value + am) + '$')
-                except Exception:
-                    pass
+                except Exception as exc:
+                    show_error_popup('QR bill failed', exc)
             else:
                 used_codes.append(decoded_qrcode)
                 serial_num.delete(0, END)
@@ -2062,7 +2711,9 @@ def ensure_webcam_scanner_image():
     global webcam_scanner_img
     if webcam_scanner_img is None:
         try:
-            webcam_scanner_img = PhotoImage(file=str(control_image_path('pop_up', 'qr_overlay')))
+            with Image.open(source_asset_image_path('pop_up', 'qr_overlay')) as overlay:
+                resized = overlay.convert('RGBA').resize((px(280), px(177)), Image.Resampling.LANCZOS)
+            webcam_scanner_img = ImageTk.PhotoImage(resized)
         except Exception:
             webcam_scanner_img = ''
     return webcam_scanner_img
@@ -2094,7 +2745,7 @@ def qr_scan():
     def loop():
         try:
             _, frame = cap.read()
-            cropped = frame[0:0+177 * reso, 0:0+280 * reso]
+            cropped = frame[0:px(177), 0:px(280)]
             cv2image = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGBA)
             qr_pic = Image.fromarray(cv2image)
             imgtk = ImageTk.PhotoImage(image=qr_pic)
@@ -2107,7 +2758,7 @@ def qr_scan():
             filename = filedialog.askopenfilename(title='Find QR image', initialdir='quickaccess',
                                                   filetypes=(('png files', '*.png'), ('all files', '*.*')))
             img_e = Image.open(filename)
-            img_explorer_resize = img_e.resize((280 * reso, 177 * reso), Image.Resampling.LANCZOS)
+            img_explorer_resize = img_e.resize((px(280), px(177)), Image.Resampling.LANCZOS)
             img_explorer = ImageTk.PhotoImage(img_explorer_resize)
             webcam_scanner.config(image=img_explorer)
             webcam_scanner.img_explorer = img_explorer
@@ -2138,7 +2789,7 @@ def drop(event):
     # drag and drop qr code images
     qr_path = event.data.strip('{}')
     qr_path_tk = Image.open(qr_path)
-    resized = qr_path_tk.resize((280 * reso, 177 * reso), Image.Resampling.LANCZOS)
+    resized = qr_path_tk.resize((px(280), px(177)), Image.Resampling.LANCZOS)
     drag_and_drop_img = ImageTk.PhotoImage(resized)
     webcam_scanner.drag_and_drop_img = drag_and_drop_img
     webcam_scanner.config(image=drag_and_drop_img)
@@ -2150,18 +2801,18 @@ webcam_scanner.dnd_bind('<<Drop>>', drop)
 #######################################
 # main buttons for 4 major tabs 'Node Terminal', 'Information', 'Print', 'Wallet'
 button = Button(root, command=node_terminal_button, text='Node Terminal', bg='black', fg='white',
-                font=(APP_FONT_FAMILY, 24 * reso), cursor='hand2', bd=0, activebackground='white', highlightthickness=0,)
+                font=app_font(24), cursor='hand2', bd=0, activebackground='white', highlightthickness=0,)
 place_header_button(button, 577, 100, 169, 50)
 
-button2 = Button(root, command=info_button, text='Information', bg='black', fg='white', font=(APP_FONT_FAMILY, 24 * reso),
+button2 = Button(root, command=info_button, text='Information', bg='black', fg='white', font=app_font(24),
                  cursor='hand2', bd=0, activebackground='white', highlightthickness=0)
 place_header_button(button2, 750, 100, 169, 50)
 
-button3 = Button(root, command=print_page_button, text='Print', bg='black', fg='white', font=(APP_FONT_FAMILY, 24 * reso),
+button3 = Button(root, command=print_page_button, text='Print', bg='black', fg='white', font=app_font(24),
                  cursor='hand2', bd=0, activebackground='white', highlightthickness=0)
 place_header_button(button3, 923, 100, 169, 50)
 
-button4 = Button(root, command=wallet_button, text='Wallet', bg='black', fg='white', font=(APP_FONT_FAMILY, 24 * reso),
+button4 = Button(root, command=wallet_button, text='Wallet', bg='black', fg='white', font=app_font(24),
                  cursor='hand2', bd=0, activebackground='white', highlightthickness=0)
 place_header_button(button4, 1096, 100, 114, 50)
 
@@ -2170,22 +2821,32 @@ button_settings = make_text_button('Settings', settings_button, font_size=22, bg
 place_header_button(button_settings, 1016, 18, 94, 64)
 
 button6 = make_asset_button('different_buttons', 'sign_in_button', sign_in_button, 'Sign\nin', font_size=22,
-                            bg='white', fg='black')
+                            bg=IND_WHITE, fg=IND_BLACK)
 place_header_button(button6, 1120, 18, 77, 64)
 international_dollar.lift()
 logo.lift()
 #######################################
 def on_closing():
     # this function will be invoked upon closing the tkinter GUI
+    errors = []
+    run_on_startup = 'NO'
+    run_in_background = 'NO'
     try:
         _node_class, run_on_startup, run_in_background = runtime_json.read_node_config()
         # check if the user wants to run his node in the background
         if run_in_background == 'NO':
             runtime_json.set_kill_node(True)
-        for wallet_path in runtime_json.iter_decrypted_wallet_files():
-            if wallet_path.name.startswith('wallet_decrypted'):
-                address = runtime_json.wallet_address_from_name(wallet_path.name)
+            stop_node_process()
+            stop_full_operator()
+    except Exception as exc:
+        errors.append(f"Could not read node settings: {error_detail(exc)}")
+
+    for wallet_path in runtime_json.iter_decrypted_wallet_files():
+        if wallet_path.name.startswith('wallet_decrypted'):
+            address = runtime_json.wallet_address_from_name(wallet_path.name)
+            try:
                 w = runtime_json.read_decrypted_wallet_payload(wallet_path)
+                runtime_json.write_decrypted_wallet(address, w)
                 encrypted_record = {}
                 for encrypted_path in runtime_json.iter_encrypted_wallet_files():
                     if runtime_json.wallet_address_from_name(encrypted_path.name) == address:
@@ -2193,21 +2854,42 @@ def on_closing():
                         break
                 try:
                     wallet_encryption.wallet_reencrypt_unlocked(address, w)
-                except Exception:
-                    if encrypted_record.get("format") != "INDW2":
-                        legacy_lines = str(w).splitlines()
-                        legacy_password = legacy_lines[3] if len(legacy_lines) > 3 else ""
-                        runtime_json.write_wallet_generation_from_payload(w)
-                        if legacy_password:
-                            wallet_encryption.wallet_encrypt(legacy_password)
-                wallet_decryption.secure_delete(wallet_path)
+                except Exception as exc:
+                    if encrypted_record.get("format") == "INDW2":
+                        raise
+                    legacy_lines = str(w).splitlines()
+                    legacy_password = legacy_lines[3] if len(legacy_lines) > 3 else ""
+                    if not legacy_password:
+                        raise
+                    runtime_json.write_wallet_generation_from_payload(w)
+                    wallet_encryption.wallet_encrypt(legacy_password)
                 runtime_json.clear_decrypted_wallet(address)
                 runtime_json.clear_wallet_generation()
+            except Exception as exc:
+                errors.append(f"Could not save wallet {address}: {error_detail(exc)}")
+            finally:
+                wallet_decryption.secure_delete(wallet_path)
+
+    try:
+        wallet_decryption.clear_plaintext_wallet_files(clear_memory=not errors)
+        runtime_json.clear_passphrase_request()
+        runtime_json.set_check_signed_in(False)
+    except Exception as exc:
+        errors.append(f"Could not lock wallet session: {error_detail(exc)}")
+
+    try:
         # remove the bat path in case the user does no longer want to start the node on startup
-        if run_on_startup == 'NO':
+        if run_on_startup == 'NO' and 'bat_path' in globals():
             os.remove(bat_path + '/ind_node.bat')
-    except:
+    except FileNotFoundError:
         pass
+    except Exception as exc:
+        errors.append(f"Could not update startup shortcut: {error_detail(exc)}")
+
+    if errors:
+        show_error_popup('Could not close safely', RuntimeError("\n".join(errors)))
+        refresh_wallet_view()
+        return
     root.destroy()
 
 

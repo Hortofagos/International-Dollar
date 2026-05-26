@@ -21,6 +21,8 @@ ARGON2_PARALLELISM = 4
 PASSWORD_WRAPPER = "password"
 RECOVERY_PHRASE_WRAPPER = "recovery_phrase"
 PASSKEY_WRAPPER = "passkey_prf"
+MIN_WALLET_PASSWORD_LENGTH = 6
+MIN_WALLET_PASSWORD_SCORE = 1
 
 _SESSION_MWKS = {}
 
@@ -102,7 +104,7 @@ def _decrypt_aesgcm(key, box, aad):
 
 def _fallback_password_score(password):
     text = str(password)
-    if len(text) < 10:
+    if len(text) < MIN_WALLET_PASSWORD_LENGTH:
         return 0
     classes = sum(
         bool(check(text))
@@ -127,15 +129,17 @@ def _fallback_password_score(password):
 
 def validate_wallet_password(password):
     text = str(password)
-    if len(text) < 10:
-        raise PasswordPolicyError("Wallet password must be at least 10 characters.")
+    if len(text) < MIN_WALLET_PASSWORD_LENGTH:
+        raise PasswordPolicyError(
+            f"Wallet password must be at least {MIN_WALLET_PASSWORD_LENGTH} characters."
+        )
     try:
         from zxcvbn import zxcvbn
 
         score = int(zxcvbn(text).get("score", 0))
     except Exception:
         score = _fallback_password_score(text)
-    if score < 3:
+    if score < MIN_WALLET_PASSWORD_SCORE:
         raise PasswordPolicyError("Wallet password is too easy to guess. Use a longer mixed phrase.")
 
 

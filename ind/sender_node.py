@@ -1,10 +1,12 @@
 import os
 import random
+import socket
 import time
 import threading
 import ipaddress
 import requests
 import json
+from pathlib import Path
 from . import runtime as runtime_json
 from . import settings as ind_settings
 from . import token as ind_token
@@ -14,19 +16,35 @@ already_tried = []
 PORT = 8888
 MAX_PEERS_PER_IPV4_C_BLOCK = 3
 DEFAULT_DIVERSE_PEER_SAMPLE = 12
+DNS_SEED_REFRESH_SECONDS = 3600
+MAX_DNS_SEED_RESULTS = 128
 
 RUNTIME_DIRS = runtime_json.RUNTIME_DIRS
+_last_dns_seed_refresh = 0
+
+
+def node_port():
+    return ind_settings.node_port()
+
+
+def _runtime_path(path):
+    path = Path(path)
+    parts = path.parts
+    if parts and parts[0] == "ip_folder":
+        return runtime_json.peer_root() / Path(*parts[1:])
+    return path
 
 
 def _read_text(path):
     try:
-        with open(path, 'r') as handle:
+        with open(_runtime_path(path), 'r') as handle:
             return handle.read()
     except FileNotFoundError:
         return ''
 
 
 def _list_dir(path):
+    path = _runtime_path(path)
     try:
         return os.listdir(path)
     except FileNotFoundError:
@@ -82,10 +100,67 @@ def _configured_peer_servers():
         return []
 
 
+def _configured_dns_seed_hosts():
+    try:
+        return ind_settings.dns_seed_hosts()
+    except Exception:
+        return []
+
+
+def resolve_dns_seed_hosts(seed_hosts=None, limit=MAX_DNS_SEED_RESULTS):
+    """Resolve DNS seed hostnames into globally-routable IPv4 node hints."""
+
+    seed_hosts = _configured_dns_seed_hosts() if seed_hosts is None else list(seed_hosts)
+    peers = []
+    seen = set()
+    for seed_host in seed_hosts:
+        seed_host = str(seed_host).strip()
+        if not seed_host:
+            continue
+        try:
+            records = socket.getaddrinfo(seed_host, node_port(), family=socket.AF_INET, type=socket.SOCK_STREAM)
+        except Exception:
+            continue
+        for _family, _socktype, _proto, _canonname, sockaddr in records:
+            ip = str(sockaddr[0]).strip()
+            if _valid_ipv4(ip) and ip not in seen:
+                seen.add(ip)
+                peers.append(ip)
+                if len(peers) >= int(limit):
+                    return peers
+    return peers
+
+
+def refresh_dns_seed_peers(seed_hosts=None, version='2'):
+    """Resolve configured DNS seeds and store their IPs as ordinary peer hints."""
+
+    ensure_runtime_files()
+    added = []
+    for ip in resolve_dns_seed_hosts(seed_hosts=seed_hosts):
+        if add_peer(ip, version=version):
+            added.append(ip)
+    return added
+
+
+def maybe_refresh_dns_seed_peers(now=None, force=False):
+    """Refresh DNS seeds at most hourly unless explicitly forced."""
+
+    global _last_dns_seed_refresh
+    now = int(time.time() if now is None else now)
+    if not force and now - _last_dns_seed_refresh < DNS_SEED_REFRESH_SECONDS:
+        return []
+    _last_dns_seed_refresh = now
+    return refresh_dns_seed_peers()
+
+
 def _with_configured_peers(peers):
+    try:
+        maybe_refresh_dns_seed_peers()
+    except Exception:
+        pass
     seen = set()
     result = []
-    for peer in list(peers) + _configured_peer_servers():
+    for peer in list(peers) + _peer_files('ip_folder/2') + _configured_peer_servers():
         peer = str(peer).strip()
         if peer and peer not in seen:
             seen.add(peer)
@@ -163,7 +238,7 @@ def connect(indicator, data, ipnl):
         if random.randrange(1000) == 9:
             already_tried.clear()
         SERVER = _peer_ip(random.choice(ipnl))
-        ADDR = (SERVER, PORT)
+        ADDR = (SERVER, node_port())
         try:
             if SERVER not in already_tried:
                 try:
@@ -277,6 +352,8 @@ def check_validity(serial_num_list):
 
 def update_ip_list():
     """Refresh the local peer cache from bootstrap and ordinary nodes."""
+
+    maybe_refresh_dns_seed_peers(force=True)
 
     def new_main_ip():
         comparison_ip = []

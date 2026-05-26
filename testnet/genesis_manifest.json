@@ -1,0 +1,50 @@
+{
+  "issued_at": 1779568974,
+  "issuer_public_key": "QHA-6<HYqB+$NDGJOh(La|qt(PH}|?><^_fNfD`SDUdsv2-C{4ES`on0WCo}_kUxLoe<7q{O95Y%>U;a",
+  "manifest_hash": "20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8",
+  "metadata": {
+    "generated_at": 1779568974,
+    "ind_alignment": {
+      "address_length": 33,
+      "angel_number": 777,
+      "birthday_code": "09.10.2003",
+      "birthday_number": 9,
+      "fixed_supply": 33000000000,
+      "master_number": 33,
+      "money_number": 8,
+      "seal": "1bab4055279136e306f85e318216c80b4"
+    },
+    "network": "testnet",
+    "project": "IND",
+    "purpose": "public testnet supply for real IND protocol transfers without mainnet value",
+    "release": "public-testnet-v1"
+  },
+  "ranges": [
+    {
+      "count": 11000000000,
+      "nonce_seed": "a96c8097a45facc9fe2fd3735f038fd48dac5bff043ad4b654b4b88a5835fcff",
+      "owner_address": "x1F75rwW6ah8jBByt4dJLsWRyd22aQFKx",
+      "start_index": 0,
+      "value": 1
+    },
+    {
+      "count": 11000000000,
+      "nonce_seed": "4b6c3e83b15f5c0b304be9aedff9e3f1c1b37786f4baa23170c323559caea1af",
+      "owner_address": "x1F75rwW6ah8jBByt4dJLsWRyd22aQFKx",
+      "start_index": 11000000000,
+      "value": 2
+    },
+    {
+      "count": 11000000000,
+      "nonce_seed": "a405b0f72372c1cd904b1d50b815598617fb82557d6bbd8eb83c1792b133cf5c",
+      "owner_address": "x1F75rwW6ah8jBByt4dJLsWRyd22aQFKx",
+      "start_index": 22000000000,
+      "value": 8
+    }
+  ],
+  "signature": "_dW>+)oJ{_FQXw$Z&$;51FTV^69$<%^MA7iA_{^RduZ#ZfOl4A)k?@mul~*)J*IOFAMSsAyjrsQ&+cq;",
+  "total_token_count": 33000000000,
+  "total_value": 121000000000,
+  "type": "ind.genesis_manifest.v1",
+  "version": 1
+}

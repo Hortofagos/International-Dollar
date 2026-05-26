@@ -31,7 +31,7 @@ Every recipient can verify the full provenance chain back to genesis. There is n
 
 Nodes store this history in decomposed form: genesis once, each lazy manifest once, each transfer once, and compact state/message references for current ownership and recipient inboxes. Nodes can rebuild a full bearer token when a wallet needs to spend it, but the local database no longer stores the same growing history or repeated manifest in every transfer and message row. Gossip messages also support a compressed `indz1:` wire format while remaining backwards-compatible with plain JSON. The bearer token itself still grows linearly with its spend count; the storage fix prevents local quadratic blowups without adding checkpoint trust.
 
-To limit intentional per-bill bloat, the protocol enforces at most 100 transfers per token per UTC day. Transfer timestamps must be strictly increasing and cannot be more than 300 seconds in the future when verified.
+To limit intentional per-bill bloat, the protocol enforces at most 10 transfers per token per UTC day. Transfer timestamps must be strictly increasing and cannot be more than 300 seconds in the future when verified.
 
 Metadata is capped to keep tokens from being used as arbitrary file storage: genesis metadata is limited to 1024 canonical JSON bytes and transfer metadata to 256 canonical JSON bytes.
 
@@ -158,7 +158,7 @@ well backed up.
 
 ## Receipt Gossip and Finality
 
-When B receives a token transfer, B signs a receipt announcement and gossips it to peers. Nodes store the announcement locally in SQLite and hold the transfer in a pending state for `60` seconds by default. Operators can raise this with `IND_FINALITY_BUFFER_SECONDS`; the code clamps the minimum to 60 seconds.
+When B receives a token transfer, B signs a receipt announcement and gossips it to peers. Nodes store the announcement locally in SQLite and hold the transfer in a pending state for `60` seconds by default. Operators can adjust this with `IND_FINALITY_BUFFER_SECONDS` or the desktop security setting; shorter buffers settle faster but leave less time for double-spend conflict gossip to arrive before local acceptance.
 
 - If no conflicting transfer appears during the buffer, the token settles to B.
 - If two conflicting transfers from the same owner and same token state appear, any node can build a conflict proof.
@@ -170,11 +170,62 @@ Merchants should wait through the finality buffer before releasing real-world va
 
 ## Network Topology
 
-IND nodes are volunteer-operated desktop nodes. Nodes communicate through the TCP gossip service on port `8888`; UDP rendezvous/NAT traversal has been removed. To run a reachable node, open/forward TCP port `8888` on your router and allow it through the host firewall. IP addresses are discovery hints only. They do not grant voting power.
+IND nodes are volunteer-operated desktop nodes. Nodes communicate through the TCP gossip service on port `8888` on mainnet and `18888` on public testnet; UDP rendezvous/NAT traversal has been removed. To run a reachable node, open/forward the active TCP port on your router and allow it through the host firewall. IP addresses are discovery hints only. They do not grant voting power.
+
+Nodes bootstrap from three hint sources: local cached peers in `ip_folder`, configured peer servers, and DNS seed hostnames from `dns_seed_hosts` or `IND_DNS_SEED_HOSTS`. Mainnet defaults are `seed.interneational-dollard.com`, `seed.linkifier.me`, and `seed.internetofthebots.com`; testnet defaults are `testnet-seed.interneational-dollard.com`, `testnet-seed.linkifier.me`, and `testnet-seed.internetofthebots.com`. Publish node A records there when those seeds are ready. DNS results are filtered to globally routable IPv4 addresses and cached as ordinary peer hints, not trusted identities.
 
 Node connections use the `INDN1` encrypted transport: X25519 key agreement with ChaCha20-Poly1305 authenticated encryption. Peer transport keys are pinned on first contact by IP address, so later key changes are rejected instead of silently trusted. Token validity never depends on transport encryption; every bill remains verified from its own signatures.
 
-Local node state is stored in `ind_gossip.db`.
+The reference node has soft per-IP abuse guards rather than approval-style throttles: generous connection and request windows, a cheap pre-decode gossip cap for junk floods, active connection caps, bounded gossip queues, and a short inbound request timeout. Defaults are meant to stop heavy spam or slow-client thread exhaustion without interfering with ordinary wallet/node use; operators can tune them with `IND_NODE_*` environment variables from `.env.example`.
+
+Local mainnet node state is stored in `ind_gossip.db`; public testnet state is stored in `ind_gossip_testnet.db`. Runtime files, queued transactions, wallets, peer caches, and transport key pins are also separated under per-network folders when `IND_NETWORK=testnet` is active.
+
+## Public Testnet
+
+The public testnet is a real IND protocol network, not a mock ledger. Testnet tokens are lazy-genesis IND bearer tokens signed by the testnet issuer manifest in `testnet/genesis_manifest.json`, transferred with the same signature-chain, receipt, settlement, conflict-proof, and gossip code used by mainnet. They have no mainnet or real-world value because normal nodes pin a different genesis trust root.
+
+Public testnet parameters are recorded in `testnet/testnet.json`:
+
+- Network: `testnet`
+- TCP node port: `18888`
+- Genesis manifest hash: `20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8`
+- Faucet owner address: `x1F75rwW6ah8jBByt4dJLsWRyd22aQFKx`
+- Testnet DNS seeds: `testnet-seed.interneational-dollard.com`, `testnet-seed.linkifier.me`, `testnet-seed.internetofthebots.com`
+
+Run a public testnet node:
+
+```powershell
+$env:IND_NETWORK="testnet"
+$env:IND_TRUSTED_GENESIS_MANIFEST_HASHES="20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8"
+python node_client.py
+```
+
+Until DNS seed records are live, give users at least one reachable bootstrap node:
+
+```powershell
+$env:IND_PEER_PING_SERVERS="<public-node-ipv4>"
+```
+
+Run the desktop wallet on testnet:
+
+```powershell
+$env:IND_NETWORK="testnet"
+$env:IND_TRUSTED_GENESIS_MANIFEST_HASHES="20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8"
+python main.py
+```
+
+Issue one testnet IND token from the faucet wallet to a recipient address:
+
+```powershell
+$env:IND_NETWORK="testnet"
+$env:IND_TRUSTED_GENESIS_MANIFEST_HASHES="20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8"
+python tools/testnet_faucet.py `
+  --recipient-address <recipient-address> `
+  --faucet-private-key-file files/testnet/faucet_private_key.local.json `
+  --faucet-public-key-file files/testnet/faucet_public_key.local.json
+```
+
+The faucet tool materializes the next lazy-genesis token, signs a normal transfer to the recipient, stores it locally, queues the transfer announcement, and gossips it to configured peers. The recipient claims it through the ordinary receive flow and signs a receipt before local settlement.
 
 ## Current Implementation Map
 
@@ -217,6 +268,12 @@ Run a full desktop gossip node:
 python node_client.py
 ```
 
+Run the public testnet node instead:
+
+```bash
+IND_NETWORK=testnet IND_TRUSTED_GENESIS_MANIFEST_HASHES=20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8 python node_client.py
+```
+
 Run a local transparency log operator:
 
 ```bash
@@ -242,9 +299,10 @@ $env:IND_REQUIRE_TRANSPARENCY_LOG="1"
 
 Port used by the node:
 
-- TCP `8888`
+- mainnet TCP `8888`
+- public testnet TCP `18888`
 
-There is no small UDP node mode anymore. If peers cannot connect to your node, check that TCP `8888` is forwarded on your router and allowed by your operating system firewall.
+There is no small UDP node mode anymore. If peers cannot connect to your node, check that the active TCP port is forwarded on your router and allowed by your operating system firewall.
 
 ## Open Source Hygiene
 

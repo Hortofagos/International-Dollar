@@ -104,6 +104,7 @@ TRANSFER_FIELDS = {
     "signature",
 }
 TRANSFER_ANNOUNCEMENT_FIELDS = {"type", "version", "token", "announced_at"}
+TRANSFER_ANNOUNCEMENT_OPTIONAL_FIELDS = set()
 RECEIPT_FIELDS = {
     "type",
     "version",
@@ -141,12 +142,15 @@ TRANSPARENCY_EQUIVOCATION_PROOF_FIELDS = {
 }
 
 WIRE_PACKED_PREFIX = "indz1:"
-MIN_FINALITY_BUFFER_SECONDS = 60
+DEFAULT_FINALITY_BUFFER_SECONDS = 60
+MIN_FINALITY_BUFFER_SECONDS = 0
 FINALITY_BUFFER_SECONDS = max(
     MIN_FINALITY_BUFFER_SECONDS,
-    _env_int("IND_FINALITY_BUFFER_SECONDS", MIN_FINALITY_BUFFER_SECONDS),
+    _env_int("IND_FINALITY_BUFFER_SECONDS", DEFAULT_FINALITY_BUFFER_SECONDS),
 )
-MAX_TRANSFERS_PER_TOKEN_PER_DAY = 100
+MAX_TRANSFERS_PER_TOKEN_PER_DAY = 10
+MAX_TRANSFERS_PER_TOKEN_HISTORY = _env_int("IND_MAX_TRANSFERS_PER_TOKEN_HISTORY", 10_000)
+MAX_TOKEN_HISTORY_BYTES = _env_int("IND_MAX_TOKEN_HISTORY_BYTES", 8 * 1024 * 1024)
 MAX_TRANSFER_FUTURE_SKEW_SECONDS = 300
 MAX_GENESIS_METADATA_BYTES = 1024
 MAX_TRANSFER_METADATA_BYTES = 256
@@ -160,6 +164,7 @@ MAX_JSON_LIST_ITEMS = _env_int("IND_MAX_JSON_LIST_ITEMS", 100_000)
 MAX_JSON_OBJECT_KEYS = _env_int("IND_MAX_JSON_OBJECT_KEYS", 1024)
 MAX_JSON_STRING_BYTES = _env_int("IND_MAX_JSON_STRING_BYTES", 64 * 1024)
 MAX_JSON_INTEGER_ABS = _env_int("IND_MAX_JSON_INTEGER_ABS", 2**63 - 1)
+MAX_PROTOCOL_TIMESTAMP = MAX_JSON_INTEGER_ABS
 DEFAULT_LOG_SUBMISSION_VERIFY_TIMEOUT_SECONDS = 30
 
 DEFAULT_STORE_PATH = "ind_gossip.db"
@@ -304,6 +309,10 @@ def _require_int(value, label, minimum=None, maximum=None):
     if maximum is not None and value > maximum:
         raise ValidationError(f"{label} is above the allowed range")
     return value
+
+
+def _require_timestamp(value, label, minimum=0):
+    return _require_int(value, label, minimum=minimum, maximum=MAX_PROTOCOL_TIMESTAMP)
 
 
 def _require_str(value, label, max_bytes=MAX_JSON_STRING_BYTES):
@@ -769,8 +778,11 @@ def make_genesis_manifest(ranges, issuer_private_key, issuer_public_key, issued_
 
     normalized, total_count, total_value = _validate_manifest_ranges(ranges)
     metadata = _with_numerology_metadata(metadata, MAX_GENESIS_METADATA_BYTES, "genesis manifest")
-    issued_at = int(issued_at or time.time())
-    if issued_at > int(time.time()) + MAX_TRANSFER_FUTURE_SKEW_SECONDS:
+    issued_at = _require_timestamp(
+        int(issued_at if issued_at is not None else time.time()),
+        "genesis manifest issued_at",
+    )
+    if issued_at > current_time() + MAX_TRANSFER_FUTURE_SKEW_SECONDS:
         raise ValidationError("genesis manifest issued_at is too far in the future")
     manifest_unsigned = {
         "type": GENESIS_MANIFEST_TYPE,
@@ -813,7 +825,7 @@ def verify_genesis_manifest(manifest, now=None):
     if manifest["type"] != GENESIS_MANIFEST_TYPE or _require_int(manifest["version"], "genesis manifest version") != TOKEN_VERSION:
         raise ValidationError("unsupported genesis manifest version")
     _require_metadata(manifest["metadata"], MAX_GENESIS_METADATA_BYTES, "genesis manifest")
-    issued_at = _require_int(manifest["issued_at"], "genesis manifest issued_at", minimum=0)
+    issued_at = _require_timestamp(manifest["issued_at"], "genesis manifest issued_at")
     if issued_at > current_time(now) + MAX_TRANSFER_FUTURE_SKEW_SECONDS:
         raise ValidationError("genesis manifest issued_at is too far in the future")
     normalized, total_count, total_value = _validate_manifest_ranges(manifest["ranges"])
@@ -924,8 +936,11 @@ def make_genesis_token(index, owner_address, issuer_private_key, issuer_public_k
     if value <= 0:
         raise ValidationError("token value must be positive")
     metadata = _with_numerology_metadata(metadata, MAX_GENESIS_METADATA_BYTES, "genesis")
-    issued_at = int(issued_at or time.time())
-    if issued_at > int(time.time()) + MAX_TRANSFER_FUTURE_SKEW_SECONDS:
+    issued_at = _require_timestamp(
+        int(issued_at if issued_at is not None else time.time()),
+        "genesis issued_at",
+    )
+    if issued_at > current_time() + MAX_TRANSFER_FUTURE_SKEW_SECONDS:
         raise ValidationError("genesis issued_at is too far in the future")
     nonce = nonce or sha3_hex(f"{index}:{owner_address}:{time.time_ns()}")
     genesis_unsigned = {
@@ -967,7 +982,7 @@ def verify_genesis(genesis, token_id, now=None):
         raise ValidationError("token value must be positive")
     owner_address = validate_address(genesis["owner_address"], "genesis owner address")
     _require_metadata(genesis["metadata"], MAX_GENESIS_METADATA_BYTES, "genesis")
-    issued_at = _require_int(genesis["issued_at"], "genesis issued_at", minimum=0)
+    issued_at = _require_timestamp(genesis["issued_at"], "genesis issued_at")
     if issued_at > current_time(now) + MAX_TRANSFER_FUTURE_SKEW_SECONDS:
         raise ValidationError("genesis issued_at is too far in the future")
     expected_commitment = _genesis_commitment(index, owner_address, value, genesis["nonce"], issued_at)
@@ -1037,7 +1052,7 @@ def _env_true(name):
 def current_time(now=None):
     """Normalize protocol wall-clock input so validation paths share one clock hook."""
 
-    return int(time.time() if now is None else now)
+    return _require_timestamp(int(time.time() if now is None else now), "current time")
 
 
 def _configured_transparency_verifier():
@@ -1121,6 +1136,10 @@ def verify_token(
     history = token.get("history", [])
     if not isinstance(history, list):
         raise ValidationError("token history must be a list")
+    if len(history) > MAX_TRANSFERS_PER_TOKEN_HISTORY:
+        raise ValidationError("token exceeds maximum lifetime transfer count")
+    if len(_canonical_bytes(token)) > MAX_TOKEN_HISTORY_BYTES:
+        raise ValidationError("token history exceeds maximum serialized size")
 
     for transfer in history:
         _require_exact_fields(transfer, TRANSFER_FIELDS, "transfer")
@@ -1138,7 +1157,7 @@ def verify_token(
             raise ValidationError("transfer does not extend the current token tip")
         if sender_address != owner_address:
             raise ValidationError("transfer sender is not the current owner")
-        transfer_timestamp = _require_int(transfer["timestamp"], "transfer timestamp", minimum=0)
+        transfer_timestamp = _require_timestamp(transfer["timestamp"], "transfer timestamp")
         if transfer_timestamp > max_allowed_timestamp:
             raise ValidationError("transfer timestamp is too far in the future")
         if transfer_timestamp < issued_at:
@@ -1183,7 +1202,10 @@ def create_transfer(token, sender_private_key, sender_public_key, recipient_addr
     recipient_address = validate_address(str(recipient_address).strip(), "recipient address")
     state = verify_token(token)
     sender_address = _owner_address_for_public_key(sender_public_key, state.owner_address, "sender key")
-    transfer_timestamp = int(timestamp or time.time())
+    transfer_timestamp = _require_timestamp(
+        int(timestamp if timestamp is not None else time.time()),
+        "transfer timestamp",
+    )
     previous_timestamp = _last_history_timestamp(token)
     if previous_timestamp is not None:
         transfer_timestamp = max(transfer_timestamp, previous_timestamp + 1)
@@ -1217,12 +1239,13 @@ def create_transfer_announcement(token, now=None):
     state = verify_token(token)
     if state.sequence == 0:
         raise ValidationError("genesis token has no transfer to announce")
-    return {
+    message = {
         "type": TRANSFER_ANNOUNCEMENT_TYPE,
         "version": TOKEN_VERSION,
         "token": token,
         "announced_at": current_time(now),
     }
+    return message
 
 
 def create_receipt(token, recipient_private_key, recipient_public_key, timestamp=None, now=None):
@@ -1234,7 +1257,10 @@ def create_receipt(token, recipient_private_key, recipient_public_key, timestamp
     recipient_address = _owner_address_for_public_key(recipient_public_key, state.owner_address, "receipt key")
     tip_timestamp = _last_history_timestamp(token)
     wall_now = current_time(now)
-    received_at = int(timestamp if timestamp is not None else wall_now)
+    received_at = _require_timestamp(
+        int(timestamp if timestamp is not None else wall_now),
+        "receipt timestamp",
+    )
     if timestamp is None and tip_timestamp is not None:
         received_at = max(received_at, tip_timestamp)
     if tip_timestamp is not None and received_at < tip_timestamp:
@@ -1309,7 +1335,7 @@ def verify_receipt_announcement(
         raise ValidationError("receipt does not reference the token tip")
     if _require_int(receipt["sequence"], "receipt sequence", minimum=1) != state.sequence:
         raise ValidationError("receipt sequence does not match token tip")
-    received_at = _require_int(receipt["received_at"], "receipt received_at", minimum=0)
+    received_at = _require_timestamp(receipt["received_at"], "receipt received_at")
     tip_timestamp = _last_history_timestamp(token)
     if tip_timestamp is not None and received_at < tip_timestamp:
         raise ValidationError("receipt timestamp predates transfer")
@@ -1343,7 +1369,6 @@ def _conflict_key(transfer):
         int(transfer["sequence"]),
         transfer["previous_hash"],
         transfer["sender_address"],
-        transfer["sender_public_key"],
     )
 
 
@@ -1425,7 +1450,7 @@ def verify_conflict_proof(proof):
         proof["token_b"],
         pair[0],
         pair[1],
-        _require_int(proof["detected_at"], "conflict proof detected_at", minimum=0),
+        _require_timestamp(proof["detected_at"], "conflict proof detected_at"),
     )
     unsigned = copy.deepcopy(proof)
     proof_hash_value = unsigned.pop("proof_hash", None)
@@ -1494,5 +1519,3 @@ def verify_transparency_equivocation_proof(message, operator_public_key=None):
         return log_client.verify_equivocation_proof(message, operator_public_key=operator_public_key)
     except Exception as exc:
         raise ValidationError(f"invalid transparency equivocation proof: {exc}") from exc
-
-

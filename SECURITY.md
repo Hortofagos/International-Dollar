@@ -23,6 +23,7 @@ Never commit runtime secrets or local state, including:
 - local databases
 - public IP cache
 - transaction scratch files
+- testnet faucet and issuer private keys under `files/testnet/`
 
 Any key that was previously committed or shared should be treated as compromised and regenerated.
 

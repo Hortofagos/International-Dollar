@@ -9,6 +9,7 @@ import time
 import unittest
 import zlib
 from hashlib import sha3_256
+from unittest import mock
 
 import ecdsa
 
@@ -16,6 +17,11 @@ import ind_transport
 import ind_token
 import node_client
 import sender_node
+from ind import node_client as node_client_impl
+from ind import protocol as ind_protocol
+from ind import runtime as runtime_json
+from ind import settings as ind_settings
+from ind import wallet_services
 
 
 os.environ.setdefault("IND_ALLOW_UNTRUSTED_GENESIS", "1")
@@ -100,8 +106,40 @@ class INDTokenTests(unittest.TestCase):
         self.assertEqual(len(alignment["seal"]), 33)
         self.assertEqual(ind_token.verify_token(token).owner_address, alice_address)
 
-    def test_finality_buffer_is_at_least_sixty_seconds(self):
-        self.assertGreaterEqual(ind_token.FINALITY_BUFFER_SECONDS, 60)
+    def test_default_finality_buffer_is_sixty_seconds(self):
+        self.assertEqual(ind_token.DEFAULT_FINALITY_BUFFER_SECONDS, 60)
+        self.assertGreaterEqual(ind_token.FINALITY_BUFFER_SECONDS, 0)
+        self.assertEqual(ind_settings.DEFAULT_FINALITY_BUFFER_SECONDS, 60)
+        self.assertEqual(ind_settings.default_settings()["finality_buffer_seconds"], 60)
+
+    def test_security_settings_allow_sub_sixty_second_finality_buffer(self):
+        settings = ind_settings.normalize_security_settings({"finality_buffer_seconds": "15"})
+        self.assertEqual(settings["finality_buffer_seconds"], 15)
+
+        settings = ind_settings.normalize_security_settings({"finality_buffer_seconds": "-1"})
+        self.assertEqual(settings["finality_buffer_seconds"], 0)
+
+    def test_public_testnet_defaults_isolate_network_state(self):
+        settings = ind_settings.normalize_security_settings({})
+        with temporary_env(
+            IND_NETWORK="testnet",
+            IND_NODE_PORT=None,
+            IND_STORE_PATH=None,
+            IND_DNS_SEED_HOSTS=None,
+            IND_PEER_PING_SERVERS=None,
+        ):
+            self.assertEqual(ind_settings.network_name(settings), "testnet")
+            self.assertEqual(ind_settings.node_port(settings), 18888)
+            self.assertEqual(ind_settings.default_store_path(settings), "ind_gossip_testnet.db")
+            self.assertEqual(ind_settings.network_runtime_namespace(settings), "testnet")
+            self.assertEqual(ind_settings.dns_seed_hosts(settings), ind_settings.DEFAULT_TESTNET_DNS_SEED_HOSTS)
+            self.assertEqual(runtime_json.transaction_dir(), Path("transaction_folder/testnet"))
+            self.assertEqual(runtime_json.peer_root(), Path("ip_folder/testnet"))
+
+    def test_peer_ping_servers_can_bootstrap_public_testnet_before_dns(self):
+        settings = ind_settings.normalize_security_settings({})
+        with temporary_env(IND_PEER_PING_SERVERS="https://Bootstrap.Example.test/a,8.8.8.8"):
+            self.assertEqual(ind_settings.peer_ping_servers(settings), ["bootstrap.example.test", "8.8.8.8"])
 
     def test_address_format_has_version_and_checksum(self):
         _private_key, public_key, address = keypair()
@@ -277,6 +315,140 @@ class INDTokenTests(unittest.TestCase):
             confidence = store.token_confidence(transfer_a["token_id"], expected_owner=dave_address)
             self.assertFalse(confidence["accepted"])
             self.assertEqual(confidence["level"], "conflict")
+
+    def test_pending_wallet_records_show_incoming_before_settlement(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        alice_private, alice_public, alice_address = keypair()
+        bob_private, bob_public, bob_address = keypair()
+        token = ind_token.make_genesis_token(803, alice_address, issuer_private, issuer_public)
+        transferred = ind_token.create_transfer(token, alice_private, alice_public, bob_address)
+        display_id = ind_token.verify_token(transferred).display_id
+        receipt = ind_token.create_receipt_announcement(transferred, bob_private, bob_public)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ind_token.INDLocalStore(temp_dir + "/ind_test.db")
+            store.ingest_message(ind_token.create_transfer_announcement(transferred))
+            pending = wallet_services.pending_wallet_records(bob_address, store=store)
+            self.assertEqual([record["display_id"] for record in pending], [display_id])
+            self.assertEqual(pending[0]["status"], "unreceipted")
+
+            store.ingest_message(receipt)
+            pending = wallet_services.pending_wallet_records(bob_address, store=store)
+            self.assertEqual([record["display_id"] for record in pending], [display_id])
+            self.assertEqual(pending[0]["status"], "pending")
+
+            finalized_at = int(time.time())
+            with store._connect() as conn:
+                conn.execute(
+                    "UPDATE transfers SET first_seen = ? WHERE token_id = ?",
+                    (finalized_at - ind_token.FINALITY_BUFFER_SECONDS - 1, transferred["token_id"]),
+                )
+            store.finalize_pending(now=finalized_at)
+            self.assertEqual(wallet_services.pending_wallet_records(bob_address, store=store), [])
+            self.assertEqual(
+                wallet_services.spendable_wallet_records(bob_address, store=store)[0]["display_id"],
+                display_id,
+            )
+
+    def test_wallet_spend_requires_settled_conflict_free_token(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        alice_private, alice_public, alice_address = keypair()
+        bob_private, bob_public, bob_address = keypair()
+        _carol_private, _carol_public, carol_address = keypair()
+        _dave_private, _dave_public, dave_address = keypair()
+        token = ind_token.make_genesis_token(804, alice_address, issuer_private, issuer_public)
+        transferred = ind_token.create_transfer(token, alice_private, alice_public, bob_address)
+        receipt = ind_token.create_receipt_announcement(transferred, bob_private, bob_public)
+        conflicting = ind_token.create_transfer(token, alice_private, alice_public, carol_address)
+        wallet_lines = [bob_address + "\n", bob_private + "\n", bob_public + "\n"]
+        wallet_bill_line = ind_token.verify_token(transferred).display_id + " 1 0\n"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ind_token.INDLocalStore(temp_dir + "/ind_test.db")
+            store.ingest_message(ind_token.create_transfer_announcement(transferred))
+            with mock.patch("ind.wallet_services.runtime_json.write_transaction_message"):
+                self.assertIsNone(
+                    wallet_services.spend_wallet_bill(
+                        wallet_lines,
+                        wallet_bill_line,
+                        dave_address,
+                        store=store,
+                    )
+                )
+
+            store.ingest_message(receipt)
+            with store._connect() as conn:
+                conn.execute(
+                    "UPDATE transfers SET first_seen = ? WHERE token_id = ?",
+                    (int(time.time()) - ind_token.FINALITY_BUFFER_SECONDS - 1, transferred["token_id"]),
+                )
+            store.finalize_pending(now=int(time.time()))
+            with mock.patch("ind.wallet_services.runtime_json.write_transaction_message"):
+                spend_state = wallet_services.spend_wallet_bill(
+                    wallet_lines,
+                    wallet_bill_line,
+                    dave_address,
+                    store=store,
+                )
+            self.assertIsNotNone(spend_state)
+            self.assertEqual(spend_state.owner_address, dave_address)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ind_token.INDLocalStore(temp_dir + "/ind_test.db")
+            store.ingest_message(ind_token.create_transfer_announcement(transferred))
+            store.ingest_message(ind_token.create_transfer_announcement(conflicting))
+            with mock.patch("ind.wallet_services.runtime_json.write_transaction_message"):
+                self.assertIsNone(
+                    wallet_services.spend_wallet_bill(
+                        wallet_lines,
+                        wallet_bill_line,
+                        dave_address,
+                        store=store,
+                    )
+                )
+
+    def test_paper_wallet_claim_requires_settled_confidence(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        alice_private, alice_public, alice_address = keypair()
+        bob_private, bob_public, bob_address = keypair()
+        _dave_private, _dave_public, dave_address = keypair()
+        token = ind_token.make_genesis_token(805, alice_address, issuer_private, issuer_public)
+        transferred = ind_token.create_transfer(token, alice_private, alice_public, bob_address)
+        receipt = ind_token.create_receipt_announcement(transferred, bob_private, bob_public)
+        display_id = ind_token.verify_token(transferred).display_id
+        paper_payload = "\n".join([display_id, bob_private, bob_public])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ind_token.INDLocalStore(temp_dir + "/ind_test.db")
+            store.ingest_message(ind_token.create_transfer_announcement(transferred))
+            with mock.patch("ind.wallet_services.ind_token.INDLocalStore", return_value=store):
+                with mock.patch("ind.wallet_services.runtime_json.write_transaction_message") as write_message:
+                    self.assertFalse(
+                        wallet_services.claim_bill_payload(
+                            paper_payload,
+                            [dave_address + "\n", ""],
+                            dave_address,
+                        )
+                    )
+                    write_message.assert_not_called()
+
+            store.ingest_message(receipt)
+            with store._connect() as conn:
+                conn.execute(
+                    "UPDATE transfers SET first_seen = ? WHERE token_id = ?",
+                    (int(time.time()) - ind_token.FINALITY_BUFFER_SECONDS - 1, transferred["token_id"]),
+                )
+            store.finalize_pending(now=int(time.time()))
+            with mock.patch("ind.wallet_services.ind_token.INDLocalStore", return_value=store):
+                with mock.patch("ind.wallet_services.runtime_json.write_transaction_message") as write_message:
+                    self.assertTrue(
+                        wallet_services.claim_bill_payload(
+                            paper_payload,
+                            [dave_address + "\n", ""],
+                            dave_address,
+                        )
+                    )
+                    write_message.assert_called_once()
 
     def test_conflicting_transfers_generate_verifiable_proof(self):
         issuer_private, issuer_public, _issuer_address = keypair()
@@ -543,11 +715,12 @@ class INDTokenTests(unittest.TestCase):
             self.assertEqual(manifest_count, 1)
             self.assertNotIn("manifest", compact_genesis["manifest_ref"])
 
-    def test_daily_transfer_limit_allows_100_rejects_101(self):
+    def test_daily_transfer_limit_allows_10_rejects_11(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         keys = [keypair(), keypair()]
         base_timestamp = 1_700_000_000
         token = ind_token.make_genesis_token(15, keys[0][2], issuer_private, issuer_public, issued_at=base_timestamp)
+        self.assertEqual(ind_token.MAX_TRANSFERS_PER_TOKEN_PER_DAY, 10)
 
         for index in range(ind_token.MAX_TRANSFERS_PER_TOKEN_PER_DAY):
             sender = keys[index % 2]
@@ -566,6 +739,67 @@ class INDTokenTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ind_token.ValidationError, "daily transfer limit"):
             ind_token.verify_token(token)
+
+    def test_lifetime_history_cap_rejects_oversized_valid_histories(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        alice_private, alice_public, alice_address = keypair()
+        _bob_private, _bob_public, bob_address = keypair()
+        token = ind_token.make_genesis_token(806, alice_address, issuer_private, issuer_public)
+        transferred = ind_token.create_transfer(token, alice_private, alice_public, bob_address)
+        previous = ind_protocol.MAX_TRANSFERS_PER_TOKEN_HISTORY
+        try:
+            ind_protocol.MAX_TRANSFERS_PER_TOKEN_HISTORY = 0
+            with self.assertRaisesRegex(ind_token.ValidationError, "maximum lifetime transfer count"):
+                ind_token.verify_token(transferred)
+        finally:
+            ind_protocol.MAX_TRANSFERS_PER_TOKEN_HISTORY = previous
+
+    def test_protocol_timestamps_are_int64_unix_seconds_past_2106(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        alice_private, alice_public, alice_address = keypair()
+        _bob_private, _bob_public, bob_address = keypair()
+        token = ind_token.make_genesis_token(
+            807,
+            alice_address,
+            issuer_private,
+            issuer_public,
+            issued_at=1_700_000_000,
+        )
+        append_signed_transfer(
+            token,
+            alice_private,
+            alice_public,
+            bob_address,
+            4_300_000_000,
+        )
+
+        self.assertEqual(
+            ind_token.verify_token(token, now=4_300_000_001).owner_address,
+            bob_address,
+        )
+
+    def test_protocol_timestamps_reject_values_outside_int64(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        alice_private, alice_public, alice_address = keypair()
+        _bob_private, _bob_public, bob_address = keypair()
+        token = ind_token.make_genesis_token(
+            808,
+            alice_address,
+            issuer_private,
+            issuer_public,
+            issued_at=1_700_000_000,
+        )
+        transferred = ind_token.create_transfer(
+            token,
+            alice_private,
+            alice_public,
+            bob_address,
+            timestamp=1_700_000_010,
+        )
+        transferred["history"][-1]["timestamp"] = ind_token.MAX_PROTOCOL_TIMESTAMP + 1
+
+        with self.assertRaisesRegex(ind_token.ValidationError, "integer is outside protocol bounds|transfer timestamp"):
+            ind_token.verify_token(transferred, now=ind_token.MAX_PROTOCOL_TIMESTAMP)
 
     def test_next_day_transfer_after_daily_limit_is_valid(self):
         issuer_private, issuer_public, _issuer_address = keypair()
@@ -667,6 +901,21 @@ class INDTokenTests(unittest.TestCase):
         self.assertFalse(limiter.allow("203.0.113.1", "gossip", 2, now=102))
         self.assertTrue(limiter.allow("203.0.113.1", "gossip", 2, now=200))
 
+    def test_gossip_decode_attempts_are_limited_before_unpack(self):
+        old_limit = node_client_impl.MAX_GOSSIP_DECODE_ATTEMPTS_PER_PEER_WINDOW
+        node_client_impl.MAX_GOSSIP_DECODE_ATTEMPTS_PER_PEER_WINDOW = 2
+        try:
+            limiter = node_client.PeerRateLimiter(window_seconds=60)
+            seen = node_client.BoundedSeenSet()
+            with self.assertRaises(ind_token.ValidationError):
+                node_client.prepare_incoming_gossip("203.0.113.1", "not-json", seen, limiter)
+            with self.assertRaises(ind_token.ValidationError):
+                node_client.prepare_incoming_gossip("203.0.113.1", "not-json", seen, limiter)
+            result = node_client.prepare_incoming_gossip("203.0.113.1", "not-json", seen, limiter)
+            self.assertTrue(result["rate_limited"])
+        finally:
+            node_client_impl.MAX_GOSSIP_DECODE_ATTEMPTS_PER_PEER_WINDOW = old_limit
+
     def test_peer_tracking_and_seen_sets_are_bounded(self):
         limiter = node_client.PeerRateLimiter(window_seconds=60, max_entries=2)
         self.assertTrue(limiter.allow("203.0.113.1", "gossip", 10, now=100))
@@ -688,6 +937,14 @@ class INDTokenTests(unittest.TestCase):
         self.assertEqual(len(seen), 2)
         self.assertTrue(seen.add("a"))
 
+        active = node_client.ActivePeerConnections(max_total=2, max_per_peer=1)
+        self.assertTrue(active.try_acquire("203.0.113.1"))
+        self.assertFalse(active.try_acquire("203.0.113.1"))
+        self.assertTrue(active.try_acquire("203.0.113.2"))
+        self.assertFalse(active.try_acquire("203.0.113.3"))
+        active.release("203.0.113.1")
+        self.assertTrue(active.try_acquire("203.0.113.3"))
+
     def test_gossip_pool_append_is_unique_and_bounded(self):
         pool = []
         self.assertTrue(node_client.append_unique_gossip(pool, "a", limit=2))
@@ -702,6 +959,31 @@ class INDTokenTests(unittest.TestCase):
         for ip in ("127.0.0.1", "10.0.0.1", "192.168.1.2", "0.0.0.0", "224.0.0.1"):
             self.assertFalse(sender_node._valid_ipv4(ip))
             self.assertFalse(node_client._valid_ipv4(ip))
+
+    def test_dns_seed_settings_and_resolution_filter_to_public_ipv4(self):
+        settings = ind_settings.normalize_security_settings(
+            {
+                "dns_seed_hosts": [
+                    "https://Seed.Example.test/path",
+                    "seed.example.test",
+                    "seed.linkifier.me",
+                ]
+            }
+        )
+        self.assertEqual(settings["dns_seed_hosts"], ["seed.example.test", "seed.linkifier.me"])
+
+        records = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 8888)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 8888)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 8888)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:4860:4860::8888", 8888, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.1.1.1", 8888)),
+        ]
+        with mock.patch("ind.sender_node.socket.getaddrinfo", return_value=records):
+            self.assertEqual(
+                sender_node.resolve_dns_seed_hosts(["seed.example.test"]),
+                ["8.8.8.8", "1.1.1.1"],
+            )
 
     def test_ind_transport_round_trips_and_pins_peer_key(self):
         old_private = ind_transport.NOISE_PRIVATE_KEY_PATH

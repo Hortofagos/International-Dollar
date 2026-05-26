@@ -94,7 +94,7 @@ Transfer timestamps are part of validation:
 
 - timestamps must be strictly increasing inside one token history
 - timestamps cannot be more than 300 seconds in the future when verified
-- a token may have at most 100 transfers in the same UTC day
+- a token may have at most 10 transfers in the same UTC day
 
 The daily transfer cap limits deliberate per-bill history bloat without setting a hard byte-size cap on valid bearer tokens.
 
@@ -557,11 +557,36 @@ Operators can tune these with `IND_MAX_WIRE_COMPRESSED_BYTES` and `IND_MAX_WIRE_
 
 The reference TCP node prefers the `INDN1` encrypted transport for peer requests. `INDN1` uses an ephemeral X25519 exchange against the node's long-term X25519 transport key, derives directional session keys with HKDF-SHA256, and encrypts framed request/response payloads with ChaCha20-Poly1305. The handshake adds one client ephemeral public key, one server static public key, and one server ephemeral public key; encrypted frames add a four-byte length prefix and a 16-byte AEAD tag.
 
-Client nodes pin first-seen server transport keys by peer IP address. A later key change is rejected locally. This is trust-on-first-use rather than a global identity system, and it does not hide the fact that a host is speaking IND on TCP `8888`.
+Client nodes pin first-seen server transport keys by peer IP address. A later key change is rejected locally. This is trust-on-first-use rather than a global identity system, and it does not hide the fact that a host is speaking IND on TCP `8888` on mainnet or TCP `18888` on public testnet.
+
+## Peer Bootstrap
+
+Nodes learn peer addresses from local cache files, configured peer servers, ordinary peer exchange, and DNS seed hostnames. DNS seeds are configured by `dns_seed_hosts` or `IND_DNS_SEED_HOSTS`; explicit bootstrap peers may be supplied with `IND_PEER_PING_SERVERS`.
+
+The active network is selected with `IND_NETWORK` or the `network` security setting:
+
+- `mainnet`: TCP `8888`, store `ind_gossip.db`, ordinary runtime folders
+- `testnet`: TCP `18888`, store `ind_gossip_testnet.db`, network-scoped runtime folders
+
+Mainnet default DNS seed hostnames are:
+
+- `seed.interneational-dollard.com`
+- `seed.linkifier.me`
+- `seed.internetofthebots.com`
+
+Public testnet default DNS seed hostnames are:
+
+- `testnet-seed.interneational-dollard.com`
+- `testnet-seed.linkifier.me`
+- `testnet-seed.internetofthebots.com`
+
+Each DNS seed should publish A records for reachable IND TCP nodes. The reference client resolves seeds as IPv4 only, rejects private, loopback, multicast, reserved, unspecified, and link-local addresses, then stores accepted results as ordinary version-2 peer hints. DNS seed results are not trusted identities, do not grant voting power, and do not affect token validity.
+
+Public testnet tokens are normal IND lazy-genesis tokens signed by the testnet manifest. They are isolated from mainnet by separate port/runtime state and by public nodes pinning a testnet manifest hash instead of any future mainnet genesis hash.
 
 ## Local Settlement
 
-Receipt announcements enter `pending` status. The default finality buffer is 60 seconds and cannot be configured below 60 seconds. If no conflict appears during that window, the token becomes `settled` locally. A later valid conflict proof still invalidates the token.
+Receipt announcements enter `pending` status. The default finality buffer is 60 seconds, and clients may configure a shorter or longer local buffer as a risk policy. If no conflict appears during that window, the token becomes `settled` locally. A later valid conflict proof still invalidates the token.
 
 Local stores expose a confidence decision for a token id:
 
@@ -588,9 +613,18 @@ Nodes rebuild the full bearer token when a wallet needs to spend or export it. T
 
 ## Network Abuse Controls
 
-The reference TCP node applies per-peer rate limits:
+The reference TCP node applies soft per-IP abuse guards. Defaults are intentionally generous and configurable through `IND_NODE_*` environment variables:
 
-- 60 connections per peer per 60 seconds
-- 30 gossip messages per peer per 60 seconds
+- 240 connections per IP per 60 seconds
+- 600 gossip decode attempts per IP per 60 seconds, checked before JSON/wire decoding
+- 180 ordinary gossip messages per IP per 60 seconds
+- 180 transparency root announcements per IP per 60 seconds
+- 60 transparency equivocation proofs per IP per 60 seconds
+- 120 recipient lookups and 120 status lookups per IP per 60 seconds
+- 128 active handler connections total and 12 active handler connections per IP
+- 10 second inbound request timeout
+- 200 status references per request
 
-Peer discovery entries are accepted only if they are globally routable IPv4 addresses. Loopback, private, multicast, unspecified, and reserved addresses are rejected. In-memory peer tracking and gossip deduplication are bounded so long-running nodes cannot be forced to keep unbounded unique peer/message records. These controls reduce spam and path traversal risk, but they are not a full peer reputation system.
+These limits are anti-abuse backpressure, not operator approval. A rate-limited peer can retry later, and valid bill ownership never depends on a node admitting a request immediately.
+
+Peer discovery entries are accepted only if they are globally routable IPv4 addresses. Loopback, private, multicast, unspecified, and reserved addresses are rejected. In-memory peer tracking and gossip deduplication are bounded so long-running nodes cannot be forced to keep unbounded unique peer/message records. These controls reduce spam, socket exhaustion, slow-client thread pinning, and path traversal risk, but they are not a full peer reputation system or a replacement for network-layer DDoS protection.

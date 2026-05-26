@@ -3,6 +3,8 @@ import os
 import time
 from pathlib import Path
 
+from . import settings as ind_settings
+
 
 RUNTIME_DIRS = (
     "files",
@@ -39,6 +41,7 @@ DEFAULT_STATE = {
         "class": "FULL NODE",
         "run_on_startup": "NO",
         "run_in_background": "NO",
+        "full_operator": "NO",
     },
 }
 
@@ -56,6 +59,49 @@ DEFAULT_PASSPHRASE_REQUEST = {
     "passphrase": "",
     "address": "",
 }
+
+
+def _network_namespace():
+    return ind_settings.network_runtime_namespace()
+
+
+def _network_path(path):
+    path = Path(path)
+    namespace = _network_namespace()
+    if not namespace or path.is_absolute():
+        return path
+    parts = path.parts
+    if parts and parts[0] in {"files", "wallet_folder", "transaction_folder", "print_folder", "ip_folder", "full_activation"}:
+        return Path(parts[0]) / namespace / Path(*parts[1:])
+    return path
+
+
+def runtime_dirs():
+    return tuple(str(_network_path(path)) for path in RUNTIME_DIRS)
+
+
+def runtime_state_path():
+    return _network_path(RUNTIME_STATE_PATH)
+
+
+def wallet_generation_path():
+    return _network_path(WALLET_GENERATION_PATH)
+
+
+def passphrase_request_path():
+    return _network_path(PASSPHRASE_REQUEST_PATH)
+
+
+def wallet_dir():
+    return _network_path(WALLET_DIR)
+
+
+def transaction_dir():
+    return _network_path(TRANSACTION_DIR)
+
+
+def peer_root():
+    return _network_path(PEER_ROOT)
 
 
 def _clone(data):
@@ -107,7 +153,7 @@ def _merge_state(data):
             elif key in merged:
                 merged[key] = value
     merged["kill_node"] = _parse_bool(merged["kill_node"], default=True)
-    merged["check_signed_in"] = _parse_bool(merged["check_signed_in"], default=False)
+    merged["check_signed_in"] = False
     try:
         merged["last_luck"] = int(merged["last_luck"])
     except (TypeError, ValueError):
@@ -129,10 +175,6 @@ def _state_from_legacy_files():
     if kill_node != "":
         state["kill_node"] = _parse_bool(kill_node, default=True)
 
-    check_signed_in = _read_legacy_text("files/check_signed_in.txt")
-    if check_signed_in != "":
-        state["check_signed_in"] = _parse_bool(check_signed_in, default=False)
-
     last_luck = _read_legacy_text("files/last_luck.txt").strip()
     if last_luck:
         try:
@@ -146,26 +188,30 @@ def _state_from_legacy_files():
 
 
 def ensure_runtime_files():
-    for directory in RUNTIME_DIRS:
+    for directory in runtime_dirs():
         Path(directory).mkdir(parents=True, exist_ok=True)
-    if RUNTIME_STATE_PATH.exists():
-        _write_json(RUNTIME_STATE_PATH, _merge_state(_read_json(RUNTIME_STATE_PATH, DEFAULT_STATE)))
+    state_path = runtime_state_path()
+    wallet_path = wallet_generation_path()
+    passphrase_path = passphrase_request_path()
+    if state_path.exists():
+        _write_json(state_path, _merge_state(_read_json(state_path, DEFAULT_STATE)))
     else:
-        _write_json(RUNTIME_STATE_PATH, _state_from_legacy_files())
-    if not WALLET_GENERATION_PATH.exists():
-        _write_json(WALLET_GENERATION_PATH, DEFAULT_WALLET_GENERATION)
-    if not PASSPHRASE_REQUEST_PATH.exists():
-        _write_json(PASSPHRASE_REQUEST_PATH, DEFAULT_PASSPHRASE_REQUEST)
+        initial_state = _state_from_legacy_files() if not _network_namespace() else DEFAULT_STATE
+        _write_json(state_path, initial_state)
+    if not wallet_path.exists():
+        _write_json(wallet_path, DEFAULT_WALLET_GENERATION)
+    if not passphrase_path.exists():
+        _write_json(passphrase_path, DEFAULT_PASSPHRASE_REQUEST)
 
 
 def read_state():
-    if not RUNTIME_STATE_PATH.exists():
+    if not runtime_state_path().exists():
         ensure_runtime_files()
-    return _merge_state(_read_json(RUNTIME_STATE_PATH, DEFAULT_STATE))
+    return _merge_state(_read_json(runtime_state_path(), DEFAULT_STATE))
 
 
 def write_state(state):
-    _write_json(RUNTIME_STATE_PATH, _merge_state(state))
+    _write_json(runtime_state_path(), _merge_state(state))
 
 
 def read_node_config():
@@ -177,12 +223,21 @@ def read_node_config():
     )
 
 
-def write_node_config(node_class, run_on_startup, run_in_background):
+def read_node_operator_enabled():
+    node = read_state()["node"]
+    return "YES" if _parse_bool(node.get("full_operator", "NO"), default=False) else "NO"
+
+
+def write_node_config(node_class, run_on_startup, run_in_background, full_operator=None):
     state = read_state()
+    node = state["node"]
+    if full_operator is None:
+        full_operator = node.get("full_operator", "NO")
     state["node"] = {
         "class": str(node_class),
         "run_on_startup": str(run_on_startup),
         "run_in_background": str(run_in_background),
+        "full_operator": "YES" if _parse_bool(full_operator, default=False) else "NO",
     }
     write_state(state)
 
@@ -198,19 +253,18 @@ def set_kill_node(value):
 
 
 def get_check_signed_in():
-    return read_state()["check_signed_in"]
+    return False
 
 
-def set_check_signed_in(value):
+def set_check_signed_in(_value):
     state = read_state()
-    state["check_signed_in"] = bool(value)
+    state["check_signed_in"] = False
     write_state(state)
 
 
 def toggle_check_signed_in():
-    next_value = not get_check_signed_in()
-    set_check_signed_in(next_value)
-    return next_value
+    set_check_signed_in(False)
+    return False
 
 
 def get_public_ip():
@@ -274,21 +328,22 @@ def write_wallet_generation(address, private_key, public_key, passphrase="", tok
         "passphrase": "",
         "tokens": list(tokens or []),
     }
-    _write_json(WALLET_GENERATION_PATH, DEFAULT_WALLET_GENERATION)
+    _write_json(wallet_generation_path(), DEFAULT_WALLET_GENERATION)
 
 
 def write_wallet_generation_from_payload(payload):
     global _WALLET_GENERATION
     _WALLET_GENERATION = wallet_generation_from_payload(payload)
-    _write_json(WALLET_GENERATION_PATH, DEFAULT_WALLET_GENERATION)
+    _write_json(wallet_generation_path(), DEFAULT_WALLET_GENERATION)
 
 
 def read_wallet_generation():
     if _WALLET_GENERATION is not None:
         return _clone(_WALLET_GENERATION)
-    if not WALLET_GENERATION_PATH.exists():
+    path = wallet_generation_path()
+    if not path.exists():
         ensure_runtime_files()
-    data = _read_json(WALLET_GENERATION_PATH, DEFAULT_WALLET_GENERATION)
+    data = _read_json(path, DEFAULT_WALLET_GENERATION)
     merged = _clone(DEFAULT_WALLET_GENERATION)
     if isinstance(data, dict):
         merged.update(data)
@@ -299,7 +354,7 @@ def read_wallet_generation():
 def clear_wallet_generation():
     global _WALLET_GENERATION
     _WALLET_GENERATION = None
-    _write_json(WALLET_GENERATION_PATH, DEFAULT_WALLET_GENERATION)
+    _write_json(wallet_generation_path(), DEFAULT_WALLET_GENERATION)
 
 
 def set_wallet_generation_passphrase(passphrase):
@@ -307,7 +362,7 @@ def set_wallet_generation_passphrase(passphrase):
     data = read_wallet_generation()
     data["passphrase"] = ""
     _WALLET_GENERATION = data
-    _write_json(WALLET_GENERATION_PATH, DEFAULT_WALLET_GENERATION)
+    _write_json(wallet_generation_path(), DEFAULT_WALLET_GENERATION)
 
 
 def wallet_generation_lines(include_passphrase=False):
@@ -359,14 +414,15 @@ def write_passphrase_request(passphrase, address):
         "passphrase": str(passphrase),
         "address": str(address).strip(),
     }
-    _write_json(PASSPHRASE_REQUEST_PATH, DEFAULT_PASSPHRASE_REQUEST)
+    _write_json(passphrase_request_path(), DEFAULT_PASSPHRASE_REQUEST)
 
 
 def read_passphrase_request():
     if _PASSPHRASE_REQUEST is not None:
         return _clone(_PASSPHRASE_REQUEST)
-    if not PASSPHRASE_REQUEST_PATH.exists():
-        legacy = _read_legacy_text("files/passphrase.txt").splitlines()
+    path = passphrase_request_path()
+    if not path.exists():
+        legacy = [] if _network_namespace() else _read_legacy_text("files/passphrase.txt").splitlines()
         if legacy:
             return {
                 "schema": 1,
@@ -374,7 +430,7 @@ def read_passphrase_request():
                 "address": legacy[1].strip() if len(legacy) > 1 else "",
             }
         ensure_runtime_files()
-    data = _read_json(PASSPHRASE_REQUEST_PATH, DEFAULT_PASSPHRASE_REQUEST)
+    data = _read_json(path, DEFAULT_PASSPHRASE_REQUEST)
     merged = _clone(DEFAULT_PASSPHRASE_REQUEST)
     if isinstance(data, dict):
         merged.update(data)
@@ -384,7 +440,7 @@ def read_passphrase_request():
 def clear_passphrase_request():
     global _PASSPHRASE_REQUEST
     _PASSPHRASE_REQUEST = None
-    _write_json(PASSPHRASE_REQUEST_PATH, DEFAULT_PASSPHRASE_REQUEST)
+    _write_json(passphrase_request_path(), DEFAULT_PASSPHRASE_REQUEST)
 
 
 def consume_passphrase_request():
@@ -407,18 +463,19 @@ def wallet_address_from_name(name):
 
 
 def encrypted_wallet_path(address):
-    return WALLET_DIR / f"{WALLET_ENCRYPTED_PREFIX}{address}.json"
+    return wallet_dir() / f"{WALLET_ENCRYPTED_PREFIX}{address}.json"
 
 
 def decrypted_wallet_path(address):
-    return WALLET_DIR / f"{WALLET_DECRYPTED_PREFIX}{address}.json"
+    return wallet_dir() / f"{WALLET_DECRYPTED_PREFIX}{address}.json"
 
 
 def _iter_wallet_files(prefix):
-    if not WALLET_DIR.exists():
+    current_wallet_dir = wallet_dir()
+    if not current_wallet_dir.exists():
         return []
     files = []
-    for path in WALLET_DIR.iterdir():
+    for path in current_wallet_dir.iterdir():
         if path.is_file() and path.name.startswith(prefix) and path.suffix.lower() in {".json", ".txt"}:
             files.append(path)
     return sorted(files)
@@ -456,7 +513,7 @@ def write_decrypted_wallet(address, payload):
     _DECRYPTED_WALLETS[address] = str(payload)
     for path in (
         decrypted_wallet_path(address),
-        WALLET_DIR / f"{WALLET_DECRYPTED_PREFIX}{address}.txt",
+        wallet_dir() / f"{WALLET_DECRYPTED_PREFIX}{address}.txt",
     ):
         try:
             if path.exists():
@@ -565,7 +622,7 @@ def read_encrypted_wallet_bytes(path, prefix=b"INDW1:"):
 def remove_encrypted_wallet(address):
     for path in (
         encrypted_wallet_path(address),
-        WALLET_DIR / f"{WALLET_ENCRYPTED_PREFIX}{address}.txt",
+        wallet_dir() / f"{WALLET_ENCRYPTED_PREFIX}{address}.txt",
     ):
         try:
             path.unlink()
@@ -574,11 +631,12 @@ def remove_encrypted_wallet(address):
 
 
 def transaction_files():
-    if not TRANSACTION_DIR.exists():
+    current_transaction_dir = transaction_dir()
+    if not current_transaction_dir.exists():
         return []
     return sorted(
         path
-        for path in TRANSACTION_DIR.iterdir()
+        for path in current_transaction_dir.iterdir()
         if path.is_file() and path.name.startswith("transaction_") and path.suffix.lower() in {".json", ".txt"}
     )
 
@@ -597,7 +655,7 @@ def _transaction_index(path):
 
 def next_transaction_path():
     next_index = max([_transaction_index(path) for path in transaction_files()] or [0]) + 1
-    return TRANSACTION_DIR / f"transaction_{next_index}.json"
+    return transaction_dir() / f"transaction_{next_index}.json"
 
 
 def write_transaction_message(message):
@@ -618,7 +676,7 @@ def read_transaction_message(path):
 
 
 def peer_path(ip, version="2"):
-    return PEER_ROOT / str(version) / f"{ip}.json"
+    return peer_root() / str(version) / f"{ip}.json"
 
 
 def write_peer(ip, version="2"):

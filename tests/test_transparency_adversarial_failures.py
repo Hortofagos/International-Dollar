@@ -754,10 +754,9 @@ class AdversarialTransparencyTests(unittest.TestCase):
 
     def test_old_root_can_be_used_for_historical_only_verification(self):
         token = self.signed_transfer_token(timestamp=1_700_000_010)
-        entry_hash = ind_token.transfer_hash(token["history"][-1])
         with tempfile.TemporaryDirectory() as temp_dir:
             log, _private_key, public_key = self.make_log(temp_dir)
-            log.append_entry_hash(entry_hash)
+            log.append_transfer_announcement(ind_token.create_transfer_announcement(token))
             historical_root = log.publish_root(1_700_000_040)
             verifier = log_client.TransparencyVerifier(
                 log_client.LocalTransparencyOperator(log),

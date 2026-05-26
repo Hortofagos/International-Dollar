@@ -85,11 +85,13 @@ files/*.db-wal
 files/*.sqlite
 files/*.sqlite3
 files/*.log
+files/testnet/
 
 # Peer discovery cache
 ip_folder/**/*.txt
 ip_folder/**/*.json
 ip_folder/**/*.tmp
+ind_gossip_testnet.db
 
 # User wallet / print / transaction artifacts
 wallet_folder/*

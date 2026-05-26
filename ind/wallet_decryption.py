@@ -60,6 +60,15 @@ def _clear_plaintext_wallet_files():
             secure_delete(wallet_path)
 
 
+def clear_plaintext_wallet_files(clear_memory=False):
+    """Remove temporary plaintext wallet files and optionally clear unlocked sessions."""
+
+    _clear_plaintext_wallet_files()
+    if clear_memory:
+        runtime_json.clear_decrypted_wallets()
+        wallet_crypto.clear_all_session_mwks()
+
+
 def _decrypt_indw2(record, password):
     decrypted_file, mwk = wallet_crypto.decrypt_wallet_record(
         record,
@@ -82,7 +91,7 @@ def wallet_decrypt(passphrase=None, address=None):
         address = request["address"]
     password = str(passphrase).encode('utf-8')
     address = str(address).strip()
-    _clear_plaintext_wallet_files()
+    clear_plaintext_wallet_files()
     for wallet_path in runtime_json.iter_encrypted_wallet_files():
         if runtime_json.wallet_address_from_name(wallet_path.name) != address:
             continue

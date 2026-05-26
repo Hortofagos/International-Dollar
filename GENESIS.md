@@ -50,6 +50,26 @@ Mint one lazy bill from the manifest:
 python tools/mint_lazy_token.py --manifest genesis/manifest.json --index 12345 --output genesis/token_12345.json
 ```
 
+## Public Testnet Genesis
+
+The public testnet has a committed lazy-genesis manifest in `testnet/genesis_manifest.json`. It is intended for real IND protocol transfers with no mainnet or real-world value.
+
+- Network: `testnet`
+- Node port: TCP `18888`
+- Manifest hash: `20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8`
+- Faucet owner address: `x1F75rwW6ah8jBByt4dJLsWRyd22aQFKx`
+- Manifest token count: `33,000,000,000`
+- Manifest total face value: `121,000,000,000`
+
+Public testnet nodes should set:
+
+```bash
+IND_NETWORK=testnet
+IND_TRUSTED_GENESIS_MANIFEST_HASHES=20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8
+```
+
+The faucet operator can issue testnet IND with `tools/testnet_faucet.py`. The faucet private key is local operator state under `files/testnet/` and must not be committed. Recipients receive and settle faucet transfers through the ordinary node gossip and receipt flow.
+
 Small local test set:
 
 ```bash

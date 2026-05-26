@@ -1,6 +1,7 @@
 import json
 import ipaddress
 import logging
+import os
 import random
 import socket
 import threading
@@ -16,11 +17,56 @@ from . import transport as ind_transport
 
 
 PORT = 8888
-PEER_RATE_WINDOW_SECONDS = 60
-MAX_CONNECTIONS_PER_PEER_WINDOW = 60
-MAX_GOSSIP_PER_PEER_WINDOW = 30
-MAX_ROOT_GOSSIP_PER_PEER_WINDOW = 30
-MAX_EQUIVOCATION_GOSSIP_PER_PEER_WINDOW = 10
+
+
+def _env_int(name, default, minimum=None, maximum=None):
+    try:
+        result = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        result = int(default)
+    if minimum is not None:
+        result = max(int(minimum), result)
+    if maximum is not None:
+        result = min(int(maximum), result)
+    return result
+
+
+PEER_RATE_WINDOW_SECONDS = _env_int("IND_NODE_RATE_WINDOW_SECONDS", 60, minimum=1, maximum=3600)
+MAX_CONNECTIONS_PER_PEER_WINDOW = _env_int("IND_NODE_MAX_CONNECTIONS_PER_IP_WINDOW", 240, minimum=1)
+MAX_GOSSIP_DECODE_ATTEMPTS_PER_PEER_WINDOW = _env_int(
+    "IND_NODE_MAX_GOSSIP_DECODE_ATTEMPTS_PER_IP_WINDOW",
+    600,
+    minimum=1,
+)
+MAX_GOSSIP_PER_PEER_WINDOW = _env_int("IND_NODE_MAX_GOSSIP_PER_IP_WINDOW", 180, minimum=1)
+MAX_ROOT_GOSSIP_PER_PEER_WINDOW = _env_int("IND_NODE_MAX_ROOT_GOSSIP_PER_IP_WINDOW", 180, minimum=1)
+MAX_EQUIVOCATION_GOSSIP_PER_PEER_WINDOW = _env_int(
+    "IND_NODE_MAX_EQUIVOCATION_GOSSIP_PER_IP_WINDOW",
+    60,
+    minimum=1,
+)
+MAX_RECIPIENT_LOOKUPS_PER_PEER_WINDOW = _env_int(
+    "IND_NODE_MAX_RECIPIENT_LOOKUPS_PER_IP_WINDOW",
+    120,
+    minimum=1,
+)
+MAX_STATUS_REQUESTS_PER_PEER_WINDOW = _env_int("IND_NODE_MAX_STATUS_REQUESTS_PER_IP_WINDOW", 120, minimum=1)
+MAX_PEER_DISCOVERY_REQUESTS_PER_PEER_WINDOW = _env_int(
+    "IND_NODE_MAX_PEER_DISCOVERY_REQUESTS_PER_IP_WINDOW",
+    60,
+    minimum=1,
+)
+MAX_PEER_ANNOUNCEMENTS_PER_PEER_WINDOW = _env_int(
+    "IND_NODE_MAX_PEER_ANNOUNCEMENTS_PER_IP_WINDOW",
+    60,
+    minimum=1,
+)
+MAX_MISC_REQUESTS_PER_PEER_WINDOW = _env_int("IND_NODE_MAX_MISC_REQUESTS_PER_IP_WINDOW", 60, minimum=1)
+MAX_ACTIVE_CONNECTIONS = _env_int("IND_NODE_MAX_ACTIVE_CONNECTIONS", 128, minimum=1)
+MAX_ACTIVE_CONNECTIONS_PER_PEER = _env_int("IND_NODE_MAX_ACTIVE_CONNECTIONS_PER_IP", 12, minimum=1)
+NODE_REQUEST_TIMEOUT_SECONDS = _env_int("IND_NODE_REQUEST_TIMEOUT_SECONDS", 10, minimum=1, maximum=120)
+NODE_SOCKET_BACKLOG = _env_int("IND_NODE_SOCKET_BACKLOG", 128, minimum=1)
+MAX_STATUS_REFS_PER_REQUEST = _env_int("IND_NODE_MAX_STATUS_REFS_PER_REQUEST", 200, minimum=1)
 INVALID_SCORE_BAN_THRESHOLD = 5
 INVALID_SCORE_DECAY_SECONDS = 600
 MAX_PEER_TRACKING_ENTRIES = 5000
@@ -28,6 +74,10 @@ MAX_SEEN_GOSSIP_MESSAGES = 10000
 MAX_GOSSIP_POOL_MESSAGES = 500
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
+
+
+def node_port():
+    return ind_settings.node_port()
 
 
 def _normalized_ip(value):
@@ -58,6 +108,7 @@ class PeerRateLimiter:
         self.window_seconds = int(window_seconds)
         self.max_entries = int(max_entries)
         self.events = {}
+        self.lock = threading.Lock()
 
     def _trim(self):
         overflow = len(self.events) - self.max_entries
@@ -68,17 +119,19 @@ class PeerRateLimiter:
             self.events.pop(key, None)
 
     def allow(self, peer, bucket, limit, now=None):
-        now = int(now or time.time())
-        key = (peer, bucket)
-        cutoff = now - self.window_seconds
-        timestamps = [item for item in self.events.get(key, []) if item > cutoff]
-        if len(timestamps) >= int(limit):
+        now = int(time.time() if now is None else now)
+        limit = max(1, int(limit))
+        with self.lock:
+            key = (peer, bucket)
+            cutoff = now - self.window_seconds
+            timestamps = [item for item in self.events.get(key, []) if item > cutoff]
+            if len(timestamps) >= limit:
+                self.events[key] = timestamps
+                return False
+            timestamps.append(now)
             self.events[key] = timestamps
-            return False
-        timestamps.append(now)
-        self.events[key] = timestamps
-        self._trim()
-        return True
+            self._trim()
+            return True
 
 
 class PeerPenaltyBook:
@@ -94,6 +147,7 @@ class PeerPenaltyBook:
         self.decay_seconds = int(decay_seconds)
         self.max_entries = int(max_entries)
         self.scores = {}
+        self.lock = threading.Lock()
 
     def _trim(self):
         overflow = len(self.scores) - self.max_entries
@@ -104,25 +158,59 @@ class PeerPenaltyBook:
             self.scores.pop(peer, None)
 
     def _current(self, peer, now=None):
-        now = int(now or time.time())
+        now = int(time.time() if now is None else now)
         score, updated_at = self.scores.get(peer, (0, now))
         if now - updated_at >= self.decay_seconds:
             return 0, now
         return score, updated_at
 
     def penalize(self, peer, amount=1, now=None):
-        now = int(now or time.time())
-        score, _updated_at = self._current(peer, now)
-        score += int(amount)
-        self.scores[peer] = (score, now)
-        self._trim()
-        return score
+        now = int(time.time() if now is None else now)
+        with self.lock:
+            score, _updated_at = self._current(peer, now)
+            score += int(amount)
+            self.scores[peer] = (score, now)
+            self._trim()
+            return score
 
     def allow(self, peer, now=None):
-        score, updated_at = self._current(peer, now)
-        self.scores[peer] = (score, updated_at)
-        self._trim()
-        return score < self.threshold
+        now = int(time.time() if now is None else now)
+        with self.lock:
+            score, updated_at = self._current(peer, now)
+            self.scores[peer] = (score, updated_at)
+            self._trim()
+            return score < self.threshold
+
+
+class ActivePeerConnections:
+    """Caps concurrent handler threads globally and per peer IP."""
+
+    def __init__(self, max_total=MAX_ACTIVE_CONNECTIONS, max_per_peer=MAX_ACTIVE_CONNECTIONS_PER_PEER):
+        self.max_total = int(max_total)
+        self.max_per_peer = int(max_per_peer)
+        self.total = 0
+        self.by_peer = {}
+        self.lock = threading.Lock()
+
+    def try_acquire(self, peer):
+        with self.lock:
+            peer_count = self.by_peer.get(peer, 0)
+            if self.total >= self.max_total or peer_count >= self.max_per_peer:
+                return False
+            self.total += 1
+            self.by_peer[peer] = peer_count + 1
+            return True
+
+    def release(self, peer):
+        with self.lock:
+            peer_count = self.by_peer.get(peer, 0)
+            if peer_count <= 0:
+                return
+            if peer_count == 1:
+                self.by_peer.pop(peer, None)
+            else:
+                self.by_peer[peer] = peer_count - 1
+            self.total = max(0, self.total - 1)
 
 
 class BoundedSeenSet:
@@ -132,21 +220,25 @@ class BoundedSeenSet:
         self.limit = int(limit)
         self.items = set()
         self.order = deque()
+        self.lock = threading.Lock()
 
     def add(self, value):
-        if value in self.items:
-            return False
-        self.items.add(value)
-        self.order.append(value)
-        while len(self.order) > self.limit:
-            self.items.discard(self.order.popleft())
-        return True
+        with self.lock:
+            if value in self.items:
+                return False
+            self.items.add(value)
+            self.order.append(value)
+            while len(self.order) > self.limit:
+                self.items.discard(self.order.popleft())
+            return True
 
     def __len__(self):
-        return len(self.items)
+        with self.lock:
+            return len(self.items)
 
     def __contains__(self, value):
-        return value in self.items
+        with self.lock:
+            return value in self.items
 
 
 def append_unique_gossip(gossip_pool, raw, limit=MAX_GOSSIP_POOL_MESSAGES):
@@ -184,9 +276,23 @@ def gossip_rate_bucket(message_type):
     return "gossip", MAX_GOSSIP_PER_PEER_WINDOW
 
 
-def prepare_incoming_gossip(peer_ip, raw, seen, rate_limiter):
-    """Decode, dedupe, then rate-limit incoming gossip in that order."""
+def request_rate_bucket(indicator):
+    if indicator == "r":
+        return "recipient_lookup", MAX_RECIPIENT_LOOKUPS_PER_PEER_WINDOW
+    if indicator == "c":
+        return "status_lookup", MAX_STATUS_REQUESTS_PER_PEER_WINDOW
+    if indicator == "u":
+        return "peer_discovery", MAX_PEER_DISCOVERY_REQUESTS_PER_PEER_WINDOW
+    if indicator == "i":
+        return "peer_announcement", MAX_PEER_ANNOUNCEMENTS_PER_PEER_WINDOW
+    return "misc_request", MAX_MISC_REQUESTS_PER_PEER_WINDOW
 
+
+def prepare_incoming_gossip(peer_ip, raw, seen, rate_limiter):
+    """Cheaply cap decode attempts, then dedupe and type-limit incoming gossip."""
+
+    if not rate_limiter.allow(peer_ip, "gossip_decode", MAX_GOSSIP_DECODE_ATTEMPTS_PER_PEER_WINDOW):
+        return {"accepted": False, "rate_limited": True}
     message = ind_token.unpack_wire_message(raw)
     mh = ind_token.message_hash(message)
     if mh in seen:
@@ -200,6 +306,10 @@ def prepare_incoming_gossip(peer_ip, raw, seen, rate_limiter):
 
 def _peer_files():
     sender_node.ensure_runtime_files()
+    try:
+        sender_node.maybe_refresh_dns_seed_peers()
+    except Exception:
+        pass
     peers = []
     for folder in ("ip_folder/1", "ip_folder/2"):
         try:
@@ -264,17 +374,16 @@ def node_protocol(rfb, rfb_response, gossip_pool, _unused_bill_pool):
     rate_limiter = PeerRateLimiter()
     penalties = PeerPenaltyBook()
     seen_gossip = BoundedSeenSet()
+    active_connections = ActivePeerConnections()
 
     def handle_client(conn, addr):
         peer_ip = _normalized_ip(addr[0])
         try:
             if not penalties.allow(peer_ip):
-                conn.close()
                 return
-            conn.settimeout(30)
+            conn.settimeout(NODE_REQUEST_TIMEOUT_SECONDS)
             first_packet = conn.recv(1024)
             if not ind_transport.is_noise_hello(first_packet):
-                conn.close()
                 return
             session = ind_transport.server_handshake(conn, first_packet)
             request = session.recv_text(conn, ind_token.MAX_WIRE_DECOMPRESSED_BYTES + 1)
@@ -291,15 +400,12 @@ def node_protocol(rfb, rfb_response, gossip_pool, _unused_bill_pool):
                     penalties.penalize(peer_ip)
                     logger.warning("rejected malformed IND gossip from %s", peer_ip)
                     send_response("invalid")
-                    conn.close()
                     return
                 if prepared.get("duplicate"):
                     send_response("ok")
-                    conn.close()
                     return
                 if prepared.get("rate_limited"):
                     send_response("rate_limited")
-                    conn.close()
                     return
                 try:
                     result = store.ingest_message(prepared["message"], peer_id=peer_ip)
@@ -307,7 +413,6 @@ def node_protocol(rfb, rfb_response, gossip_pool, _unused_bill_pool):
                     penalties.penalize(peer_ip)
                     logger.warning("rejected invalid IND gossip from %s", peer_ip)
                     send_response("invalid")
-                    conn.close()
                     return
                 if result.get("accepted"):
                     high_priority = prepared["message"].get("type") == ind_token.TRANSPARENCY_EQUIVOCATION_PROOF_TYPE
@@ -324,14 +429,24 @@ def node_protocol(rfb, rfb_response, gossip_pool, _unused_bill_pool):
                     proof_raw = ind_token.pack_wire_message(proof)
                     append_unique_gossip(gossip_pool, proof_raw)
                 send_response("ok")
+                return
 
-            elif indicator == "r":
+            else:
+                bucket, limit = request_rate_bucket(indicator)
+                if not rate_limiter.allow(peer_ip, bucket, limit):
+                    send_response("rate_limited")
+                    return
+
+            if indicator == "r":
                 store.finalize_pending(buffer_seconds=ind_settings.finality_buffer_seconds())
                 messages = store.messages_for_recipient(msg, limit=100)
                 send_response(json.dumps(messages))
 
             elif indicator == "c":
                 refs = [line.strip() for line in msg.splitlines() if line.strip()]
+                if len(refs) > MAX_STATUS_REFS_PER_REQUEST:
+                    send_response("too_many_refs")
+                    return
                 send_response(_status_lines_for_refs(refs))
 
             elif indicator == "u":
@@ -367,19 +482,22 @@ def node_protocol(rfb, rfb_response, gossip_pool, _unused_bill_pool):
 
             else:
                 send_response("n")
-            conn.close()
         except Exception:
-            conn.close()
+            pass
+        finally:
+            try:
+                conn.close()
+            finally:
+                active_connections.release(peer_ip)
 
     time.sleep(3)
-    addr = ("", PORT)
+    addr = ("", node_port())
     if socket.has_dualstack_ipv6():
         server = socket.create_server(addr, family=socket.AF_INET6, dualstack_ipv6=True)
     else:
         server = socket.create_server(addr)
     server.settimeout(None)
-    server.listen()
-    connections = []
+    server.listen(NODE_SOCKET_BACKLOG)
     while True:
         try:
             conn1, addr1 = server.accept()
@@ -390,7 +508,10 @@ def node_protocol(rfb, rfb_response, gossip_pool, _unused_bill_pool):
             if peer_ip in ("127.0.0.1", "::1"):
                 conn1.close()
             elif rate_limiter.allow(peer_ip, "connect", MAX_CONNECTIONS_PER_PEER_WINDOW):
-                threading.Thread(target=handle_client, args=(conn1, addr1)).start()
+                if active_connections.try_acquire(peer_ip):
+                    threading.Thread(target=handle_client, args=(conn1, addr1), daemon=True).start()
+                else:
+                    conn1.close()
             else:
                 conn1.close()
         except Exception:
@@ -472,8 +593,9 @@ def maintain_connections(gossip_pool):
 def main():
     """Run the IND gossip node service."""
 
-    print("IND gossip node is starting...")
-    print("Open/forward TCP port 8888 on your router and firewall so peers can reach this node.")
+    port = node_port()
+    print(f"IND {ind_settings.network_name()} gossip node is starting...")
+    print(f"Open/forward TCP port {port} on your router and firewall so peers can reach this node.")
     with Manager() as manager:
         rf1 = manager.list()
         rf2 = manager.dict()

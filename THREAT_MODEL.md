@@ -71,11 +71,11 @@ Nodes can lie by omission, refuse to relay messages, or serve stale peer lists. 
 
 Attackers can flood peers with invalid or repeated messages. The current implementation validates before storing, deduplicates by message hash, caps wire payload sizes, rate-limits peers, penalizes invalid gossip, and bounds in-memory dedupe/peer tracking. These are alpha-grade controls, not a full production anti-DoS layer.
 
-One token can have at most 100 transfers per UTC day, which limits deliberate per-bill history growth. This does not remove network-level spam risk from attackers using many tokens.
+One token can have at most 10 transfers per UTC day, which limits deliberate per-bill history growth. This does not remove network-level spam risk from attackers using many tokens.
 
 Genesis and transfer metadata are capped, which prevents using token metadata as arbitrary bulk storage.
 
-The reference TCP node also limits per-peer connection and gossip rates, bounds encrypted request frames, bounds compressed/decompressed wire payloads, and rejects non-global peer discovery addresses. Peers use an X25519/ChaCha20-Poly1305 transport with first-seen key pinning by IP address. These controls reduce trivial memory, socket exhaustion, and local-address pollution attacks; they do not replace a real peer reputation system or authenticated peer identities.
+The reference TCP node also limits per-IP connection and request rates, cheaply caps gossip decode attempts before expensive parsing, caps active handler connections, bounds encrypted request frames, bounds compressed/decompressed wire payloads, and rejects non-global peer discovery addresses. Peers use an X25519/ChaCha20-Poly1305 transport with first-seen key pinning by IP address. These controls reduce trivial memory, socket exhaustion, slow-client thread pinning, and local-address pollution attacks; they do not replace a real peer reputation system, authenticated peer identities, or network-layer DDoS filtering.
 
 ## Issuer And Genesis Trust
 
