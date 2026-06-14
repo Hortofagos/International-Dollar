@@ -79,6 +79,7 @@ files/log_operator_public_key.json
 files/noise_peers/
 files/security_settings.json
 files/spam_protection.txt
+files/operator_update_backup*
 files/*.tmp
 files/*.db
 files/*.db-shm
