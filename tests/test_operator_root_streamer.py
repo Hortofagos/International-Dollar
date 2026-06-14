@@ -54,6 +54,24 @@ class OperatorRootStreamerTests(unittest.TestCase):
             )
             self.assertEqual(changed_again, 0)
 
+    def test_static_writer_replaces_disabled_latest_placeholder(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            private_key, public_key = keypair()
+            log = log_server.TransparencyLog(str(Path(temp_dir) / "log.db"), private_key, public_key)
+            root = log.publish_root(1_700_000_000)
+            website_dir = Path(temp_dir) / "website"
+            website_dir.mkdir()
+            (website_dir / "latest.json").write_text(
+                '{"type":"ind.transparency_status.v1","status":"disabled"}\n',
+                encoding="utf-8",
+            )
+
+            changed = root_streamer.StaticRootMirrorWriter(website_dir).publish_root(root)
+
+            self.assertTrue(changed)
+            latest = ind_token._load_json((website_dir / "latest.json").read_text(encoding="utf-8"))
+            self.assertEqual(latest["root_hash"], root["root_hash"])
+
     def test_hash_log_exporter_writes_contiguous_entry_segments(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             private_key, public_key = keypair()

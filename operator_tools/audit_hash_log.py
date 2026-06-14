@@ -30,7 +30,11 @@ def _read_bytes(location):
     location = str(location)
     try:
         if _is_url(location):
-            with urllib.request.urlopen(location, timeout=30) as response:
+            request = urllib.request.Request(
+                location,
+                headers={"User-Agent": "International-Dollar-transparency-auditor/1"},
+            )
+            with urllib.request.urlopen(request, timeout=30) as response:
                 return response.read()
         return Path(location).read_bytes()
     except Exception as exc:

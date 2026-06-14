@@ -1,4 +1,4 @@
-"""Genesis token and lazy-manifest helpers."""
+"""Genesis bill and lazy-manifest helpers."""
 
 from .protocol import (
     GENESIS_MANIFEST_TYPE,
@@ -27,4 +27,3 @@ __all__ = [
     "verify_genesis",
     "verify_genesis_manifest",
 ]
-

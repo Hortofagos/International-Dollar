@@ -1,50 +1,68 @@
 # International Dollar (IND)
 
-International Dollar is a fixed-supply digital bearer-token experiment. IND does not use a blockchain, mining, staking, KYC, or IP-based voting. Tokens carry their own cryptographic history, and desktop nodes gossip transfers, receipts, and double-spend proofs.
+International Dollar is a fixed-supply digital bearer-bill experiment. IND does not use a blockchain, mining, staking, KYC, or IP-based voting. Bills carry their own cryptographic history, and desktop nodes gossip transfers, receipts, and double-spend proofs.
 
 ## Core Architecture
 
-IND is designed around a maximum supply of exactly 33,000,000,000 unique token indexes. At genesis, the issuer can publish a signed supply manifest instead of materializing every bill. The manifest defines denomination ranges and lets bills be minted on demand when they first move.
+IND is designed around a maximum supply of exactly 33,000,000,000 unique bill indexes. At genesis, the issuer can publish a signed supply manifest instead of materializing every bill. The manifest defines denomination ranges and lets bills be minted on demand when they first move.
 
 A materialized or lazy genesis record commits to:
 
-- a token index inside the fixed supply range
+- a bill index inside the fixed supply range
 - an owner address
 - an issuer public key and issuer signature
 - a deterministic success commitment checked by the IND verification algorithm
 
-After genesis, no further issuance occurs. A token can be validated offline from its payload by running the IND algorithm exposed through `ind_token.py` and implemented in the `ind/` package. Lazy bills verify against the signed manifest hash, so users do not need a 20+ TB dump of every possible genesis payload.
+After genesis, no further issuance occurs. A bill can be validated offline from its payload by running the IND algorithm exposed through `ind_token.py` and implemented in the `ind/` package. Lazy bills verify against the signed manifest hash, so users do not need a 20+ TB dump of every possible genesis payload.
 
 The launch constants intentionally carry the IND numerology motif: 33 billion fixed supply, 33-character current wallet addresses, a 777 angel-number marker, the 8/8888 money motif already used by the node port, and the 9 / 09.10.2003 birthday motif. New genesis and lazy-genesis metadata include a deterministic `ind_alignment` seal so the motif is committed without changing transfer validation rules.
 
 Public nodes must pin accepted genesis issuer keys with `IND_TRUSTED_GENESIS_ISSUER_KEYS`, exact supply manifests with `IND_TRUSTED_GENESIS_MANIFEST_HASHES`, or both. If neither is set, genesis validation fails unless `IND_ALLOW_UNTRUSTED_GENESIS=1` is explicitly enabled for local tests.
 
+## Network Roles
+
+IND keeps the public roles intentionally small:
+
+- **Wallet:** holds and spends the user's own bills.
+- **Node:** gossips transfers, receipts, transparency roots, and conflict proofs; it stores only local knowledge, not every possible bill.
+- **Transparency operator:** runs the Merkle receipt log, accepts validated transfer hashes, and publishes signed roots.
+- **Mirror/auditor:** republishes or checks signed roots and hash-log archives.
+- **Archive/index service:** optional heavy infrastructure for explorers and historical search; ordinary nodes do not need this role.
+
+The old phrase "full operator" should be read as "transparency operator." A normal IND node fully verifies every bill or proof it sees, but it is not expected to store the whole 33 billion bill-index universe.
+
 ## Transfer Model
 
-Tokens transfer peer to peer with signature chains. When holder A sends token T to holder B, A appends a signed transfer to T:
+Bills transfer peer to peer with signature chains. When holder A sends bill T to holder B, A appends a signed transfer to T:
 
 ```text
-TOKEN_payload + sig(A -> B) + sig(B -> C) + ...
+BILL_payload + sig(A -> B) + sig(B -> C) + ...
 ```
 
-Every recipient can verify the full provenance chain back to genesis. There is no global ordered ledger.
+Every recipient can verify provenance back to genesis. There is no global ordered ledger.
 
-Nodes store this history in decomposed form: genesis once, each lazy manifest once, each transfer once, and compact state/message references for current ownership and recipient inboxes. Nodes can rebuild a full bearer token when a wallet needs to spend it, but the local database no longer stores the same growing history or repeated manifest in every transfer and message row. Gossip messages also support a compressed `indz1:` wire format while remaining backwards-compatible with plain JSON. The bearer token itself still grows linearly with its spend count; the storage fix prevents local quadratic blowups without adding checkpoint trust.
+Protocol v1 bills carry the full transfer history. Protocol v2 compact bills carry the same genesis, the latest transparency-backed checkpoint, and only the recent transfers after that checkpoint. The checkpoint commits to the settled bill tip: bill id (`token_id`), genesis hash, sequence, current owner, value, display id, last transfer hash/timestamp, the daily transfer counter needed for the 10/day rule, and the previous checkpoint hash. The checkpoint hash is logged as its own transparency-log leaf.
 
-To limit intentional per-bill bloat, the protocol enforces at most 10 transfers per token per UTC day. Transfer timestamps must be strictly increasing and cannot be more than 300 seconds in the future when verified.
+A compact v2 payment is therefore not "the operator says so." The recipient verifies the genesis, the checkpoint hash, the checkpoint inclusion proof against mirrored signed roots, the spend-map proof for the settled last transfer, and the recent transfer signatures after the checkpoint. The tradeoff is honest and explicit: compact v2 is not fully offline full-history verification of old transfer bodies. It is log-backed, mirror-backed, and archive-auditable. Operators or archive services should keep full transfer archives so deep audits and rebuilds remain possible.
 
-Metadata is capped to keep tokens from being used as arbitrary file storage: genesis metadata is limited to 1024 canonical JSON bytes and transfer metadata to 256 canonical JSON bytes.
+Checkpoint submissions include the source bill as validation input. The operator verifies that source bill, recomputes the checkpoint, and logs only the checkpoint hash. Nodes store history in decomposed form: genesis once, each lazy manifest once, each transfer once, compact checkpoints, and compact state/message references for current ownership and recipient inboxes. Nodes can still rebuild a full bearer bill from local or archive storage, but normal wallet sends prefer compact v2 once a valid checkpoint exists. Until the first checkpoint exists, wallets can keep sending the v1 full-history bill. By default, local stores create the first automatic checkpoint after 10 settled transfers, then every 10 settled transfers after the latest checkpoint. A wallet or operator can force "compact now" for a settled bill, and operators can set a high-value threshold for immediate checkpointing. Gossip messages also support a compressed `indz1:` wire format while remaining backwards-compatible with plain JSON.
+
+To limit intentional per-bill bloat, the protocol enforces at most 10 transfers per bill per UTC day. Transfer timestamps must be strictly increasing and cannot be more than 300 seconds in the future when verified.
+
+Metadata is capped to keep bills from being used as arbitrary file storage: genesis metadata is limited to 1024 canonical JSON bytes and transfer metadata to 256 canonical JSON bytes.
 
 Genesis records include a signed `issued_at` timestamp. Transfers before the genesis issuance time are invalid, which limits fake backdated histories.
 
 ## Transparency Log Layer
 
-IND now has an optional Merkle-tree transparency log layer for stricter bill
-validation. Nodes can submit validated transfer announcements to a public log.
-The operator validates the announcement, appends only the latest signed
-transfer hash, and publishes signed tree roots. Clients can then reject a bill
-chain unless every transfer hash has an inclusion proof against a mirrored
-historical root near that transfer's timestamp.
+IND now defaults to a Merkle-tree transparency log layer for bill validation.
+Nodes can submit validated transfer announcements and compact
+checkpoint announcements to a public log. The operator validates the
+announcement, appends only the latest signed transfer hash or checkpoint hash,
+and publishes signed tree roots. Clients can then reject a full bill chain
+unless every transfer hash has an inclusion proof, and reject a compact bill
+unless its checkpoint hash has an inclusion proof and its settled tip has a
+valid spend-map proof.
 
 This uses a Certificate Transparency-style Merkle construction: domain-separated
 leaves and interior nodes, append-only roots, inclusion proofs, and consistency
@@ -62,10 +80,18 @@ archive.org. This prevents retroactive hidden history against those mirrors,
 but it does not fully prevent split-view equivocation until clients gossip
 roots and multiple independent operators exist.
 
+The reference transparency operator currently stores its append log in a local
+SQLite database. That is appropriate for development, desktop experiments, and
+early testnet operation. Production-scale operators should first move the
+spend-map implementation to an incremental persistent structure, then choose a
+stronger backend such as PostgreSQL or RocksDB if the workload requires it. A
+SQL server alone does not fix scale if roots and proofs are rebuilt from every
+stored spend claim.
+
 Useful environment switches:
 
-- `IND_SUBMIT_TO_TRANSPARENCY_LOG=1`: normal nodes submit accepted transfer announcements to `IND_LOG_OPERATOR_URL`
-- `IND_REQUIRE_TRANSPARENCY_LOG=1`: validation rejects token histories without valid inclusion proofs
+- `IND_SUBMIT_TO_TRANSPARENCY_LOG=0`: local-development escape hatch; default settings submit accepted transfer announcements to `IND_LOG_OPERATOR_URL`
+- `IND_REQUIRE_TRANSPARENCY_LOG=0`: local-development escape hatch; default settings require valid inclusion proofs
 - `IND_LOG_OPERATOR_URL`: HTTP URL for the operator proof/append API
 - `IND_LOG_MIRROR_URLS`: comma-separated HTTP URLs or local mirror directories used for signed historical roots
 - `IND_LOG_OPERATOR_PUBLIC_KEY`: expected operator signing key
@@ -80,8 +106,12 @@ Useful environment switches:
 - `IND_LOG_MAX_CURRENT_ROOT_AGE_SECONDS`: maximum wall-clock age for roots used as the current log state, default `300`; strict mode refuses values above `600`
 - `IND_LOG_CURRENT_ROOT_FUTURE_SKEW_SECONDS`: allowed future timestamp skew for current roots, default `120`, hard ceiling `300`, and it must be smaller than the current-root age window
 - `IND_LOG_SUBMISSION_VERIFY_TIMEOUT_SECONDS`: post-submission inclusion-proof retry window, default `30`; raise it for slow root signing/mirror propagation, lower it to reject unreachable or dishonest operators faster
+- `IND_FIRST_CHECKPOINT_AFTER_TRANSFERS`: first automatic compact checkpoint cadence, default `10`
+- `IND_CHECKPOINT_INTERVAL_TRANSFERS`: automatic checkpoint interval after the latest checkpoint, default `10`
+- `IND_HIGH_VALUE_CHECKPOINT_THRESHOLD`: bill value at or above which settled payments checkpoint immediately, default `0` meaning disabled
 - `IND_LOG_ACCEPT_LEGACY_ALGORITHM_NAMES`: accepts the deprecated legacy tree algorithm identifier `RFC6962_SHA3_256_PYMERKLE_V1` for old roots, default on; set to `0` once no trusted production roots use the old name
-- `IND_HASH_LOG_ARCHIVE_DIR`: static export directory for the full transfer-hash log archive
+- `IND_LOG_WRITE_MIRROR_PROOF_ARCHIVES=0`: skip writing full proof-archive snapshots for every mirrored root; public operators should prefer segmented hash-log exports instead
+- `IND_HASH_LOG_ARCHIVE_DIR`: static export directory for the full transfer/checkpoint hash-log archive
 - `IND_LOG_OPERATOR_PRIVATE_KEY_FILE` / `IND_LOG_OPERATOR_PUBLIC_KEY_FILE`: operator key files used to sign hash-log archive manifests
 
 Mirror independence is checked by normalized source identity. HTTP sources use
@@ -121,19 +151,28 @@ size but different root hashes, or the same timestamp but different tree state,
 are permanent evidence. Equivocation evidence is forwarded ahead of ordinary
 gossip, rate-limited, and independently verified before forwarding.
 
-Operators can also publish the full transfer-hash archive as fixed-size JSONL
+Nodes also gossip `ind.transparency_operator_policy_violation.v1` when a signed
+root's spend-map proof contains two transfer bodies for the same spend key. The
+affected bill is rejected, the operator is locally blacklisted, and the signed
+root plus spend-map proof becomes portable evidence. Incomplete proofs that lack
+the conflicting transfer bodies reject the bill but do not blacklist the
+operator by themselves.
+
+Operators can also publish the full transfer/checkpoint hash archive as fixed-size JSONL
 segments plus a signed `manifest.json`. The manifest embeds the operator-signed
 root that the segment prefix must produce, commits to each segment hash, and is
 signed by the operator key. Anyone can run:
 
 ```bash
-python operator_tools/audit_hash_log.py --manifest operator_tools/hash-log-archive-placeholder/manifest.json --archive-base operator_tools/hash-log-archive-placeholder --operator-public-key=<operator-public-key>
+python operator_tools/audit_hash_log.py --manifest operator_tools/hash-log-archive/manifest.json --archive-base operator_tools/hash-log-archive --operator-public-key=<operator-public-key>
 ```
 
 Archive-only verification proves the segment archive cryptographically
 corresponds to the embedded signed root. Add `--mirror <mirror>` to confirm that
 same signed root was independently published; add `--strict` to require that
-mirror cross-check.
+mirror cross-check. Full transfer archives remain optional for ordinary wallet
+operation but important for rebuilding old full histories and auditing compact
+checkpoints back to genesis.
 
 The first reference builds used the misleading algorithm identifier
 `RFC6962_SHA3_256_PYMERKLE_V1`. Verifiers still accept it by default so old
@@ -158,23 +197,23 @@ well backed up.
 
 ## Receipt Gossip and Finality
 
-When B receives a token transfer, B signs a receipt announcement and gossips it to peers. Nodes store the announcement locally in SQLite and hold the transfer in a pending state for `60` seconds by default. Operators can adjust this with `IND_FINALITY_BUFFER_SECONDS` or the desktop security setting; shorter buffers settle faster but leave less time for double-spend conflict gossip to arrive before local acceptance.
+When B receives a bill transfer, B signs a receipt announcement and gossips it to peers. Nodes store the announcement locally in SQLite and hold the transfer in a pending state for `60` seconds by default. Operators can adjust this with `IND_FINALITY_BUFFER_SECONDS` or the desktop security setting; shorter buffers settle faster but leave less time for double-spend conflict gossip to arrive before local acceptance.
 
-- If no conflicting transfer appears during the buffer, the token settles to B.
-- If two conflicting transfers from the same owner and same token state appear, any node can build a conflict proof.
-- A valid conflict proof permanently invalidates that token locally and is gossiped to peers.
+- If no conflicting transfer appears during the buffer, the bill settles to B.
+- If a node already knows one branch, a later sibling transfer from the same bill state is rejected locally.
+- Conflict proofs remain portable evidence, but they do not burn or invalidate an already accepted bill.
 
-The conflict proof is a cryptographic fact: both signatures are from the same key, reference the same token state, and spend it to different recipients. No vote is needed.
+The conflict proof is a cryptographic fact: both signatures are from the same key, reference the same bill state, and spend it to different recipients. No vote is needed.
 
-Merchants should wait through the finality buffer before releasing real-world value. The local store exposes `token_confidence(...)` so wallets and merchants can reject unknown, pending, wrong-owner, or conflicted tokens and optionally require extra settled age for larger payments. A later valid conflict proof still invalidates the token, so this is practical settlement over a healthy gossip network rather than a global blockchain-style ordering guarantee.
+Merchants should wait through the finality buffer before releasing real-world value. The local store exposes `token_confidence(...)` so wallets and merchants can reject unknown, pending, wrong-owner, or too-fresh bills and optionally require extra settled age for larger payments. Late conflict proofs are evidence against the signer, not a rule that destroys downstream holders' bills, so acceptance remains local and order-dependent rather than blockchain-style global finality.
 
 ## Network Topology
 
 IND nodes are volunteer-operated desktop nodes. Nodes communicate through the TCP gossip service on port `8888` on mainnet and `18888` on public testnet; UDP rendezvous/NAT traversal has been removed. To run a reachable node, open/forward the active TCP port on your router and allow it through the host firewall. IP addresses are discovery hints only. They do not grant voting power.
 
-Nodes bootstrap from three hint sources: local cached peers in `ip_folder`, configured peer servers, and DNS seed hostnames from `dns_seed_hosts` or `IND_DNS_SEED_HOSTS`. Mainnet defaults are `seed.interneational-dollard.com`, `seed.linkifier.me`, and `seed.internetofthebots.com`; testnet defaults are `testnet-seed.interneational-dollard.com`, `testnet-seed.linkifier.me`, and `testnet-seed.internetofthebots.com`. Publish node A records there when those seeds are ready. DNS results are filtered to globally routable IPv4 addresses and cached as ordinary peer hints, not trusted identities.
+Nodes bootstrap from three hint sources: local cached peers in `ip_folder`, configured peer servers, and DNS seed hostnames from `dns_seed_hosts` or `IND_DNS_SEED_HOSTS`. Mainnet defaults are `seed.international-dollar.com`, `seed.linkifier.me`, and `seed.internetofthebots.com`; testnet defaults are `testnet-seed.international-dollar.com` and `testnet-seed.internetofthebots.com`. Publish node A and AAAA records there when those seeds are ready. DNS results are filtered to globally routable IPv4 or IPv6 addresses and cached as ordinary peer hints, not trusted identities.
 
-Node connections use the `INDN1` encrypted transport: X25519 key agreement with ChaCha20-Poly1305 authenticated encryption. Peer transport keys are pinned on first contact by IP address, so later key changes are rejected instead of silently trusted. Token validity never depends on transport encryption; every bill remains verified from its own signatures.
+Node connections use the `INDN1` encrypted transport: X25519 key agreement with ChaCha20-Poly1305 authenticated encryption. Peer transport keys are pinned on first contact by IP address, so later key changes are rejected instead of silently trusted. Bill validity never depends on transport encryption; every bill remains verified from its own signatures.
 
 The reference node has soft per-IP abuse guards rather than approval-style throttles: generous connection and request windows, a cheap pre-decode gossip cap for junk floods, active connection caps, bounded gossip queues, and a short inbound request timeout. Defaults are meant to stop heavy spam or slow-client thread exhaustion without interfering with ordinary wallet/node use; operators can tune them with `IND_NODE_*` environment variables from `.env.example`.
 
@@ -182,7 +221,7 @@ Local mainnet node state is stored in `ind_gossip.db`; public testnet state is s
 
 ## Public Testnet
 
-The public testnet is a real IND protocol network, not a mock ledger. Testnet tokens are lazy-genesis IND bearer tokens signed by the testnet issuer manifest in `testnet/genesis_manifest.json`, transferred with the same signature-chain, receipt, settlement, conflict-proof, and gossip code used by mainnet. They have no mainnet or real-world value because normal nodes pin a different genesis trust root.
+The public testnet is a real IND protocol network, not a mock ledger. Testnet bills are lazy-genesis IND bearer bills signed by the testnet issuer manifest in `testnet/genesis_manifest.json`, transferred with the same signature-chain, receipt, settlement, conflict-proof, and gossip code used by mainnet. They have no mainnet or real-world value because normal nodes pin a different genesis trust root.
 
 Public testnet parameters are recorded in `testnet/testnet.json`:
 
@@ -190,7 +229,7 @@ Public testnet parameters are recorded in `testnet/testnet.json`:
 - TCP node port: `18888`
 - Genesis manifest hash: `20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8`
 - Faucet owner address: `x1F75rwW6ah8jBByt4dJLsWRyd22aQFKx`
-- Testnet DNS seeds: `testnet-seed.interneational-dollard.com`, `testnet-seed.linkifier.me`, `testnet-seed.internetofthebots.com`
+- Testnet DNS seeds: `testnet-seed.international-dollar.com`, `testnet-seed.internetofthebots.com`
 
 Run a public testnet node:
 
@@ -214,7 +253,7 @@ $env:IND_TRUSTED_GENESIS_MANIFEST_HASHES="20581461c25568d36446b0c0cbd87f04c35d5d
 python main.py
 ```
 
-Issue one testnet IND token from the faucet wallet to a recipient address:
+Issue one testnet IND bill from the faucet wallet to a recipient address:
 
 ```powershell
 $env:IND_NETWORK="testnet"
@@ -225,27 +264,27 @@ python tools/testnet_faucet.py `
   --faucet-public-key-file files/testnet/faucet_public_key.local.json
 ```
 
-The faucet tool materializes the next lazy-genesis token, signs a normal transfer to the recipient, stores it locally, queues the transfer announcement, and gossips it to configured peers. The recipient claims it through the ordinary receive flow and signs a receipt before local settlement.
+The faucet tool materializes the next lazy-genesis bill, signs a normal transfer to the recipient, stores it locally, queues the transfer announcement, and gossips it to configured peers. The recipient claims it through the ordinary receive flow and signs a receipt before local settlement.
 
 ## Current Implementation Map
 
-- `ind/protocol.py`: token genesis, signature-chain validation, receipts, conflict proofs, wire encoding, and protocol constants
+- `ind/protocol.py`: bill genesis, v1/v2 bill validation, compact checkpoints, signature-chain validation, receipts, conflict proofs, wire encoding, and protocol constants
 - `ind/crypto.py`, `ind/addresses.py`, `ind/genesis.py`, `ind/transfers.py`, `ind/receipts.py`, `ind/conflicts.py`, `ind/wire.py`: focused import surfaces over the protocol core
-- `ind/store.py`: SQLite-backed local token state, finality buffer, local confidence checks, message compaction, and conflict persistence
+- `ind/store.py`: SQLite-backed local bill state, compact checkpoints, finality buffer, local confidence checks, message compaction, and conflict persistence
 - `ind/token.py` and `ind_token.py`: public compatibility API for existing scripts and tests
-- `ind/transparency_server.py` and `log_server.py`: transparency log operator with append, signed-root, inclusion-proof, consistency-proof, and local root-mirror staging endpoints
-- `ind/transparency_client.py` and `log_client.py`: client-side signed-root, inclusion-proof, consistency-proof, and mirror-disagreement verification
-- `ind/sender_node.py` and `sender_node.py`: wallet-side peer communication, transfer/receipt broadcast, settled-token import
+- `ind/transparency_server.py` and `log_server.py`: transparency log operator with transfer/checkpoint append, signed-root, inclusion-proof, consistency-proof, and local root-mirror staging endpoints
+- `ind/transparency_client.py` and `log_client.py`: client-side signed-root, inclusion-proof, checkpoint, spend-map, consistency-proof, and mirror-disagreement verification
+- `ind/sender_node.py` and `sender_node.py`: wallet-side peer communication, transfer/receipt broadcast, settled-bill import
 - `ind/node_client.py` and `node_client.py`: desktop gossip node, peer discovery, local finality, conflict propagation
 - `ind/wallet_services.py`: testable wallet send/claim actions used by the UI
-- `ind/desktop.py` and `main.py`: Tkinter wallet integration for sending, receiving, and claiming token-backed bills
+- `ind/desktop.py` and `main.py`: Tkinter wallet integration for sending, receiving, and claiming bearer bills
 - `tests/`: focused unit tests for receipt finality, double-spend proof generation, storage limits, transparency logs, wallet crypto, and abuse controls
 - `SPEC.md`: alpha protocol specification
 - `THREAT_MODEL.md`: current threat model and open hardening work
 - `SECURITY.md`: security policy and private-disclosure guidance
 - `GENESIS.md`: fixed-supply audit policy draft
 - `tools/generate_genesis.py`: local genesis shard and commitment generator
-- `tools/mint_lazy_token.py`: on-demand lazy-genesis token minter from a signed manifest
+- `tools/mint_lazy_token.py`: on-demand lazy-genesis bill minter from a signed manifest
 - `tools/simulate_partition.py`: local partition/conflict-proof simulation
 
 ## Setup
@@ -262,7 +301,7 @@ Run the wallet:
 python main.py
 ```
 
-Run a full desktop gossip node:
+Run a desktop gossip node:
 
 ```bash
 python node_client.py
@@ -292,7 +331,7 @@ Strict clients also need independent mirrors and the operator public key printed
 `log_server.py`:
 
 ```bash
-$env:IND_LOG_MIRROR_URLS="files/transparency_roots,https://example.invalid/ind/transparency-roots"
+$env:IND_LOG_MIRROR_URLS="files/transparency_roots,<published-root-mirror-url>"
 $env:IND_LOG_OPERATOR_PUBLIC_KEY="<operator-public-key>"
 $env:IND_REQUIRE_TRANSPARENCY_LOG="1"
 ```
@@ -317,11 +356,12 @@ This implementation removes Proof of IP voting, but it does not magically solve 
 - Full supply auditability requires publishing the genesis set or an equivalent commitment.
 - Phase 1 transparency logging still trusts one operator not to equivocate unless clients compare gossiped/mirrored roots.
 - Mirror diversity is security-critical; mirrors controlled by the same operator do not give strong evidence.
+- Compact v2 payments require transparency-log evidence and archived history for deep offline audit; they intentionally do not carry every old transfer body in every payment.
 - Transparency root gossip does not solve eclipse attacks, it only makes hidden retroactive history detectable once honest roots are seen.
-- Free identities make reputation cheap; the direct penalty for double-spending is burning the conflicted token.
-- New users still need to acquire tokens from existing holders after genesis.
+- Free identities make reputation cheap; the direct protocol response to double-spending is rejecting the later locally observed sibling branch.
+- New users still need to acquire bills from existing holders after genesis.
 - Users must trust the issuer's genesis process unless the complete genesis set and issuer key policy are independently audited.
 
 ## Disclaimer
 
-This is experimental software with no warranty. Do not treat pending tokens as final until the finality buffer has elapsed, and do not treat the current implementation as production financial infrastructure.
+This is experimental software with no warranty. Do not treat pending bills as final until the finality buffer has elapsed, and do not treat the current implementation as production financial infrastructure.

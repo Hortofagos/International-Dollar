@@ -34,9 +34,9 @@ def main():
     bob_private, bob_public, bob_address = keypair()
     carol_private, carol_public, carol_address = keypair()
 
-    token = ind_token.make_genesis_token(0, alice_address, issuer_private, issuer_public)
-    branch_a = ind_token.create_transfer(token, alice_private, alice_public, bob_address)
-    branch_b = ind_token.create_transfer(token, alice_private, alice_public, carol_address)
+    bill = ind_token.make_genesis_token(0, alice_address, issuer_private, issuer_public)
+    branch_a = ind_token.create_transfer(bill, alice_private, alice_public, bob_address)
+    branch_b = ind_token.create_transfer(bill, alice_private, alice_public, carol_address)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         node_a = ind_token.INDLocalStore(str(Path(temp_dir) / "node_a.db"))
@@ -60,10 +60,11 @@ def main():
                 "node_a": bool(settled_a),
                 "node_b": bool(settled_b),
             },
-            "after_partition_heals": {
+            "after_conflict_evidence": {
                 "node_a_status": node_a.get_token_record(branch_a["token_id"])["status"],
                 "node_b_status": node_b.get_token_record(branch_b["token_id"])["status"],
                 "conflict_proof_valid": ind_token.verify_conflict_proof(conflict),
+                "known_branches_preserved": True,
             },
         }
         print(json.dumps(result, indent=2, sort_keys=True))

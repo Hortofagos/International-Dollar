@@ -5,12 +5,17 @@ import sqlite3
 import tempfile
 import unittest
 from hashlib import sha3_256
+from unittest import mock
 
 import ecdsa
 from ecdsa import util as ecdsa_util
 
 import ind_token
+from ind import node_client
+from ind import protocol as protocol_impl
 from ind import settings as ind_settings
+from ind import store as ind_store
+from ind import transparency_client as log_client
 
 
 def keypair(seed=None):
@@ -138,11 +143,412 @@ class ProtocolHardeningTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temp_dir:
                 store = ind_token.INDLocalStore(temp_dir + "/ind.db")
                 store.ingest_message(ind_token.create_transfer_announcement(branch_a, now=1_700_000_032))
-                result = store.ingest_message(ind_token.create_transfer_announcement(branch_b, now=1_700_000_033))
+                with self.assertRaisesRegex(ind_token.ValidationError, "conflicting transfer rejected"):
+                    store.ingest_message(ind_token.create_transfer_announcement(branch_b, now=1_700_000_033))
+                messages = store.conflict_messages(limit=10)
 
-            self.assertEqual(result["status"], "conflict")
-            self.assertEqual(result["conflict_proof"]["sequence"], 2)
-            self.assertTrue(ind_token.verify_conflict_proof(result["conflict_proof"]))
+            proof = ind_token.create_conflict_proof(branch_a, branch_b, detected_at=1_700_000_034)
+            self.assertEqual(proof["sequence"], 2)
+            self.assertTrue(ind_token.verify_conflict_proof(proof))
+            self.assertEqual(messages, [])
+
+    def test_conflict_proof_ingest_persists_status_and_rebroadcast_evidence(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        faucet_private, faucet_public, faucet_address = keypair()
+        _alice_private, _alice_public, alice_address = keypair()
+        _bob_private, _bob_public, bob_address = keypair()
+
+        with temporary_env(IND_ALLOW_UNTRUSTED_GENESIS="1"):
+            token = ind_token.make_genesis_token(
+                1010,
+                faucet_address,
+                issuer_private,
+                issuer_public,
+                issued_at=1_700_000_000,
+            )
+            branch_a = ind_token.create_transfer(
+                token,
+                faucet_private,
+                faucet_public,
+                alice_address,
+                timestamp=1_700_000_010,
+            )
+            branch_b = ind_token.create_transfer(
+                token,
+                faucet_private,
+                faucet_public,
+                bob_address,
+                timestamp=1_700_000_011,
+            )
+            proof = ind_token.create_conflict_proof(branch_a, branch_b, detected_at=1_700_000_012)
+            display_id = ind_token.verify_token(branch_a).display_id
+            with tempfile.TemporaryDirectory() as temp_dir:
+                db_path = temp_dir + "/ind.db"
+                store = ind_token.INDLocalStore(db_path)
+                result = store.ingest_message(proof)
+
+                reopened = ind_token.INDLocalStore(db_path)
+                status = reopened.status_record_for_ref(display_id)
+                messages = reopened.conflict_messages(limit=10)
+
+        self.assertEqual(result["status"], "conflict")
+        self.assertIsNone(status)
+        self.assertEqual(messages[0]["proof_hash"], proof["proof_hash"])
+
+    def test_conflict_proof_key_ignores_detected_at(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        faucet_private, faucet_public, faucet_address = keypair()
+        _alice_private, _alice_public, alice_address = keypair()
+        _bob_private, _bob_public, bob_address = keypair()
+
+        with temporary_env(IND_ALLOW_UNTRUSTED_GENESIS="1"):
+            token = ind_token.make_genesis_token(
+                1012,
+                faucet_address,
+                issuer_private,
+                issuer_public,
+                issued_at=1_700_000_000,
+            )
+            branch_a = ind_token.create_transfer(
+                token,
+                faucet_private,
+                faucet_public,
+                alice_address,
+                timestamp=1_700_000_010,
+            )
+            branch_b = ind_token.create_transfer(
+                token,
+                faucet_private,
+                faucet_public,
+                bob_address,
+                timestamp=1_700_000_011,
+            )
+            early = ind_token.create_conflict_proof(branch_a, branch_b, detected_at=1_700_000_020)
+            late = ind_token.create_conflict_proof(branch_a, branch_b, detected_at=1_700_000_999)
+
+        self.assertNotEqual(early["proof_hash"], late["proof_hash"])
+        self.assertEqual(ind_token.conflict_proof_key(early), ind_token.conflict_proof_key(late))
+
+    def test_conflict_proof_ingest_dedupes_detected_at_variants(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        faucet_private, faucet_public, faucet_address = keypair()
+        _alice_private, _alice_public, alice_address = keypair()
+        _bob_private, _bob_public, bob_address = keypair()
+
+        with temporary_env(IND_ALLOW_UNTRUSTED_GENESIS="1"):
+            token = ind_token.make_genesis_token(
+                1013,
+                faucet_address,
+                issuer_private,
+                issuer_public,
+                issued_at=1_700_000_000,
+            )
+            branch_a = ind_token.create_transfer(
+                token,
+                faucet_private,
+                faucet_public,
+                alice_address,
+                timestamp=1_700_000_010,
+            )
+            branch_b = ind_token.create_transfer(
+                token,
+                faucet_private,
+                faucet_public,
+                bob_address,
+                timestamp=1_700_000_011,
+            )
+            proof_a = ind_token.create_conflict_proof(branch_a, branch_b, detected_at=1_700_000_020)
+            proof_b = ind_token.create_conflict_proof(branch_a, branch_b, detected_at=1_700_000_999)
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                db_path = temp_dir + "/ind.db"
+                store = ind_token.INDLocalStore(db_path)
+                first = store.ingest_message(proof_a)
+                second = store.ingest_message(proof_b)
+                messages = store.conflict_messages(limit=10)
+                conn = sqlite3.connect(db_path)
+                try:
+                    count, distinct_count = conn.execute(
+                        "SELECT COUNT(*), COUNT(DISTINCT conflict_key) FROM conflicts"
+                    ).fetchone()
+                finally:
+                    conn.close()
+
+        self.assertTrue(first["accepted"])
+        self.assertTrue(second["accepted"])
+        self.assertFalse(second["relay"])
+        self.assertTrue(second["duplicate_conflict"])
+        self.assertNotIn("conflict_proof", second)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["proof_hash"], proof_a["proof_hash"])
+        self.assertEqual(count, 1)
+        self.assertEqual(distinct_count, 1)
+
+    def test_conflict_key_migration_dedupes_legacy_rows(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        faucet_private, faucet_public, faucet_address = keypair()
+        _alice_private, _alice_public, alice_address = keypair()
+        _bob_private, _bob_public, bob_address = keypair()
+
+        with temporary_env(IND_ALLOW_UNTRUSTED_GENESIS="1"):
+            token = ind_token.make_genesis_token(
+                1014,
+                faucet_address,
+                issuer_private,
+                issuer_public,
+                issued_at=1_700_000_000,
+            )
+            branch_a = ind_token.create_transfer(
+                token,
+                faucet_private,
+                faucet_public,
+                alice_address,
+                timestamp=1_700_000_010,
+            )
+            branch_b = ind_token.create_transfer(
+                token,
+                faucet_private,
+                faucet_public,
+                bob_address,
+                timestamp=1_700_000_011,
+            )
+            proof_a = ind_token.create_conflict_proof(branch_a, branch_b, detected_at=1_700_000_020)
+            proof_b = ind_token.create_conflict_proof(branch_a, branch_b, detected_at=1_700_000_999)
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                db_path = temp_dir + "/ind.db"
+                conn = sqlite3.connect(db_path)
+                try:
+                    conn.executescript(
+                        """
+                        CREATE TABLE conflicts (
+                            proof_hash TEXT PRIMARY KEY,
+                            token_id TEXT NOT NULL,
+                            previous_hash TEXT NOT NULL,
+                            proof_json TEXT NOT NULL,
+                            detected_at INTEGER NOT NULL
+                        );
+                        PRAGMA user_version=2;
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO conflicts(proof_hash, token_id, previous_hash, proof_json, detected_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            proof_a["proof_hash"],
+                            proof_a["token_id"],
+                            proof_a["previous_hash"],
+                            ind_token._store_json(proof_a),
+                            1_700_000_020,
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO conflicts(proof_hash, token_id, previous_hash, proof_json, detected_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            proof_b["proof_hash"],
+                            proof_b["token_id"],
+                            proof_b["previous_hash"],
+                            ind_token._store_json(proof_b),
+                            1_700_000_999,
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                store = ind_token.INDLocalStore(db_path)
+                messages = store.conflict_messages(limit=10)
+                conn = sqlite3.connect(db_path)
+                try:
+                    count, distinct_count = conn.execute(
+                        "SELECT COUNT(*), COUNT(DISTINCT conflict_key) FROM conflicts"
+                    ).fetchone()
+                    user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+                finally:
+                    conn.close()
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(count, 1)
+        self.assertEqual(distinct_count, 1)
+        self.assertEqual(user_version, ind_store.STORE_SCHEMA_VERSION)
+
+    def test_conflicting_transfer_skips_transparency_submission(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        faucet_private, faucet_public, faucet_address = keypair()
+        _alice_private, _alice_public, alice_address = keypair()
+        _bob_private, _bob_public, bob_address = keypair()
+
+        class CountingSubmitter:
+            def __init__(self):
+                self.calls = []
+
+            def submit_transfer_announcement(self, message):
+                self.calls.append(message)
+                return {"accepted": False}
+
+        with temporary_env(IND_ALLOW_UNTRUSTED_GENESIS="1", IND_REQUIRE_TRANSPARENCY_LOG="0"):
+            token = ind_token.make_genesis_token(
+                1015,
+                faucet_address,
+                issuer_private,
+                issuer_public,
+                issued_at=1_700_000_000,
+            )
+            branch_a = ind_token.create_transfer(
+                token,
+                faucet_private,
+                faucet_public,
+                alice_address,
+                timestamp=1_700_000_010,
+            )
+            branch_b = ind_token.create_transfer(
+                token,
+                faucet_private,
+                faucet_public,
+                bob_address,
+                timestamp=1_700_000_011,
+            )
+            submitter = CountingSubmitter()
+            with tempfile.TemporaryDirectory() as temp_dir:
+                store = ind_token.INDLocalStore(
+                    temp_dir + "/ind.db",
+                    transparency_submitter=submitter,
+                    require_transparency=False,
+                )
+                first = store.ingest_message(ind_token.create_transfer_announcement(branch_a, now=1_700_000_012))
+                with self.assertRaisesRegex(ind_token.ValidationError, "conflicting transfer rejected"):
+                    store.ingest_message(ind_token.create_transfer_announcement(branch_b, now=1_700_000_013))
+                messages = store.conflict_messages(limit=10)
+
+        self.assertEqual(first["status"], "unreceipted")
+        self.assertEqual(messages, [])
+        self.assertEqual(len(submitter.calls), 1)
+
+    def test_invalid_gossip_is_not_marked_seen_before_store_validation(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        alice_private, alice_public, alice_address = keypair()
+        _bob_private, _bob_public, bob_address = keypair()
+
+        with temporary_env(IND_ALLOW_UNTRUSTED_GENESIS="1"):
+            token = ind_token.make_genesis_token(
+                1011,
+                alice_address,
+                issuer_private,
+                issuer_public,
+                issued_at=1_700_000_000,
+            )
+            transferred = ind_token.create_transfer(
+                token,
+                alice_private,
+                alice_public,
+                bob_address,
+                timestamp=1_700_000_010,
+            )
+            invalid_message = ind_token.create_transfer_announcement(transferred, now=1_700_000_011)
+            invalid_message["unexpected"] = "poison"
+            raw = ind_token.pack_wire_message(invalid_message)
+
+            seen = node_client.BoundedSeenSet()
+            rate_limiter = node_client.PeerRateLimiter()
+            prepared = node_client.prepare_incoming_gossip("203.0.113.10", raw, seen, rate_limiter)
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                store = ind_token.INDLocalStore(temp_dir + "/ind.db")
+                with self.assertRaisesRegex(ind_token.ValidationError, "unknown field"):
+                    store.ingest_message(prepared["message"])
+
+            self.assertTrue(prepared["accepted"])
+            self.assertNotIn(prepared["message_hash"], seen)
+
+    def test_oversized_compressed_gossip_returns_invalid_without_penalty(self):
+        old_limit = protocol_impl.MAX_WIRE_COMPRESSED_BYTES
+        protocol_impl.MAX_WIRE_COMPRESSED_BYTES = 8
+        try:
+            peer = "203.0.113.20"
+            raw = ind_token.WIRE_PACKED_PREFIX + ("0" * 11)
+            penalties = node_client.PeerPenaltyBook(threshold=1)
+
+            response = node_client.handle_incoming_gossip(
+                peer,
+                raw,
+                node_client.BoundedSeenSet(),
+                node_client.PeerRateLimiter(),
+                object(),
+                [],
+                penalties,
+            )
+
+            self.assertEqual(response, "invalid")
+            self.assertTrue(penalties.allow(peer))
+        finally:
+            protocol_impl.MAX_WIRE_COMPRESSED_BYTES = old_limit
+
+    def test_malformed_gossip_returns_invalid_and_penalizes_peer(self):
+        peer = "203.0.113.21"
+        penalties = node_client.PeerPenaltyBook(threshold=1)
+
+        response = node_client.handle_incoming_gossip(
+            peer,
+            "not-json",
+            node_client.BoundedSeenSet(),
+            node_client.PeerRateLimiter(),
+            object(),
+            [],
+            penalties,
+        )
+
+        self.assertEqual(response, "invalid")
+        self.assertFalse(penalties.allow(peer))
+
+    def test_valid_compressed_gossip_still_works(self):
+        class AcceptingStore:
+            def __init__(self):
+                self.message = None
+                self.peer_id = None
+
+            def ingest_message(self, message, peer_id=None):
+                self.message = message
+                self.peer_id = peer_id
+                return {"accepted": True}
+
+        peer = "203.0.113.22"
+        message = {"type": "test_gossip", "value": "ok"}
+        raw = ind_token.pack_wire_message(message)
+        seen = node_client.BoundedSeenSet()
+        gossip_pool = []
+        store = AcceptingStore()
+
+        response = node_client.handle_incoming_gossip(
+            peer,
+            raw,
+            seen,
+            node_client.PeerRateLimiter(),
+            store,
+            gossip_pool,
+            node_client.PeerPenaltyBook(),
+        )
+
+        self.assertEqual(response, "ok")
+        self.assertEqual(store.message, message)
+        self.assertEqual(store.peer_id, peer)
+        self.assertEqual(len(gossip_pool), 1)
+        self.assertEqual(ind_token.unpack_wire_message(gossip_pool[0]), message)
+
+    def test_oversized_status_request_still_returns_too_many_refs(self):
+        old_limit = node_client.MAX_STATUS_REFS_PER_REQUEST
+        node_client.MAX_STATUS_REFS_PER_REQUEST = 2
+        try:
+            with mock.patch.object(node_client, "_status_lines_for_refs", return_value="ok") as status_lines:
+                self.assertEqual(node_client._status_response_for_request("1x1\n1x2"), "ok")
+                status_lines.assert_called_once_with(["1x1", "1x2"])
+                self.assertEqual(node_client._status_response_for_request("1x1\n1x2\n1x3"), "too_many_refs")
+        finally:
+            node_client.MAX_STATUS_REFS_PER_REQUEST = old_limit
 
     def test_protocol_signatures_are_domain_separated_and_low_s(self):
         issuer_private, issuer_public, _issuer_address = keypair()
@@ -202,8 +608,8 @@ class ProtocolHardeningTests(unittest.TestCase):
                 row = conn.execute("SELECT value FROM ind_schema WHERE key = 'schema_version'").fetchone()
             finally:
                 conn.close()
-        self.assertEqual(user_version, 1)
-        self.assertEqual(row[0], "1")
+        self.assertEqual(user_version, ind_store.STORE_SCHEMA_VERSION)
+        self.assertEqual(row[0], str(ind_store.STORE_SCHEMA_VERSION))
 
     def test_production_security_profile_requires_strict_trust_pins(self):
         unsafe = ind_settings.default_settings()
@@ -226,13 +632,43 @@ class ProtocolHardeningTests(unittest.TestCase):
             }
         )
 
-        with temporary_env(IND_ALLOW_UNTRUSTED_GENESIS=None):
+        with temporary_env(
+            IND_ALLOW_UNTRUSTED_GENESIS=None,
+            IND_REQUIRE_TRANSPARENCY_LOG=None,
+            IND_SUBMIT_TO_TRANSPARENCY_LOG=None,
+        ):
             self.assertTrue(ind_settings.assert_production_security(strict))
 
         operator_settings = dict(strict)
         operator_settings["security_role"] = "operator"
-        with temporary_env(IND_ALLOW_UNTRUSTED_GENESIS=None):
+        with temporary_env(
+            IND_ALLOW_UNTRUSTED_GENESIS=None,
+            IND_REQUIRE_TRANSPARENCY_LOG=None,
+            IND_SUBMIT_TO_TRANSPARENCY_LOG=None,
+        ):
             self.assertTrue(ind_settings.assert_production_security(operator_settings))
+
+    def test_transparency_http_base_urls_reject_traversal_shapes(self):
+        settings = ind_settings.normalize_security_settings(
+            {
+                "transparency_operator_url": "https://operator.example/operator/%2e%2e",
+                "trusted_root_mirrors": [
+                    "https://mirror.example/transparency",
+                    "https://mirror.example/transparency/%252e%252e/banner",
+                ],
+                "transparency_proof_archives": [
+                    "https://archive.example/operator-transparency",
+                    "https://archive.example/operator-transparency/../banner",
+                ],
+            }
+        )
+
+        self.assertEqual(settings["transparency_operator_url"], "")
+        self.assertEqual(settings["trusted_root_mirrors"], ["https://mirror.example/transparency"])
+        self.assertEqual(settings["transparency_proof_archives"], ["https://archive.example/operator-transparency"])
+
+        with self.assertRaisesRegex(log_client.TransparencyLogError, "unsafe transparency source URL"):
+            log_client.HTTPTransparencyOperator("https://operator.example/operator/%2e%2e")
 
     def test_security_settings_malformed_json_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -2,16 +2,16 @@
 
 Status: policy draft.
 
-IND has a fixed maximum supply of 33,000,000,000 token indexes. The protocol only accepts genesis records with indexes inside that range and positive values, but a serious public launch also needs an auditable genesis process.
+IND has a fixed maximum supply of 33,000,000,000 bill indexes. The protocol only accepts genesis records with indexes inside that range and positive values, but a serious public launch also needs an auditable genesis process.
 
-The preferred launch path is now lazy genesis: publish one signed supply manifest with denomination ranges, then mint individual genesis tokens only when a bill first moves. Users verify a lazy bill by checking the issuer signature, the pinned manifest hash, the bill index inside the signed range, and the deterministic nonce/commitment. This avoids dumping tens of terabytes of pre-generated bills onto the network.
+The preferred launch path is now lazy genesis: publish one signed supply manifest with denomination ranges, then mint individual genesis bills only when a bill first moves. Users verify a lazy bill by checking the issuer signature, the pinned manifest hash, the bill index inside the signed range, and the deterministic nonce/commitment. This avoids dumping tens of terabytes of pre-generated bills onto the network.
 
 ## Required For Public Alpha
 
 - Publish the trusted issuer public key or keys.
 - Set `IND_TRUSTED_GENESIS_ISSUER_KEYS` on public nodes.
 - Publish the signed genesis manifest and set `IND_TRUSTED_GENESIS_MANIFEST_HASHES` on public nodes.
-- Publish test vectors for at least one valid and one invalid genesis token.
+- Publish test vectors for at least one valid and one invalid genesis bill.
 
 ## Recommended Supply Commitment
 
@@ -21,7 +21,7 @@ Before launch, generate the intended supply manifest and publish:
 - starting index and count for each range
 - owner address for each range
 - deterministic nonce seed for each range
-- total token count
+- total bill count
 - total face value
 - deterministic `ind_alignment` metadata carrying the 33/777/8/9 motif
 - SHA3-256 hash of the unsigned manifest
@@ -47,7 +47,7 @@ python tools/generate_genesis.py --lazy-manifest --write --denominations 1:11000
 Mint one lazy bill from the manifest:
 
 ```bash
-python tools/mint_lazy_token.py --manifest genesis/manifest.json --index 12345 --output genesis/token_12345.json
+python tools/mint_lazy_token.py --manifest genesis/manifest.json --index 12345 --output genesis/bill_12345.json
 ```
 
 ## Public Testnet Genesis
@@ -58,7 +58,7 @@ The public testnet has a committed lazy-genesis manifest in `testnet/genesis_man
 - Node port: TCP `18888`
 - Manifest hash: `20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8`
 - Faucet owner address: `x1F75rwW6ah8jBByt4dJLsWRyd22aQFKx`
-- Manifest token count: `33,000,000,000`
+- Manifest bill count: `33,000,000,000`
 - Manifest total face value: `121,000,000,000`
 
 Public testnet nodes should set:

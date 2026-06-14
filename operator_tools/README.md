@@ -3,6 +3,10 @@
 This folder contains operator-side helpers for mirroring signed transparency
 roots outside the proof-serving log operator.
 
+The only operator role in IND is the **transparency operator**: it runs the
+Merkle receipt log and signs public roots. "Full operator" is deprecated
+wording and should not be used for new UI or docs.
+
 `root_streamer.py` copies signed Merkle roots into:
 
 - a git mirror directory, with optional commits/pushes
@@ -39,7 +43,7 @@ python -m operator_tools.root_streamer `
   --operator-url http://127.0.0.1:8890 `
   --operator-public-key "<operator-public-key>" `
   --git-mirror-dir C:\path\to\transparency-roots-clone `
-  --git-remote-url https://example.invalid/ind/transparency-roots.git `
+  --git-remote-url <transparency-roots-git-remote> `
   --website-mirror-dir C:\path\to\website\public\transparency `
   --git-push
 ```
@@ -75,3 +79,16 @@ Hash-log archive files are separate:
 
 Each entry is only `{leaf_index, entry_hash, submitted_at}`. Full transfer data
 still stays peer-to-peer.
+
+## Storage Guidance
+
+The reference log operator currently uses a local SQLite database. That is fine
+for development, desktop experiments, and early testnet operation. A production
+operator may later run on PostgreSQL, RocksDB, FoundationDB, or another backend,
+but the first scale fix is algorithmic: the spend map must be incremental and
+persistent so publishing a root or serving a proof does not rebuild from every
+stored spend claim.
+
+For public mirrors, set `IND_LOG_WRITE_MIRROR_PROOF_ARCHIVES=0` and publish
+segmented hash-log exports instead of writing a complete proof archive for every
+signed root.

@@ -1,6 +1,9 @@
+"""Client and local-operator helpers for IND transparency log verification."""
+
 import copy
 import contextlib
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -8,6 +11,7 @@ import time
 import urllib.parse
 import urllib.request
 import warnings
+from hashlib import sha3_256
 from pathlib import Path
 
 from pymerkle import verify_consistency as pymerkle_verify_consistency
@@ -18,19 +22,23 @@ from pymerkle.hasher import MerkleHasher
 from pymerkle.proof import InvalidProof, MerkleProof
 
 from . import token as ind_token
+from .transparency_policy import TransparencyVerifierPolicy
 
 
+logger = logging.getLogger(__name__)
 LOG_ROOT_TYPE = "ind.transparency_root.v1"
 LOG_INCLUSION_PROOF_TYPE = "ind.transparency_inclusion_proof.v1"
 LOG_CONSISTENCY_PROOF_TYPE = "ind.transparency_consistency_proof.v1"
 LOG_ROOT_ANNOUNCEMENT_TYPE = "ind.transparency_root_announcement.v1"
 LOG_EQUIVOCATION_PROOF_TYPE = "ind.transparency_equivocation_proof.v1"
+LOG_OPERATOR_POLICY_VIOLATION_TYPE = "ind.transparency_operator_policy_violation.v1"
 LOG_KEY_ROTATION_TYPE = "ind.transparency_operator_key_rotation.v1"
 LOG_KEY_REVOCATION_TYPE = "ind.transparency_operator_key_revocation.v1"
 LOG_SPEND_MAP_PROOF_TYPE = "ind.transparency_spend_map_proof.v1"
 LOG_PROOF_ARCHIVE_TYPE = "ind.transparency_proof_archive.v1"
 LOG_VERSION = 1
 LOG_HASH_ALGORITHM = "sha3_256"
+LOG_EMPTY_ROOT_HASH = sha3_256(b"IND-TRANSPARENCY-EMPTY-LOG-V1").hexdigest()
 LOG_TREE_ALGORITHM = "CT_STYLE_SHA3_256_V1"
 LOG_SPEND_MAP_ALGORITHM = "IND_SPARSE_SPEND_MAP_SHA3_256_V1"
 LEGACY_LOG_TREE_ALGORITHM = "RFC6962_SHA3_256_PYMERKLE_V1"
@@ -69,6 +77,14 @@ class RootVerificationError(TransparencyLogError):
 
 class InclusionProofError(TransparencyLogError):
     """Raised when an inclusion proof does not resolve to a mirrored root."""
+
+
+class OperatorPolicyViolationError(InclusionProofError):
+    """Raised when a signed root proves the operator violated log policy."""
+
+    def __init__(self, message, evidence):
+        self.evidence = evidence
+        super().__init__(message)
 
 
 class ConsistencyProofError(TransparencyLogError):
@@ -140,9 +156,9 @@ def accept_legacy_algorithm_names():
 
 
 def accepted_tree_algorithms():
+    """Return current and configured legacy transparency tree algorithm names."""
+
     algorithms = {LOG_TREE_ALGORITHM}
-    # Deprecated: legacy signed roots used this misleading identifier before
-    # the protocol clarified that IND is CT-style SHA3-256, not RFC 6962.
     if accept_legacy_algorithm_names():
         algorithms.add(LEGACY_LOG_TREE_ALGORITHM)
     return algorithms
@@ -249,7 +265,7 @@ def _spend_map_empty_root():
 
 
 def spend_key_for_transfer(transfer):
-    """Return the globally indexed key for one spend of a previous token state."""
+    """Return the globally indexed key for one spend of a previous bill state."""
 
     key_material = {
         "token_id": transfer["token_id"],
@@ -300,6 +316,8 @@ _SPEND_CLAIM_OPTIONAL = {"transfer"}
 
 
 def _normalize_spend_claim(claim, error_cls=None):
+    """Return the canonical spend-claim shape used for inclusion verification."""
+
     error_cls = error_cls or InclusionProofError
     _require_exact_keys(
         claim,
@@ -319,7 +337,7 @@ def _normalize_spend_claim(claim, error_cls=None):
         "version": LOG_VERSION,
         "log_id": _require_str(claim["log_id"], "transparency spend claim log id", error_cls=error_cls),
         "spend_key": _hex32(claim["spend_key"], "spend key"),
-        "token_id": _require_str(claim["token_id"], "transparency spend claim token id", error_cls=error_cls),
+        "token_id": _require_str(claim["token_id"], "transparency spend claim bill id", error_cls=error_cls),
         "previous_hash": _hex32(claim["previous_hash"], "transparency spend claim previous hash"),
         "sequence": _require_int_for(
             claim["sequence"],
@@ -559,6 +577,67 @@ def verify_spend_map_proof(proof, signed_root):
     return sorted(claims, key=_spend_claim_sort_key)
 
 
+def make_operator_policy_violation_proof(root, spend_proof, violation_type="accepted_conflicting_spend", detected_at=None):
+    """Build portable evidence that an operator signed a policy-violating root."""
+
+    proof = {
+        "type": LOG_OPERATOR_POLICY_VIOLATION_TYPE,
+        "version": LOG_VERSION,
+        "violation_type": str(violation_type),
+        "log_id": root["log_id"],
+        "root": copy.deepcopy(root),
+        "spend_proof": copy.deepcopy(spend_proof),
+        "detected_at": int(detected_at or time.time()),
+    }
+    verify_operator_policy_violation_proof(proof)
+    return proof
+
+
+def verify_operator_policy_violation_proof(proof, operator_public_key=None):
+    """Verify self-contained evidence that a signed root accepted a double spend."""
+
+    required = {"type", "version", "violation_type", "log_id", "root", "spend_proof", "detected_at"}
+    _require_exact_keys(
+        proof,
+        required,
+        "operator policy violation proof",
+        error_cls=InclusionProofError,
+    )
+    if proof["type"] != LOG_OPERATOR_POLICY_VIOLATION_TYPE or _require_int_for(
+        proof["version"],
+        "operator policy violation proof version",
+        error_cls=InclusionProofError,
+    ) != LOG_VERSION:
+        raise InclusionProofError("unsupported operator policy violation proof version")
+    if proof["violation_type"] != "accepted_conflicting_spend":
+        raise InclusionProofError("unsupported operator policy violation type")
+    _require_int_for(
+        proof["detected_at"],
+        "operator policy violation detected_at",
+        minimum=0,
+        error_cls=InclusionProofError,
+    )
+    root = copy.deepcopy(proof["root"])
+    verify_signed_root(root, operator_public_key=operator_public_key)
+    if proof["log_id"] != root["log_id"]:
+        raise InclusionProofError("operator policy violation log id mismatch")
+    claims = verify_spend_map_proof(proof["spend_proof"], root)
+    if len({claim["transfer_hash"] for claim in claims}) < 2:
+        raise InclusionProofError("operator policy violation proof has no conflicting spend")
+    missing_transfer = [claim for claim in claims if "transfer" not in claim]
+    if missing_transfer:
+        raise InclusionProofError("operator policy violation proof is missing conflicting transfer bodies")
+    spend_keys = {claim["spend_key"] for claim in claims}
+    if len(spend_keys) != 1:
+        raise InclusionProofError("operator policy violation proof mixes spend keys")
+    first = claims[0]
+    for claim in claims[1:]:
+        for field in ("token_id", "previous_hash", "sequence", "sender_address", "sender_public_key"):
+            if claim[field] != first[field]:
+                raise InclusionProofError("operator policy violation proof claims are not siblings")
+    return copy.deepcopy(proof)
+
+
 def verify_spend_map_proof_for_transfer(
     transfer,
     proof,
@@ -575,11 +654,11 @@ def verify_spend_map_proof_for_transfer(
     if claim is None:
         raise InclusionProofError("spend proof does not contain this transfer")
     if claim["spend_key"] != expected_spend_key:
-        raise InclusionProofError("spend proof is for a different token state")
+        raise InclusionProofError("spend proof is for a different bill state")
     if claim["transfer_hash"] != expected_transfer_hash:
         raise InclusionProofError("spend proof maps the spend key to a different transfer")
     if claim["token_id"] != transfer["token_id"]:
-        raise InclusionProofError("spend proof token id mismatch")
+        raise InclusionProofError("spend proof bill id mismatch")
     if claim["previous_hash"] != transfer["previous_hash"]:
         raise InclusionProofError("spend proof previous hash mismatch")
     if int(claim["sequence"]) != int(transfer["sequence"]):
@@ -590,10 +669,52 @@ def verify_spend_map_proof_for_transfer(
         raise InclusionProofError("spend proof sender key mismatch")
     conflicting_claims = [item for item in claims if item["transfer_hash"] != expected_transfer_hash]
     if conflicting_claims:
-        for sibling in conflicting_claims:
-            if "transfer" not in sibling:
-                raise InclusionProofError("spend proof contains an unverifiable conflicting sibling claim")
-        raise InclusionProofError("spend proof contains a conflicting sibling transfer")
+        all_claims = [claim, *conflicting_claims]
+        if all("transfer" in item for item in all_claims):
+            evidence = make_operator_policy_violation_proof(signed_root, proof)
+            raise OperatorPolicyViolationError("operator accepted conflicting spend claims", evidence)
+        raise InclusionProofError("spend proof contains an unverifiable conflicting sibling claim")
+    return True
+
+
+def verify_spend_map_proof_for_checkpoint(
+    checkpoint,
+    proof,
+    signed_root,
+    operator_public_key=None,
+):
+    """Verify that a checkpoint's settled tip has a non-conflicting spend-map claim."""
+
+    verify_signed_root(signed_root, operator_public_key=operator_public_key)
+    claims = verify_spend_map_proof(proof, signed_root)
+    expected_transfer_hash = str(checkpoint["last_transfer_hash"]).lower()
+    claim = next((item for item in claims if item["transfer_hash"] == expected_transfer_hash), None)
+    if claim is None:
+        raise InclusionProofError("checkpoint spend proof does not contain its settled transfer")
+    if claim["token_id"] != checkpoint["token_id"]:
+        raise InclusionProofError("checkpoint spend proof bill id mismatch")
+    if int(claim["sequence"]) != int(checkpoint["sequence"]):
+        raise InclusionProofError("checkpoint spend proof sequence mismatch")
+    if "transfer" not in claim:
+        raise InclusionProofError("checkpoint spend proof is missing the settled transfer body")
+    transfer = claim["transfer"]
+    try:
+        ind_token._verify_transfer_signature(transfer)
+    except Exception as exc:
+        raise InclusionProofError("checkpoint spend proof transfer signature is invalid") from exc
+    if ind_token.transfer_hash(transfer) != expected_transfer_hash:
+        raise InclusionProofError("checkpoint spend proof transfer hash mismatch")
+    if transfer["recipient_address"] != checkpoint["owner_address"]:
+        raise InclusionProofError("checkpoint spend proof owner mismatch")
+    if int(transfer["timestamp"]) != int(checkpoint["last_transfer_timestamp"]):
+        raise InclusionProofError("checkpoint spend proof timestamp mismatch")
+    conflicting_claims = [item for item in claims if item["transfer_hash"] != expected_transfer_hash]
+    if conflicting_claims:
+        all_claims = [claim, *conflicting_claims]
+        if all("transfer" in item for item in all_claims):
+            evidence = make_operator_policy_violation_proof(signed_root, proof)
+            raise OperatorPolicyViolationError("operator accepted conflicting spend claims", evidence)
+        raise InclusionProofError("checkpoint spend proof contains an unverifiable conflicting sibling claim")
     return True
 
 
@@ -633,6 +754,7 @@ def _archive_entries_tree(entries, tree_size):
             entry,
             {"leaf_index", "entry_hash", "submitted_at"},
             "proof archive entry",
+            optional={"entry_kind", "entry"},
             error_cls=InclusionProofError,
         )
         leaf_index = _require_int_for(
@@ -992,6 +1114,8 @@ def make_key_rotation(
 
 
 def verify_key_rotation(record, expected_log_id=None, old_public_key=None, new_public_key=None):
+    """Verify a dual-signed transparency operator key rotation record."""
+
     required = {
         "type",
         "version",
@@ -1047,6 +1171,7 @@ def verify_key_rotation(record, expected_log_id=None, old_public_key=None, new_p
     if overlap_until < record["rotation_timestamp"]:
         raise KeyRotationError("operator key rotation overlap ends before rotation timestamp")
     payload = key_rotation_signature_payload(record)
+    # Both keys sign the same payload to prove continuity across the rotation.
     if not ind_token.b85_verify(record["old_public_key"].strip(), record["signature_by_old_key"], payload):
         raise KeyRotationError("invalid operator key rotation old-key signature")
     if not ind_token.b85_verify(record["new_public_key"].strip(), record["signature_by_new_key"], payload):
@@ -1091,6 +1216,8 @@ def make_key_revocation(
 
 
 def verify_key_revocation(record, rotation_record=None):
+    """Verify a successor-signed revocation for a prior operator key."""
+
     required = {
         "type",
         "version",
@@ -1340,6 +1467,29 @@ def _effective_port(parsed_url):
     return 80
 
 
+def _safe_http_base_url(url):
+    parsed = urllib.parse.urlparse(str(url).strip())
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        return False
+    if not parsed.hostname or parsed.query or parsed.fragment:
+        return False
+    decoded_path = parsed.path or ""
+    for _ in range(3):
+        next_path = urllib.parse.unquote(decoded_path)
+        if next_path == decoded_path:
+            break
+        decoded_path = next_path
+    return "\\" not in decoded_path and not any(segment == ".." for segment in decoded_path.split("/"))
+
+
+def _normalize_http_base_url(url):
+    url = str(url).strip()
+    if not _safe_http_base_url(url):
+        raise TransparencyLogError(f"unsafe transparency source URL: {url}")
+    return url.rstrip("/")
+
+
 def _http_origin_identity(url):
     parsed = urllib.parse.urlparse(str(url).strip())
     scheme = parsed.scheme.lower()
@@ -1508,6 +1658,16 @@ class SQLiteObservedRootStore:
                         root_b_id TEXT NOT NULL,
                         root_a_json TEXT NOT NULL,
                         root_b_json TEXT NOT NULL,
+                        detected_at INTEGER NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS operator_policy_violations (
+                        evidence_id TEXT PRIMARY KEY,
+                        log_id TEXT NOT NULL,
+                        violation_type TEXT NOT NULL,
+                        root_id TEXT NOT NULL,
+                        root_json TEXT NOT NULL,
+                        spend_proof_json TEXT NOT NULL,
                         detected_at INTEGER NOT NULL
                     );
 
@@ -1959,7 +2119,6 @@ class SQLiteObservedRootStore:
     def _prune_peer_roots(self, conn, peer_id, log_id, max_roots_for_log):
         if max_roots_for_log <= 0:
             return
-        # Evidence-bound roots are never deleted regardless of cap policy.
         conn.execute(
             """
             DELETE FROM peer_observed_roots
@@ -1982,7 +2141,6 @@ class SQLiteObservedRootStore:
     def _prune_peer_roots_for_log(self, conn, log_id, max_roots_for_log):
         if max_roots_for_log <= 0:
             return
-        # Evidence-bound roots are never deleted regardless of cap policy.
         conn.execute(
             """
             DELETE FROM peer_observed_roots
@@ -2056,6 +2214,62 @@ class SQLiteObservedRootStore:
 
         return self._with_retry(action)
 
+    def save_operator_policy_violation(self, proof):
+        proof = verify_operator_policy_violation_proof(proof)
+        evidence_id = ind_token.sha3_hex(canonical_bytes(proof))
+        root = proof["root"]
+
+        def action():
+            with contextlib.closing(self._connect()) as conn, conn:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO operator_policy_violations (
+                        evidence_id, log_id, violation_type, root_id,
+                        root_json, spend_proof_json, detected_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        evidence_id,
+                        proof["log_id"],
+                        proof["violation_type"],
+                        signed_root_id(root),
+                        canonical_json(root),
+                        canonical_json(proof["spend_proof"]),
+                        int(proof["detected_at"]),
+                    ),
+                )
+            return evidence_id, proof
+
+        return self._with_retry(action)
+
+    def operator_policy_violation_messages(self, limit=100):
+        def action():
+            with contextlib.closing(self._connect()) as conn, conn:
+                rows = conn.execute(
+                    """
+                    SELECT log_id, violation_type, root_json, spend_proof_json, detected_at
+                    FROM operator_policy_violations
+                    ORDER BY detected_at DESC
+                    LIMIT ?
+                    """,
+                    (int(limit),),
+                ).fetchall()
+            messages = []
+            for row in rows:
+                proof = {
+                    "type": LOG_OPERATOR_POLICY_VIOLATION_TYPE,
+                    "version": LOG_VERSION,
+                    "violation_type": row["violation_type"],
+                    "log_id": row["log_id"],
+                    "root": json.loads(row["root_json"]),
+                    "spend_proof": json.loads(row["spend_proof_json"]),
+                    "detected_at": int(row["detected_at"]),
+                }
+                messages.append(verify_operator_policy_violation_proof(proof))
+            return messages
+
+        return self._with_retry(action)
+
     def mark_blacklisted(self, log_id, operator_public_key, reason, evidence_id, updated_at=None):
         updated_at = int(updated_at or time.time())
 
@@ -2089,6 +2303,7 @@ class InMemoryObservedRootStore:
         self.statuses = {}
         self.failures = {}
         self.equivocations = {}
+        self.policy_violations = {}
         self.key_rotations = {}
         self.key_revocations = {}
 
@@ -2352,6 +2567,16 @@ class InMemoryObservedRootStore:
         items = sorted(self.equivocations.values(), key=lambda item: int(item["detected_at"]), reverse=True)
         return [copy.deepcopy(item) for item in items[:int(limit)]]
 
+    def save_operator_policy_violation(self, proof):
+        proof = verify_operator_policy_violation_proof(proof)
+        evidence_id = ind_token.sha3_hex(canonical_bytes(proof))
+        self.policy_violations[evidence_id] = copy.deepcopy(proof)
+        return evidence_id, copy.deepcopy(proof)
+
+    def operator_policy_violation_messages(self, limit=100):
+        items = sorted(self.policy_violations.values(), key=lambda item: int(item["detected_at"]), reverse=True)
+        return [copy.deepcopy(item) for item in items[:int(limit)]]
+
     def mark_blacklisted(self, log_id, operator_public_key, reason, evidence_id, updated_at=None):
         updated_at = int(updated_at or time.time())
         self.statuses[log_id] = {
@@ -2369,7 +2594,7 @@ class HTTPJSONClient:
     """Small JSON-over-HTTP client used by operators and mirrors."""
 
     def __init__(self, base_url, timeout=10):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = _normalize_http_base_url(base_url)
         self.timeout = int(timeout)
         self.identity_id = _http_origin_identity(self.base_url)
 
@@ -2380,7 +2605,11 @@ class HTTPJSONClient:
         return url
 
     def get_json(self, path, params=None):
-        with urllib.request.urlopen(self._url(path, params), timeout=self.timeout) as response:
+        request = urllib.request.Request(
+            self._url(path, params),
+            headers={"User-Agent": "International-Dollar-transparency-client/1"},
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def post_json(self, path, data):
@@ -2388,7 +2617,10 @@ class HTTPJSONClient:
         request = urllib.request.Request(
             self._url(path),
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "International-Dollar-transparency-client/1",
+            },
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -2417,6 +2649,9 @@ class HTTPTransparencyOperator:
     def submit_transfer_announcement(self, announcement):
         return self.http.post_json("/v1/append", announcement)
 
+    def submit_checkpoint_announcement(self, announcement):
+        return self.http.post_json("/v1/append", announcement)
+
     def latest_root(self):
         return self.http.get_json("/v1/root")
 
@@ -2439,6 +2674,44 @@ class HTTPRootMirror:
 
     def spend_map_proof(self, spend_key, tree_size):
         return self.http.get_json("/v1/spend-proof", {"spend_key": spend_key, "tree_size": int(tree_size)})
+
+
+class HTTPStaticRootMirror:
+    """Client for a static HTTP root mirror produced by operator_tools.root_streamer."""
+
+    def __init__(self, base_url, timeout=10):
+        self.http = HTTPJSONClient(base_url, timeout=timeout)
+        self.identity_id = self.http.identity_id
+
+    def _roots_from_jsonl(self):
+        request = urllib.request.Request(
+            self.http._url("/roots.jsonl"),
+            headers={"User-Agent": "International-Dollar-transparency-client/1"},
+        )
+        with urllib.request.urlopen(request, timeout=self.http.timeout) as response:
+            text = response.read().decode("utf-8")
+        return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+    def roots(self):
+        roots = []
+        seen = set()
+        for root in self._roots_from_jsonl():
+            current_id = signed_root_id(root)
+            if current_id in seen:
+                continue
+            seen.add(current_id)
+            roots.append(root)
+        return roots
+
+    def root_at(self, timestamp):
+        timestamp = int(timestamp)
+        candidates = [root for root in self.roots() if int(root.get("timestamp", -1)) >= timestamp]
+        if not candidates:
+            raise RootVerificationError("static HTTP mirror has no historical root for timestamp")
+        return sorted(candidates, key=lambda root: (int(root["timestamp"]), int(root["tree_size"])))[0]
+
+    def latest_root(self):
+        return self.http.get_json("/latest.json")
 
 
 class DirectoryRootMirror:
@@ -2582,8 +2855,19 @@ class LocalTransparencyOperator:
     def submit_transfer_announcement(self, announcement):
         return self.log.append_transfer_announcement(announcement)
 
+    def submit_checkpoint_announcement(self, announcement):
+        result = self.log.append_checkpoint_announcement(announcement)
+        try:
+            self.log.publish_root(int(time.time()))
+        except Exception as exc:
+            logger.warning("local transparency root publish failed after checkpoint append: %s", exc)
+        return result
+
     def latest_root(self):
         return self.log.latest_root()
+
+    def root_at(self, timestamp):
+        return self.log.root_at(int(timestamp))
 
 
 def _coerce_operator(operator):
@@ -2594,6 +2878,9 @@ def _coerce_operator(operator):
 
 def _coerce_mirror(mirror):
     if isinstance(mirror, str) and mirror.startswith(("http://", "https://")):
+        parsed = urllib.parse.urlparse(mirror)
+        if parsed.path.rstrip("/").endswith("/transparency") or parsed.path.rstrip("/").endswith("/roots"):
+            return HTTPStaticRootMirror(mirror)
         return HTTPRootMirror(mirror)
     if isinstance(mirror, str):
         return DirectoryRootMirror(mirror)
@@ -2601,7 +2888,14 @@ def _coerce_mirror(mirror):
 
 
 class TransparencyVerifier:
-    """Client-side verifier for IND transfer transparency proofs."""
+    """Client-side verifier for IND transfer transparency proofs.
+
+    Security invariants:
+    current ownership checks require fresh independently mirrored roots, while
+    historical checks use the root that actually contains the transfer leaf.
+    Equivocation and consistency failures are persisted before the operator is
+    locally blacklisted.
+    """
 
     def __init__(
         self,
@@ -2624,28 +2918,41 @@ class TransparencyVerifier:
         start_background_checks=False,
         run_startup_check=True,
     ):
-        self.strict_mode = bool(strict_mode)
-        self.allow_unsafe_single_mirror = bool(allow_unsafe_single_mirror)
+        # The policy object centralizes bounds before the verifier stores derived fields.
+        self.policy = TransparencyVerifierPolicy.from_values(
+            max_root_lag_seconds=max_root_lag_seconds,
+            min_mirrors=min_mirrors,
+            allow_unsafe_single_mirror=allow_unsafe_single_mirror,
+            strict_mode=strict_mode,
+            consistency_check_interval_seconds=consistency_check_interval_seconds,
+            consistency_max_stale_seconds=consistency_max_stale_seconds,
+            max_current_root_age_seconds=max_current_root_age_seconds,
+            current_root_future_skew_seconds=current_root_future_skew_seconds,
+        )
+        self.strict_mode = self.policy.strict_mode
+        self.allow_unsafe_single_mirror = self.policy.allow_unsafe_single_mirror
         if self.strict_mode and self.allow_unsafe_single_mirror:
             raise TransparencyLogError(STRICT_UNSAFE_SINGLE_MIRROR_ERROR)
-        self.min_mirrors = self._validated_min_mirrors(min_mirrors)
+        # Mirror identity validation happens before coercion so URLs/paths stay auditable.
+        self.min_mirrors = self._validated_min_mirrors(self.policy.min_mirrors)
         self.mirror_identities = self._validate_mirror_sources(operator, mirrors)
         self.operator = _coerce_operator(operator)
         self.mirrors = [_coerce_mirror(mirror) for mirror in mirrors]
         self.proof_archives = [_coerce_mirror(source) for source in (proof_archives or [])]
         self.operator_public_key = operator_public_key
-        self.max_root_lag_seconds = int(max_root_lag_seconds)
-        self.max_current_root_age_seconds = int(max_current_root_age_seconds)
-        self.current_root_future_skew_seconds = int(current_root_future_skew_seconds)
+        self.max_root_lag_seconds = self.policy.max_root_lag_seconds
+        self.max_current_root_age_seconds = self.policy.max_current_root_age_seconds
+        self.current_root_future_skew_seconds = self.policy.current_root_future_skew_seconds
         self._validate_current_root_freshness_config()
-        self.consistency_check_interval_seconds = int(consistency_check_interval_seconds)
-        self.consistency_max_stale_seconds = int(consistency_max_stale_seconds)
+        self.consistency_check_interval_seconds = self.policy.consistency_check_interval_seconds
+        self.consistency_max_stale_seconds = self.policy.consistency_max_stale_seconds
         self._consistency_pairs_checked = set()
         self._pending_gossip_messages = []
         self._queued_root_ids = set()
         self._queued_evidence_ids = set()
         self._background_stop = threading.Event()
         self._background_thread = None
+        # Durable observed roots are what let the client detect split-view behavior later.
         self.observed_root_store = self._build_observed_root_store(observed_root_store, observed_roots_path)
         self._load_consistency_anchor(consistency_anchor=consistency_anchor, consistency_anchor_path=consistency_anchor_path)
         if run_startup_check:
@@ -2831,6 +3138,14 @@ class TransparencyVerifier:
                 f"Use ind-cli transparency unblacklist {log_id} only after confirming the evidence was caused by "
                 "local error, not operator misbehavior."
             )
+        if "operator policy violation" in reason:
+            return (
+                f"CRITICAL transparency operator policy violation detected for {log_id}: {reason}. "
+                f"Evidence saved to {evidence_location}. To investigate: inspect evidence at {evidence_location}, "
+                "verify operator status via independent channels, and consider switching to an alternate operator. "
+                f"Use ind-cli transparency unblacklist {log_id} only after confirming the evidence was caused by "
+                "local error, not operator misbehavior."
+            )
         return (
             f"CRITICAL transparency log consistency failure: operator {log_id} is locally blacklisted "
             f"because {status.get('reason')}. Evidence saved to {evidence_location}. "
@@ -2958,6 +3273,13 @@ class TransparencyVerifier:
         self._queued_evidence_ids.add(evidence_id)
         self._queue_gossip_message(proof)
 
+    def _queue_operator_policy_violation_proof(self, proof):
+        evidence_id = ind_token.sha3_hex(canonical_bytes(proof))
+        if evidence_id in self._queued_evidence_ids:
+            return
+        self._queued_evidence_ids.add(evidence_id)
+        self._queue_gossip_message(proof)
+
     def consume_pending_gossip_messages(self):
         messages = list(self._pending_gossip_messages)
         self._pending_gossip_messages = []
@@ -2965,6 +3287,26 @@ class TransparencyVerifier:
 
     def persisted_equivocation_messages(self, limit=100):
         return self.observed_root_store.equivocation_messages(limit=limit)
+
+    def persisted_operator_policy_violation_messages(self, limit=100):
+        persisted = getattr(self.observed_root_store, "operator_policy_violation_messages", None)
+        if not callable(persisted):
+            return []
+        return persisted(limit=limit)
+
+    def _handle_operator_policy_violation(self, proof):
+        proof = verify_operator_policy_violation_proof(proof, operator_public_key=self.operator_public_key)
+        root = proof["root"]
+        evidence_id, stored_proof = self.observed_root_store.save_operator_policy_violation(proof)
+        self.observed_root_store.mark_blacklisted(
+            root["log_id"],
+            root["operator_public_key"],
+            f"operator policy violation: {proof['violation_type']}",
+            evidence_id,
+            updated_at=int(proof["detected_at"]),
+        )
+        self._queue_operator_policy_violation_proof(stored_proof)
+        return stored_proof
 
     def _handle_equivocation(self, root_a, root_b, collision_type):
         detected_at = int(time.time())
@@ -3236,6 +3578,22 @@ class TransparencyVerifier:
         self._queue_equivocation_proof(proof)
         return proof
 
+    def process_operator_policy_violation_proof(self, message, peer_id=None, message_hash=None):
+        """Verify, persist, blacklist, and queue a peer-gossiped operator policy violation."""
+
+        proof = verify_operator_policy_violation_proof(message, operator_public_key=self.operator_public_key)
+        root = proof["root"]
+        received_at = int(time.time())
+        self.observed_root_store.record_peer_root(
+            root,
+            peer_id=peer_id,
+            message_hash=message_hash or signed_root_id(root),
+            received_at=received_at,
+            max_roots_for_log=self._peer_root_cap_for_log(root["log_id"]),
+            max_total_roots_for_log=None if self._is_configured_log(root["log_id"]) else DEFAULT_UNKNOWN_PEER_ROOT_CAP_PER_LOG_ID,
+        )
+        return self._handle_operator_policy_violation(proof)
+
     def start_background_consistency_checks(self):
         if self._background_thread and self._background_thread.is_alive():
             return
@@ -3365,12 +3723,16 @@ class TransparencyVerifier:
             operator_public_key=root["operator_public_key"],
         )
         spend_proof = self._first_proof("spend_map_proof", spend_key_for_transfer(transfer), int(root["tree_size"]))
-        verify_spend_map_proof_for_transfer(
-            transfer,
-            spend_proof,
-            root,
-            operator_public_key=root["operator_public_key"],
-        )
+        try:
+            verify_spend_map_proof_for_transfer(
+                transfer,
+                spend_proof,
+                root,
+                operator_public_key=root["operator_public_key"],
+            )
+        except OperatorPolicyViolationError as exc:
+            self._handle_operator_policy_violation(exc.evidence)
+            raise
         return root
 
     def verify_transfer_current_spend(self, transfer, now=None, current_root=None):
@@ -3378,12 +3740,105 @@ class TransparencyVerifier:
 
         root = current_root if current_root is not None else self.current_mirrored_root(now=now)
         spend_proof = self._first_proof("spend_map_proof", spend_key_for_transfer(transfer), int(root["tree_size"]))
-        verify_spend_map_proof_for_transfer(
-            transfer,
-            spend_proof,
+        try:
+            verify_spend_map_proof_for_transfer(
+                transfer,
+                spend_proof,
+                root,
+                operator_public_key=root["operator_public_key"],
+            )
+        except OperatorPolicyViolationError as exc:
+            self._handle_operator_policy_violation(exc.evidence)
+            raise
+        return True
+
+    def verify_checkpoint_history(self, checkpoint):
+        """Verify a compact checkpoint against independently mirrored historical roots."""
+
+        transparency = checkpoint.get("transparency")
+        if not isinstance(transparency, dict):
+            raise InclusionProofError("checkpoint is missing transparency proof")
+        entry_hash = str(checkpoint["checkpoint_hash"]).lower()
+        root = transparency["root"]
+        self._verify_signed_root_for_lineage(root)
+        verify_inclusion_proof(
+            entry_hash,
+            transparency["inclusion_proof"],
             root,
             operator_public_key=root["operator_public_key"],
         )
+        try:
+            verify_spend_map_proof_for_checkpoint(
+                checkpoint,
+                transparency["spend_proof"],
+                root,
+                operator_public_key=root["operator_public_key"],
+            )
+        except OperatorPolicyViolationError as exc:
+            self._handle_operator_policy_violation(exc.evidence)
+            raise
+        leaf_index = int(transparency["inclusion_proof"]["leaf_index"])
+        mirrored_root = self.mirrored_root_containing_leaf(int(root["timestamp"]), leaf_index)
+        mirrored_inclusion = self._first_proof("inclusion_proof", entry_hash, int(mirrored_root["tree_size"]))
+        verify_inclusion_proof(
+            entry_hash,
+            mirrored_inclusion,
+            mirrored_root,
+            operator_public_key=mirrored_root["operator_public_key"],
+        )
+        spend_proof = self._first_proof(
+            "spend_map_proof",
+            transparency["spend_proof"]["spend_key"],
+            int(mirrored_root["tree_size"]),
+        )
+        try:
+            verify_spend_map_proof_for_checkpoint(
+                checkpoint,
+                spend_proof,
+                mirrored_root,
+                operator_public_key=mirrored_root["operator_public_key"],
+            )
+        except OperatorPolicyViolationError as exc:
+            self._handle_operator_policy_violation(exc.evidence)
+            raise
+        return mirrored_root
+
+    def verify_checkpoint_current_spend(self, checkpoint, now=None, current_root=None):
+        """Verify a compact checkpoint against the freshest mirrored log state."""
+
+        transparency = checkpoint.get("transparency")
+        if not isinstance(transparency, dict):
+            raise InclusionProofError("checkpoint is missing transparency proof")
+        entry_hash = str(checkpoint["checkpoint_hash"]).lower()
+        root = current_root if current_root is not None else self.current_mirrored_root(now=now)
+        inclusion_proof = self._first_proof("inclusion_proof", entry_hash, int(root["tree_size"]))
+        verify_inclusion_proof(
+            entry_hash,
+            inclusion_proof,
+            root,
+            operator_public_key=root["operator_public_key"],
+        )
+        spend_proof = self._first_proof(
+            "spend_map_proof",
+            transparency["spend_proof"]["spend_key"],
+            int(root["tree_size"]),
+        )
+        try:
+            verify_spend_map_proof_for_checkpoint(
+                checkpoint,
+                spend_proof,
+                root,
+                operator_public_key=root["operator_public_key"],
+            )
+        except OperatorPolicyViolationError as exc:
+            self._handle_operator_policy_violation(exc.evidence)
+            raise
+        return True
+
+    def verify_checkpoint(self, checkpoint, now=None, require_current_root=True):
+        self.verify_checkpoint_history(checkpoint)
+        if require_current_root:
+            self.verify_checkpoint_current_spend(checkpoint, now=now)
         return True
 
     def verify_transfer(self, transfer, now=None, require_current_root=True):
@@ -3393,7 +3848,7 @@ class TransparencyVerifier:
         return True
 
     def verify_token(self, token, now=None, require_current_root=True):
-        history = token.get("history", [])
+        history = token.get("recent_history", []) if token.get("type") == ind_token.BILL_TYPE else token.get("history", [])
         for transfer in history:
             self.verify_transfer(transfer, require_current_root=False)
         if require_current_root:

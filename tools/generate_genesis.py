@@ -137,7 +137,7 @@ def parse_denomination_plan(raw):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Generate IND genesis token shards or a lazy signed supply manifest.")
+    parser = argparse.ArgumentParser(description="Generate IND genesis bill shards or a lazy signed supply manifest.")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--count", type=int)
@@ -154,7 +154,7 @@ def parse_args():
     parser.add_argument("--allow-huge", action="store_true", help="allow writing more than one million genesis records")
     parser.add_argument("--lazy-manifest", action="store_true", help="write only a signed supply manifest; bills are minted on demand")
     parser.add_argument("--metadata-project", default="IND")
-    parser.add_argument("--created-at", type=int, help="fixed manifest/token metadata timestamp for reproducible generation")
+    parser.add_argument("--created-at", type=int, help="fixed manifest/bill metadata timestamp for reproducible generation")
     return parser.parse_args()
 
 
@@ -204,7 +204,7 @@ def dry_run(args):
         print(f"denomination plan: {args.denominations}")
         print(f"total face value: {total_value:,}")
     else:
-        print(f"value per token: {args.value:,}")
+        print(f"value per bill: {args.value:,}")
     print(f"max protocol supply: {ind_token.TOTAL_SUPPLY:,}")
     print(f"rough shard payload estimate: {format_bytes(estimate_bytes(count))}")
     if args.lazy_manifest:
@@ -268,7 +268,7 @@ def generate(args):
                 "project": args.metadata_project,
                 "generated_at": created_at,
             }
-            token = ind_token.make_genesis_token(
+            bill = ind_token.make_genesis_token(
                 index,
                 args.owner_address,
                 issuer_private_key,
@@ -278,9 +278,9 @@ def generate(args):
                 metadata=metadata,
                 issued_at=created_at,
             )
-            leaf_hash = bytes.fromhex(ind_token.genesis_hash(token["genesis"]))
+            leaf_hash = bytes.fromhex(ind_token.genesis_hash(bill["genesis"]))
             accumulator.add(leaf_hash)
-            current_shard.write(ind_token.canonical_json(token) + "\n")
+            current_shard.write(ind_token.canonical_json(bill) + "\n")
             shard_count += 1
 
             if shard_count == args.shard_size and offset != args.count - 1:

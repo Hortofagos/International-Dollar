@@ -36,11 +36,14 @@ class WalletCryptoTests(unittest.TestCase):
         os.makedirs("files", exist_ok=True)
         os.makedirs("wallet_folder", exist_ok=True)
 
-    def test_wallet_password_minimum_is_six_characters(self):
-        wallet_crypto.validate_wallet_password("aB3!xY")
+    def test_wallet_password_minimum_is_ten_characters(self):
+        wallet_crypto.validate_wallet_password("vivid-lantern-73-RIVER!")
 
-        with self.assertRaisesRegex(wallet_crypto.PasswordPolicyError, "at least 6 characters"):
-            wallet_crypto.validate_wallet_password("aB3!x")
+        with self.assertRaisesRegex(wallet_crypto.PasswordPolicyError, "at least 10 characters"):
+            wallet_crypto.validate_wallet_password("aB3!xYaaa")
+
+        with self.assertRaisesRegex(wallet_crypto.PasswordPolicyError, "too easy"):
+            wallet_crypto.validate_wallet_password("aaaaaaaaaa")
 
     def test_sign_in_choice_cannot_be_persisted(self):
         with tempfile.TemporaryDirectory() as temp_dir, temporary_cwd(temp_dir):
@@ -74,7 +77,7 @@ class WalletCryptoTests(unittest.TestCase):
                 "addr123",
                 "private-key",
                 "public-key",
-                tokens=["1x-token 0 0"],
+                bills=["1x-bill 0 0"],
             )
 
             wallet_encryption.wallet_encrypt(STRONG_PASSWORD)
@@ -103,7 +106,7 @@ class WalletCryptoTests(unittest.TestCase):
             self.assertFalse(os.path.exists(decrypted_path))
             self.assertEqual(
                 runtime_json.read_decrypted_wallet_payload(decrypted_path),
-                "addr123\nprivate-key\npublic-key\n1x-token 0 0\n",
+                "addr123\nprivate-key\npublic-key\n1x-bill 0 0\n",
             )
 
     def test_wrong_password_does_not_unlock_indw2_wallet(self):

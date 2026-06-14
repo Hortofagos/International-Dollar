@@ -12,8 +12,8 @@ import log_client
 
 
 DEFAULT_OPERATOR_URL = "http://127.0.0.1:8890"
-DEFAULT_GIT_MIRROR_DIR = "operator_tools/git-root-mirror-placeholder"
-DEFAULT_WEBSITE_MIRROR_DIR = "operator_tools/website-root-mirror-placeholder"
+DEFAULT_GIT_MIRROR_DIR = "operator_tools/git-root-mirror"
+DEFAULT_WEBSITE_MIRROR_DIR = "operator_tools/website-root-mirror"
 DEFAULT_STATE_FILE = "operator_tools/root_streamer_state.json"
 DEFAULT_POLL_SECONDS = 60
 
@@ -102,14 +102,15 @@ class StaticRootMirrorWriter:
         latest_path = self.mirror_dir / "latest.json"
         current_latest = None
         if latest_path.exists():
-            current_latest = json.loads(latest_path.read_text(encoding="utf-8"))
-        if not current_latest or (
-            int(root["timestamp"]),
-            int(root["tree_size"]),
-        ) >= (
-            int(current_latest["timestamp"]),
-            int(current_latest["tree_size"]),
-        ):
+            try:
+                current_latest = json.loads(latest_path.read_text(encoding="utf-8"))
+                current_latest_key = (int(current_latest["timestamp"]), int(current_latest["tree_size"]))
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                current_latest = None
+                current_latest_key = None
+        else:
+            current_latest_key = None
+        if not current_latest or (int(root["timestamp"]), int(root["tree_size"])) >= current_latest_key:
             atomic_write_text(latest_path, line)
             changed = True
 
@@ -287,7 +288,7 @@ def main():
     parser.add_argument("--source-dir", default=os.environ.get("IND_ROOT_SOURCE_DIR", ""))
     parser.add_argument("--operator-public-key", default=os.environ.get("IND_LOG_OPERATOR_PUBLIC_KEY", ""))
     parser.add_argument("--git-mirror-dir", default=os.environ.get("IND_ROOT_GIT_MIRROR_DIR", DEFAULT_GIT_MIRROR_DIR))
-    parser.add_argument("--git-remote-url", default=os.environ.get("IND_ROOT_GIT_REMOTE_URL", "https://example.invalid/ind/transparency-roots.git"))
+    parser.add_argument("--git-remote-url", default=os.environ.get("IND_ROOT_GIT_REMOTE_URL", ""))
     parser.add_argument("--git-branch", default=os.environ.get("IND_ROOT_GIT_BRANCH", "main"))
     parser.add_argument("--git-push", action="store_true", default=os.environ.get("IND_ROOT_GIT_PUSH", "").lower() in {"1", "true", "yes"})
     parser.add_argument("--no-git-commit", action="store_true")

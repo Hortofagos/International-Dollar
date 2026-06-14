@@ -1,7 +1,6 @@
 {
   "dns_seed_hosts": [
-    "testnet-seed.interneational-dollard.com",
-    "testnet-seed.linkifier.me",
+    "testnet-seed.international-dollar.com",
     "testnet-seed.internetofthebots.com"
   ],
   "faucet_owner_address": "x1F75rwW6ah8jBByt4dJLsWRyd22aQFKx",

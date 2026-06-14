@@ -1,8 +1,14 @@
-﻿import base64
+import base64
 import copy
 import os
+import functools
+import http.server
 import tempfile
+import time
 import unittest
+import threading
+import urllib.error
+import urllib.request
 from unittest import mock
 from hashlib import sha3_256
 from pathlib import Path
@@ -13,6 +19,8 @@ import ind_token
 import log_client
 import log_server
 from ind import settings as ind_settings
+from ind import store as ind_store
+from ind import wallet_services
 
 
 os.environ.setdefault("IND_ALLOW_UNTRUSTED_GENESIS", "1")
@@ -61,6 +69,25 @@ class TransparencyLogTests(unittest.TestCase):
     def make_log(self, temp_dir):
         log_private, log_public, _log_address = keypair()
         return log_server.TransparencyLog(temp_dir + "/log.db", log_private, log_public), log_private, log_public
+
+    def test_empty_log_can_publish_initial_signed_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log, _log_private, log_public = self.make_log(temp_dir)
+
+            root = log.publish_root(1_700_000_001)
+
+            self.assertEqual(root["tree_size"], 0)
+            self.assertEqual(root["root_hash"], log_client.LOG_EMPTY_ROOT_HASH)
+            self.assertTrue(log_client.verify_signed_root(root, log_public))
+
+    def test_roots_limit_returns_newest_roots_in_chronological_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log, _log_private, _log_public = self.make_log(temp_dir)
+            published = [log.publish_root(1_700_000_000 + index) for index in range(5)]
+
+            roots = log.roots(limit=2)
+
+            self.assertEqual([root["timestamp"] for root in roots], [published[-2]["timestamp"], published[-1]["timestamp"]])
 
     def test_inclusion_proof_verifies_against_signed_root(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -243,7 +270,7 @@ class TransparencyLogTests(unittest.TestCase):
             proof = log.inclusion_proof(entry_hash, root["tree_size"])
             self.assertEqual(proof["entry_hash"], entry_hash)
 
-    def test_operator_logs_conflicting_sibling_spend_claims(self):
+    def test_operator_rejects_conflicting_sibling_spend_claims(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         alice_private, alice_public, alice_address = keypair()
         _bob_private, _bob_public, bob_address = keypair()
@@ -276,24 +303,24 @@ class TransparencyLogTests(unittest.TestCase):
 
             self.assertTrue(first["accepted"])
             self.assertFalse(first["duplicate"])
-            conflicting = log.append_transfer_announcement(ind_token.create_transfer_announcement(to_carol))
-            self.assertTrue(conflicting["accepted"])
-            self.assertFalse(conflicting["duplicate"])
+            with self.assertRaisesRegex(log_server.LogServerError, "conflicting spend is rejected"):
+                log.append_transfer_announcement(ind_token.create_transfer_announcement(to_carol))
             duplicate = log.append_transfer_announcement(ind_token.create_transfer_announcement(to_bob))
             self.assertTrue(duplicate["duplicate"])
             root = log.publish_root(1_700_000_040)
             proof = log.spend_map_proof(first["spend_key"], root["tree_size"])
-            self.assertEqual(root["spend_map_size"], 2)
-            self.assertEqual(len(proof["spend_claims"]), 2)
-            with self.assertRaisesRegex(log_client.InclusionProofError, "conflicting sibling"):
+            self.assertEqual(root["spend_map_size"], 1)
+            self.assertEqual(len(proof["spend_claims"]), 1)
+            self.assertTrue(
                 log_client.verify_spend_map_proof_for_transfer(
                     to_bob["history"][-1],
                     proof,
                     root,
                     operator_public_key=root["operator_public_key"],
                 )
+            )
 
-    def test_current_spend_key_check_catches_later_double_spend(self):
+    def test_current_spend_key_check_survives_rejected_later_double_spend(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         alice_private, alice_public, alice_address = keypair()
         _bob_private, _bob_public, bob_address = keypair()
@@ -324,7 +351,8 @@ class TransparencyLogTests(unittest.TestCase):
             log, _log_private, log_public = self.make_log(temp_dir)
             log.append_transfer_announcement(ind_token.create_transfer_announcement(to_bob))
             historical_root = log.publish_root(1_700_000_040)
-            log.append_transfer_announcement(ind_token.create_transfer_announcement(to_carol))
+            with self.assertRaisesRegex(log_server.LogServerError, "conflicting spend is rejected"):
+                log.append_transfer_announcement(ind_token.create_transfer_announcement(to_carol))
             current_root = log.publish_root(1_700_000_080)
 
             class RootMirror:
@@ -349,8 +377,7 @@ class TransparencyLogTests(unittest.TestCase):
             )
 
             self.assertTrue(verifier.verify_token_history(to_bob))
-            with self.assertRaisesRegex(ind_token.ValidationError, "conflicting sibling"):
-                ind_token.verify_token(to_bob, transparency_verifier=verifier, now=1_700_000_090)
+            self.assertTrue(ind_token.verify_token(to_bob, transparency_verifier=verifier, now=1_700_000_090))
 
     def test_spend_map_proof_verifies_transfer_winner(self):
         token = signed_transfer_token(index=9011, timestamp=1_700_000_010)
@@ -380,6 +407,343 @@ class TransparencyLogTests(unittest.TestCase):
                     root,
                     operator_public_key=log_public,
                 )
+
+    def test_compact_checkpoint_verifies_without_full_history(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log, _log_private, log_public = self.make_log(temp_dir)
+            issuer_private, issuer_public, _issuer_address = keypair()
+            alice_private, alice_public, alice_address = keypair()
+            bob_private, bob_public, bob_address = keypair()
+            _carol_private, _carol_public, carol_address = keypair()
+            token = ind_token.make_genesis_token(9200, alice_address, issuer_private, issuer_public, issued_at=1_700_000_000)
+            token = ind_token.create_transfer(token, alice_private, alice_public, bob_address, timestamp=1_700_000_010)
+            log.append_transfer_announcement(ind_token.create_transfer_announcement(token))
+
+            checkpoint = ind_token.create_bill_checkpoint(token)
+            append_result = log.append_checkpoint_announcement(ind_token.create_checkpoint_announcement(checkpoint, bill=token))
+            root = log.publish_root(1_700_000_050)
+            inclusion = log.inclusion_proof(append_result["checkpoint_hash"], root["tree_size"])
+            spend = log.spend_map_proof(log_client.spend_key_for_transfer(token["history"][-1]), root["tree_size"])
+            checkpoint["transparency"] = {
+                "type": "ind.checkpoint_transparency.v2",
+                "version": ind_token.BILL_VERSION,
+                "root": root,
+                "inclusion_proof": inclusion,
+                "spend_proof": spend,
+            }
+
+            compact = ind_token.create_compact_bill(token, checkpoint)
+            state = ind_token.verify_bill(compact)
+
+            self.assertEqual(state.sequence, 1)
+            self.assertEqual(state.owner_address, bob_address)
+            self.assertEqual(compact["recent_history"], [])
+            next_bill = ind_token.create_transfer_v2(compact, bob_private, bob_public, carol_address, timestamp=1_700_000_020)
+            self.assertEqual(ind_token.create_transfer_announcement(next_bill)["type"], ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE)
+            self.assertEqual(ind_token.verify_bill(next_bill, require_recent_transparency=False).owner_address, carol_address)
+
+    def test_compact_checkpoint_rejects_missing_or_tampered_proof(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log, _log_private, _log_public = self.make_log(temp_dir)
+            issuer_private, issuer_public, _issuer_address = keypair()
+            alice_private, alice_public, alice_address = keypair()
+            _bob_private, _bob_public, bob_address = keypair()
+            token = ind_token.make_genesis_token(9201, alice_address, issuer_private, issuer_public, issued_at=1_700_000_000)
+            token = ind_token.create_transfer(token, alice_private, alice_public, bob_address, timestamp=1_700_000_010)
+            checkpoint = ind_token.create_bill_checkpoint(token)
+            compact = {
+                "type": ind_token.BILL_TYPE,
+                "version": ind_token.BILL_VERSION,
+                "token_id": token["token_id"],
+                "genesis": token["genesis"],
+                "checkpoint": checkpoint,
+                "recent_history": [],
+            }
+
+            with self.assertRaisesRegex(ind_token.ValidationError, "missing transparency"):
+                ind_token.verify_bill(compact)
+
+            bad_value = copy.deepcopy(checkpoint)
+            bad_value["value"] += 1
+            bad_value["checkpoint_hash"] = ind_token.checkpoint_hash(bad_value)
+            with self.assertRaisesRegex(ind_token.ValidationError, "checkpoint value mismatch"):
+                ind_token.verify_checkpoint_for_genesis(
+                    bad_value,
+                    token["genesis"],
+                    require_transparency=False,
+                )
+
+            bad_display = copy.deepcopy(checkpoint)
+            bad_display["display_id"] = "bad-display"
+            bad_display["checkpoint_hash"] = ind_token.checkpoint_hash(bad_display)
+            with self.assertRaisesRegex(ind_token.ValidationError, "checkpoint display id mismatch"):
+                ind_token.verify_checkpoint_for_genesis(
+                    bad_display,
+                    token["genesis"],
+                    require_transparency=False,
+                )
+
+            bad_day = copy.deepcopy(checkpoint)
+            bad_day["last_transfer_day"] += 1
+            bad_day["checkpoint_hash"] = ind_token.checkpoint_hash(bad_day)
+            with self.assertRaisesRegex(ind_token.ValidationError, "checkpoint last transfer day mismatch"):
+                ind_token.verify_checkpoint_for_genesis(
+                    bad_day,
+                    token["genesis"],
+                    require_transparency=False,
+                )
+
+            log.append_transfer_announcement(ind_token.create_transfer_announcement(token))
+            with self.assertRaisesRegex(log_server.LogServerError, "requires source bill"):
+                log.append_checkpoint_announcement(checkpoint)
+            result = log.append_checkpoint_announcement(ind_token.create_checkpoint_announcement(checkpoint, bill=token))
+            root = log.publish_root(1_700_000_050)
+            checkpoint["transparency"] = {
+                "type": "ind.checkpoint_transparency.v2",
+                "version": ind_token.BILL_VERSION,
+                "root": root,
+                "inclusion_proof": log.inclusion_proof(result["checkpoint_hash"], root["tree_size"]),
+                "spend_proof": log.spend_map_proof(log_client.spend_key_for_transfer(token["history"][-1]), root["tree_size"]),
+            }
+            tampered = copy.deepcopy(compact)
+            tampered["checkpoint"] = copy.deepcopy(checkpoint)
+            tampered["checkpoint"]["owner_address"] = alice_address
+            with self.assertRaisesRegex(ind_token.ValidationError, "checkpoint hash mismatch"):
+                ind_token.verify_bill(tampered)
+
+    def test_store_creates_compact_checkpoint_after_settlement(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log, _log_private, log_public = self.make_log(temp_dir)
+            operator = log_client.LocalTransparencyOperator(log)
+            mirror = log_client.LocalTransparencyOperator(log)
+            mirror.identity_id = ("local-mirror", "checkpoint-test")
+            issuer_private, issuer_public, _issuer_address = keypair()
+            alice_private, alice_public, alice_address = keypair()
+            bob_private, bob_public, bob_address = keypair()
+            carol_private, carol_public, carol_address = keypair()
+            token = ind_token.make_genesis_token(9202, alice_address, issuer_private, issuer_public, issued_at=1_700_000_000)
+            token = ind_token.create_transfer(token, alice_private, alice_public, bob_address, timestamp=1_700_000_010)
+            transfer_message = ind_token.create_transfer_announcement(token)
+            log.append_transfer_announcement(transfer_message)
+            log.publish_root(1_700_000_040)
+            verifier = log_client.TransparencyVerifier(
+                operator,
+                [mirror],
+                operator_public_key=log_public,
+                min_mirrors=1,
+                allow_unsafe_single_mirror=True,
+                max_root_lag_seconds=60,
+                max_current_root_age_seconds=1_000_000_000,
+                observed_root_store=in_memory_root_store(),
+                run_startup_check=False,
+            )
+            store = ind_token.INDLocalStore(
+                str(Path(temp_dir) / "store.db"),
+                transparency_submitter=operator,
+                transparency_verifier=verifier,
+                transparency_submission_verify_timeout_seconds=0,
+                first_checkpoint_after_transfers=1,
+                checkpoint_interval_transfers=1,
+            )
+
+            store.ingest_message(transfer_message)
+            store.ingest_message(ind_token.create_receipt_announcement(token, bob_private, bob_public))
+            store.finalize_pending(now=int(time.time()) + ind_token.FINALITY_BUFFER_SECONDS + 10, buffer_seconds=0)
+            compact = store.get_compact_bill_by_display_id(ind_token.verify_token(token).display_id)
+
+            self.assertIsNotNone(compact)
+            self.assertEqual(compact["type"], ind_token.BILL_TYPE)
+            self.assertEqual(compact["recent_history"], [])
+            self.assertEqual(ind_token.verify_bill(compact).owner_address, bob_address)
+
+            next_bill = ind_token.create_transfer_v2(
+                compact,
+                bob_private,
+                bob_public,
+                carol_address,
+                timestamp=1_700_000_020,
+            )
+            recipient_store = ind_token.INDLocalStore(
+                str(Path(temp_dir) / "recipient.db"),
+                transparency_submitter=operator,
+                transparency_verifier=verifier,
+                transparency_submission_verify_timeout_seconds=0,
+                first_checkpoint_after_transfers=1,
+                checkpoint_interval_transfers=1,
+            )
+            recipient_store.ingest_message(ind_token.create_transfer_announcement(next_bill))
+            recipient_store.ingest_message(ind_token.create_receipt_announcement(next_bill, carol_private, carol_public))
+            recipient_store.finalize_pending(now=int(time.time()) + ind_token.FINALITY_BUFFER_SECONDS + 10, buffer_seconds=0)
+            compact_next = recipient_store.get_compact_bill_by_display_id(ind_token.verify_token(token).display_id)
+
+            self.assertIsNotNone(compact_next)
+            self.assertEqual(compact_next["type"], ind_token.BILL_TYPE)
+            self.assertEqual(compact_next["checkpoint"]["sequence"], 2)
+            self.assertEqual(compact_next["recent_history"], [])
+            self.assertEqual(ind_token.verify_bill(compact_next).owner_address, carol_address)
+            self.assertEqual(
+                recipient_store.get_token_by_display_id(ind_token.verify_token(token).display_id)["type"],
+                ind_token.BILL_TYPE,
+            )
+
+    def test_store_checkpoint_policy_uses_first_threshold_then_interval(self):
+        self.assertEqual(ind_store.DEFAULT_FIRST_CHECKPOINT_AFTER_TRANSFERS, 10)
+        self.assertEqual(ind_store.DEFAULT_CHECKPOINT_INTERVAL_TRANSFERS, 10)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log, _log_private, log_public = self.make_log(temp_dir)
+            operator = log_client.LocalTransparencyOperator(log)
+            mirror = log_client.LocalTransparencyOperator(log)
+            mirror.identity_id = ("local-mirror", "checkpoint-policy")
+            verifier = log_client.TransparencyVerifier(
+                operator,
+                [mirror],
+                operator_public_key=log_public,
+                min_mirrors=1,
+                allow_unsafe_single_mirror=True,
+                max_root_lag_seconds=60,
+                max_current_root_age_seconds=1_000_000_000,
+                observed_root_store=in_memory_root_store(),
+                run_startup_check=False,
+            )
+            store = ind_token.INDLocalStore(
+                str(Path(temp_dir) / "policy.db"),
+                transparency_submitter=operator,
+                transparency_verifier=verifier,
+                transparency_submission_verify_timeout_seconds=0,
+                first_checkpoint_after_transfers=3,
+                checkpoint_interval_transfers=2,
+            )
+            issuer_private, issuer_public, _issuer_address = keypair()
+            owners = [keypair() for _ in range(6)]
+            bill = ind_token.make_genesis_token(
+                9203,
+                owners[0][2],
+                issuer_private,
+                issuer_public,
+                issued_at=1_700_000_000,
+            )
+
+            def settle(next_bill, recipient_private, recipient_public):
+                store.ingest_message(ind_token.create_transfer_announcement(next_bill))
+                store.ingest_message(ind_token.create_receipt_announcement(next_bill, recipient_private, recipient_public))
+                store.finalize_pending(now=int(time.time()) + ind_token.FINALITY_BUFFER_SECONDS + 10, buffer_seconds=0)
+
+            bill = ind_token.create_transfer(bill, owners[0][0], owners[0][1], owners[1][2], timestamp=1_700_000_010)
+            settle(bill, owners[1][0], owners[1][1])
+            self.assertIsNone(store.get_compact_bill_by_display_id(ind_token.verify_token(bill).display_id))
+
+            bill = ind_token.create_transfer(bill, owners[1][0], owners[1][1], owners[2][2], timestamp=1_700_000_020)
+            settle(bill, owners[2][0], owners[2][1])
+            self.assertIsNone(store.get_compact_bill_by_display_id(ind_token.verify_token(bill).display_id))
+
+            bill = ind_token.create_transfer(bill, owners[2][0], owners[2][1], owners[3][2], timestamp=1_700_000_030)
+            settle(bill, owners[3][0], owners[3][1])
+            compact = store.get_compact_bill_by_display_id(ind_token.verify_token(bill).display_id)
+            self.assertIsNotNone(compact)
+            self.assertEqual(compact["checkpoint"]["sequence"], 3)
+
+            bill = ind_token.create_transfer_v2(compact, owners[3][0], owners[3][1], owners[4][2], timestamp=1_700_000_040)
+            settle(bill, owners[4][0], owners[4][1])
+            compact = store.get_compact_bill_by_display_id(ind_token.verify_token(bill).display_id)
+            self.assertEqual(compact["checkpoint"]["sequence"], 3)
+
+            bill = ind_token.create_transfer_v2(compact, owners[3][0], owners[3][1], owners[4][2], timestamp=1_700_000_040)
+            bill = ind_token.create_transfer_v2(bill, owners[4][0], owners[4][1], owners[5][2], timestamp=1_700_000_050)
+            settle(bill, owners[5][0], owners[5][1])
+            compact = store.get_compact_bill_by_display_id(ind_token.verify_token(bill).display_id)
+            self.assertEqual(compact["checkpoint"]["sequence"], 5)
+
+    def test_manual_wallet_compact_now_forces_checkpoint_before_threshold(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log, _log_private, log_public = self.make_log(temp_dir)
+            operator = log_client.LocalTransparencyOperator(log)
+            mirror = log_client.LocalTransparencyOperator(log)
+            mirror.identity_id = ("local-mirror", "manual-compact")
+            verifier = log_client.TransparencyVerifier(
+                operator,
+                [mirror],
+                operator_public_key=log_public,
+                min_mirrors=1,
+                allow_unsafe_single_mirror=True,
+                max_root_lag_seconds=60,
+                max_current_root_age_seconds=1_000_000_000,
+                observed_root_store=in_memory_root_store(),
+                run_startup_check=False,
+            )
+            store = ind_token.INDLocalStore(
+                str(Path(temp_dir) / "manual.db"),
+                transparency_submitter=operator,
+                transparency_verifier=verifier,
+                transparency_submission_verify_timeout_seconds=0,
+                first_checkpoint_after_transfers=100,
+                checkpoint_interval_transfers=10,
+            )
+            issuer_private, issuer_public, _issuer_address = keypair()
+            alice_private, alice_public, alice_address = keypair()
+            bob_private, bob_public, bob_address = keypair()
+            bill = ind_token.make_genesis_token(9204, alice_address, issuer_private, issuer_public, issued_at=1_700_000_000)
+            bill = ind_token.create_transfer(bill, alice_private, alice_public, bob_address, timestamp=1_700_000_010)
+            store.ingest_message(ind_token.create_transfer_announcement(bill))
+            store.ingest_message(ind_token.create_receipt_announcement(bill, bob_private, bob_public))
+            store.finalize_pending(now=int(time.time()), buffer_seconds=0)
+            display_id = ind_token.verify_token(bill).display_id
+            self.assertIsNone(store.get_compact_bill_by_display_id(display_id))
+
+            wallet_lines = [bob_address + "\n", bob_private + "\n", bob_public + "\n"]
+            state = wallet_services.compact_wallet_bill(wallet_lines, display_id + " 1 0\n", store=store)
+            compact = store.get_compact_bill_by_display_id(display_id)
+
+            self.assertIsNotNone(state)
+            self.assertIsNotNone(compact)
+            self.assertEqual(compact["checkpoint"]["sequence"], 1)
+            self.assertEqual(ind_token.verify_bill(compact).owner_address, bob_address)
+
+    def test_high_value_policy_checkpoints_before_first_threshold(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log, _log_private, log_public = self.make_log(temp_dir)
+            operator = log_client.LocalTransparencyOperator(log)
+            mirror = log_client.LocalTransparencyOperator(log)
+            mirror.identity_id = ("local-mirror", "high-value-compact")
+            verifier = log_client.TransparencyVerifier(
+                operator,
+                [mirror],
+                operator_public_key=log_public,
+                min_mirrors=1,
+                allow_unsafe_single_mirror=True,
+                max_root_lag_seconds=60,
+                max_current_root_age_seconds=1_000_000_000,
+                observed_root_store=in_memory_root_store(),
+                run_startup_check=False,
+            )
+            store = ind_token.INDLocalStore(
+                str(Path(temp_dir) / "high_value.db"),
+                transparency_submitter=operator,
+                transparency_verifier=verifier,
+                transparency_submission_verify_timeout_seconds=0,
+                first_checkpoint_after_transfers=100,
+                checkpoint_interval_transfers=10,
+                high_value_checkpoint_threshold=5,
+            )
+            issuer_private, issuer_public, _issuer_address = keypair()
+            alice_private, alice_public, alice_address = keypair()
+            bob_private, bob_public, bob_address = keypair()
+            bill = ind_token.make_genesis_token(
+                9205,
+                alice_address,
+                issuer_private,
+                issuer_public,
+                value=5,
+                issued_at=1_700_000_000,
+            )
+            bill = ind_token.create_transfer(bill, alice_private, alice_public, bob_address, timestamp=1_700_000_010)
+            store.ingest_message(ind_token.create_transfer_announcement(bill))
+            store.ingest_message(ind_token.create_receipt_announcement(bill, bob_private, bob_public))
+            store.finalize_pending(now=int(time.time()), buffer_seconds=0)
+            compact = store.get_compact_bill_by_display_id(ind_token.verify_token(bill).display_id)
+
+            self.assertIsNotNone(compact)
+            self.assertEqual(compact["checkpoint"]["sequence"], 1)
+            self.assertEqual(ind_token.verify_bill(compact).value, 5)
 
     def test_directory_proof_archive_verifies_when_operator_withholds_proofs(self):
         class WithholdingOperator:
@@ -417,6 +781,49 @@ class TransparencyLogTests(unittest.TestCase):
 
             self.assertTrue(verifier.verify_transfer(transfer, now=1_700_000_050))
             self.assertTrue(log_client.verify_proof_archive(log.proof_archive(root["tree_size"]), root, log_public))
+
+    def test_static_http_root_mirror_reads_streamed_website_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mirror_dir = Path(temp_dir) / "public" / "transparency"
+            mirror_dir.mkdir(parents=True)
+            log, _log_private, log_public = self.make_log(temp_dir)
+            log.append_entry_hash(ind_token.sha3_hex(b"entry"))
+            root = log.publish_root(1_700_000_040)
+            (mirror_dir / "latest.json").write_text(log_client.canonical_json(root) + "\n", encoding="utf-8")
+            (mirror_dir / "roots.jsonl").write_text(log_client.canonical_json(root) + "\n", encoding="utf-8")
+
+            handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(Path(temp_dir) / "public"))
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                mirror = log_client.HTTPStaticRootMirror(
+                    f"http://127.0.0.1:{server.server_port}/transparency"
+                )
+
+                self.assertEqual(mirror.latest_root()["root_hash"], root["root_hash"])
+                self.assertEqual(mirror.root_at(1_700_000_010)["root_hash"], root["root_hash"])
+                self.assertTrue(log_client.verify_signed_root(mirror.latest_root(), log_public))
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_operator_http_handler_rejects_traversal_shaped_path(self):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), log_server.TransparencyLogHandler)
+        server.transparency_log = mock.Mock()
+        server.root_interval_seconds = 60
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{server.server_port}/v1/%2e%2e/root",
+                    timeout=5,
+                )
+            self.assertEqual(raised.exception.code, 400)
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_verifier_environment_propagates_settings_errors(self):
         with mock.patch.object(ind_settings, "load_security_settings", side_effect=ValueError("bad production config")):

@@ -11,5 +11,5 @@ def verify_ecdsa(ds, d, pk):
         signature_decode = base64.b85decode(ds)
         vk.verify(signature_decode, d.encode('utf-8'))
         return 'valid'
-    except:
+    except (ValueError, ecdsa.BadSignatureError, ecdsa.MalformedPointError):
         return 'not valid'

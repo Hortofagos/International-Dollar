@@ -1,4 +1,10 @@
 """Compatibility launcher for the IND desktop wallet."""
 
-from ind.desktop import *  # noqa: F401,F403
+def main():
+    from ind import desktop
 
+    desktop.run()
+
+
+if __name__ == "__main__":
+    main()

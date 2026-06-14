@@ -14,7 +14,7 @@ import log_client
 
 
 DEFAULT_OPERATOR_URL = "http://127.0.0.1:8890"
-DEFAULT_ARCHIVE_DIR = "operator_tools/hash-log-archive-placeholder"
+DEFAULT_ARCHIVE_DIR = "operator_tools/hash-log-archive"
 DEFAULT_STATE_FILE = "operator_tools/hash_log_export_state.json"
 DEFAULT_PAGE_SIZE = 10000
 DEFAULT_POLL_SECONDS = 300

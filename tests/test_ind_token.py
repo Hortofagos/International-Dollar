@@ -18,7 +18,7 @@ import ind_token
 import node_client
 import sender_node
 from ind import node_client as node_client_impl
-from ind import protocol as ind_protocol
+from ind import protocol as protocol_impl
 from ind import runtime as runtime_json
 from ind import settings as ind_settings
 from ind import wallet_services
@@ -87,7 +87,7 @@ class temporary_env:
                 os.environ[key] = value
 
 
-class INDTokenTests(unittest.TestCase):
+class INDBillTests(unittest.TestCase):
     def test_numerology_constants_shape_protocol(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         _alice_private, _alice_public, alice_address = keypair()
@@ -111,6 +111,18 @@ class INDTokenTests(unittest.TestCase):
         self.assertGreaterEqual(ind_token.FINALITY_BUFFER_SECONDS, 0)
         self.assertEqual(ind_settings.DEFAULT_FINALITY_BUFFER_SECONDS, 60)
         self.assertEqual(ind_settings.default_settings()["finality_buffer_seconds"], 60)
+        self.assertTrue(ind_settings.default_settings()["require_transparency_log"])
+        self.assertTrue(ind_settings.default_settings()["submit_to_transparency_log"])
+
+    def test_transparency_log_default_can_be_explicitly_disabled_for_local_development(self):
+        settings = ind_settings.default_settings()
+        with temporary_env(IND_REQUIRE_TRANSPARENCY_LOG=None, IND_SUBMIT_TO_TRANSPARENCY_LOG=None):
+            self.assertTrue(ind_settings.require_transparency_log(settings))
+            self.assertTrue(ind_settings.submit_to_transparency_log(settings))
+        with temporary_env(IND_REQUIRE_TRANSPARENCY_LOG="0"):
+            self.assertFalse(ind_settings.require_transparency_log(settings))
+        with temporary_env(IND_SUBMIT_TO_TRANSPARENCY_LOG="0"):
+            self.assertFalse(ind_settings.submit_to_transparency_log(settings))
 
     def test_security_settings_allow_sub_sixty_second_finality_buffer(self):
         settings = ind_settings.normalize_security_settings({"finality_buffer_seconds": "15"})
@@ -118,6 +130,17 @@ class INDTokenTests(unittest.TestCase):
 
         settings = ind_settings.normalize_security_settings({"finality_buffer_seconds": "-1"})
         self.assertEqual(settings["finality_buffer_seconds"], 0)
+
+    def test_update_settings_have_real_defaults(self):
+        settings = ind_settings.normalize_security_settings({})
+        self.assertEqual(settings["update_source"], "international-dollar.com/update")
+        self.assertFalse(ind_settings.update_check_on_startup(settings))
+
+        settings = ind_settings.normalize_security_settings(
+            {"update_source": "https://updates.example/ind/", "update_check_on_startup": "yes"}
+        )
+        self.assertEqual(settings["update_source"], "https://updates.example/ind")
+        self.assertTrue(ind_settings.update_check_on_startup(settings))
 
     def test_public_testnet_defaults_isolate_network_state(self):
         settings = ind_settings.normalize_security_settings({})
@@ -164,7 +187,7 @@ class INDTokenTests(unittest.TestCase):
         with self.assertRaisesRegex(ind_token.ValidationError, "invalid recipient address"):
             ind_token.create_transfer(token, alice_private, alice_public, "not-an-address")
 
-    def test_legacy_addresses_still_spend_existing_tokens(self):
+    def test_legacy_addresses_still_spend_existing_bills(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         alice_private, alice_public, _alice_address = keypair()
         bob_private, bob_public, _bob_address = keypair()
@@ -182,7 +205,7 @@ class INDTokenTests(unittest.TestCase):
             bob_legacy,
         )
 
-    def test_previous_checked_addresses_still_spend_existing_tokens(self):
+    def test_previous_checked_addresses_still_spend_existing_bills(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         alice_private, alice_public, _alice_address = keypair()
         bob_private, bob_public, _bob_address = keypair()
@@ -239,7 +262,45 @@ class INDTokenTests(unittest.TestCase):
             self.assertEqual(finalized, [])
             self.assertEqual(store.get_token_record(transferred["token_id"])["status"], "pending")
 
-    def test_token_confidence_requires_local_settlement(self):
+    def test_duplicate_transfer_does_not_downgrade_receipted_transfer(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        alice_private, alice_public, alice_address = keypair()
+        bob_private, bob_public, bob_address = keypair()
+        token = ind_token.make_genesis_token(8010, alice_address, issuer_private, issuer_public)
+        transferred = ind_token.create_transfer(token, alice_private, alice_public, bob_address)
+        transfer_announcement = ind_token.create_transfer_announcement(transferred)
+        receipt = ind_token.create_receipt_announcement(transferred, bob_private, bob_public)
+        transfer_hash = ind_token.transfer_hash(transferred["history"][-1])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = temp_dir + "/ind_test.db"
+            store = ind_token.INDLocalStore(db_path)
+            store.ingest_message(transfer_announcement)
+            store.ingest_message(receipt)
+            store.ingest_message(transfer_announcement)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                status = conn.execute(
+                    "SELECT status FROM transfers WHERE transfer_hash = ?",
+                    (transfer_hash,),
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(status, "pending")
+
+            store.finalize_pending(now=int(time.time()) + ind_token.FINALITY_BUFFER_SECONDS + 1)
+            conn = sqlite3.connect(db_path)
+            try:
+                status = conn.execute(
+                    "SELECT status FROM transfers WHERE transfer_hash = ?",
+                    (transfer_hash,),
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(status, "settled")
+
+    def test_bill_confidence_requires_local_settlement(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         alice_private, alice_public, alice_address = keypair()
         bob_private, bob_public, bob_address = keypair()
@@ -270,7 +331,7 @@ class INDTokenTests(unittest.TestCase):
             self.assertEqual(confidence["level"], "strong_local")
             self.assertEqual(confidence["sequence"], 1)
 
-    def test_token_confidence_reports_fresh_settlement_and_wrong_owner(self):
+    def test_bill_confidence_reports_fresh_settlement_and_wrong_owner(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         alice_private, alice_public, alice_address = keypair()
         bob_private, bob_public, bob_address = keypair()
@@ -298,12 +359,11 @@ class INDTokenTests(unittest.TestCase):
             self.assertFalse(confidence["accepted"])
             self.assertEqual(confidence["level"], "wrong_owner")
 
-    def test_token_confidence_conflict_takes_priority(self):
+    def test_conflicting_transfer_is_rejected_without_poisoning_known_branch(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         alice_private, alice_public, alice_address = keypair()
         _bob_private, _bob_public, bob_address = keypair()
         _carol_private, _carol_public, carol_address = keypair()
-        _dave_private, _dave_public, dave_address = keypair()
         token = ind_token.make_genesis_token(803, alice_address, issuer_private, issuer_public)
         transfer_a = ind_token.create_transfer(token, alice_private, alice_public, bob_address)
         transfer_b = ind_token.create_transfer(token, alice_private, alice_public, carol_address)
@@ -311,10 +371,14 @@ class INDTokenTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = ind_token.INDLocalStore(temp_dir + "/ind_test.db")
             store.ingest_message(ind_token.create_transfer_announcement(transfer_a))
-            store.ingest_message(ind_token.create_transfer_announcement(transfer_b))
-            confidence = store.token_confidence(transfer_a["token_id"], expected_owner=dave_address)
+            with self.assertRaisesRegex(ind_token.ValidationError, "conflicting transfer rejected"):
+                store.ingest_message(ind_token.create_transfer_announcement(transfer_b))
+            confidence = store.token_confidence(transfer_a["token_id"], expected_owner=bob_address)
+            messages = store.conflict_messages(limit=10)
+
             self.assertFalse(confidence["accepted"])
-            self.assertEqual(confidence["level"], "conflict")
+            self.assertEqual(confidence["level"], "unreceipted")
+            self.assertEqual(messages, [])
 
     def test_pending_wallet_records_show_incoming_before_settlement(self):
         issuer_private, issuer_public, _issuer_address = keypair()
@@ -350,7 +414,7 @@ class INDTokenTests(unittest.TestCase):
                 display_id,
             )
 
-    def test_wallet_spend_requires_settled_conflict_free_token(self):
+    def test_wallet_spend_requires_settled_conflict_free_bill(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         alice_private, alice_public, alice_address = keypair()
         bob_private, bob_public, bob_address = keypair()
@@ -396,16 +460,24 @@ class INDTokenTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = ind_token.INDLocalStore(temp_dir + "/ind_test.db")
             store.ingest_message(ind_token.create_transfer_announcement(transferred))
-            store.ingest_message(ind_token.create_transfer_announcement(conflicting))
-            with mock.patch("ind.wallet_services.runtime_json.write_transaction_message"):
-                self.assertIsNone(
-                    wallet_services.spend_wallet_bill(
-                        wallet_lines,
-                        wallet_bill_line,
-                        dave_address,
-                        store=store,
-                    )
+            store.ingest_message(receipt)
+            with store._connect() as conn:
+                conn.execute(
+                    "UPDATE transfers SET first_seen = ? WHERE token_id = ?",
+                    (int(time.time()) - ind_token.FINALITY_BUFFER_SECONDS - 1, transferred["token_id"]),
                 )
+            store.finalize_pending(now=int(time.time()))
+            with self.assertRaisesRegex(ind_token.ValidationError, "conflicting transfer rejected"):
+                store.ingest_message(ind_token.create_transfer_announcement(conflicting))
+            with mock.patch("ind.wallet_services.runtime_json.write_transaction_message"):
+                spend_state = wallet_services.spend_wallet_bill(
+                    wallet_lines,
+                    wallet_bill_line,
+                    dave_address,
+                    store=store,
+                )
+            self.assertIsNotNone(spend_state)
+            self.assertEqual(spend_state.owner_address, dave_address)
 
     def test_paper_wallet_claim_requires_settled_confidence(self):
         issuer_private, issuer_public, _issuer_address = keypair()
@@ -450,7 +522,7 @@ class INDTokenTests(unittest.TestCase):
                     )
                     write_message.assert_called_once()
 
-    def test_conflicting_transfers_generate_verifiable_proof(self):
+    def test_conflicting_transfers_are_rejected_without_burning_known_branch(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         alice_private, alice_public, alice_address = keypair()
         _bob_private, _bob_public, bob_address = keypair()
@@ -462,10 +534,49 @@ class INDTokenTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = ind_token.INDLocalStore(temp_dir + "/ind_test.db")
             store.ingest_message(ind_token.create_transfer_announcement(transfer_a))
-            result = store.ingest_message(ind_token.create_transfer_announcement(transfer_b))
-            self.assertEqual(result["status"], "conflict")
-            self.assertTrue(ind_token.verify_conflict_proof(result["conflict_proof"]))
-            self.assertEqual(store.get_token_record(transfer_a["token_id"])["status"], "invalid")
+            with self.assertRaisesRegex(ind_token.ValidationError, "conflicting transfer rejected"):
+                store.ingest_message(ind_token.create_transfer_announcement(transfer_b))
+            messages = store.conflict_messages(limit=10)
+            self.assertEqual(messages, [])
+            self.assertEqual(store.get_token_record(transfer_a["token_id"])["status"], "unreceipted")
+
+    def test_late_old_owner_conflict_proof_does_not_burn_settled_holder(self):
+        issuer_private, issuer_public, _issuer_address = keypair()
+        alice_private, alice_public, alice_address = keypair()
+        bob_private, bob_public, bob_address = keypair()
+        carol_private, carol_public, carol_address = keypair()
+        _dave_private, _dave_public, dave_address = keypair()
+        issued_at = int(time.time()) - 1000
+        token = ind_token.make_genesis_token(9009, alice_address, issuer_private, issuer_public, issued_at=issued_at)
+        alice_to_bob = ind_token.create_transfer(token, alice_private, alice_public, bob_address, timestamp=issued_at + 10)
+        bob_to_carol = ind_token.create_transfer(alice_to_bob, bob_private, bob_public, carol_address, timestamp=issued_at + 20)
+        late_alice_to_dave = ind_token.create_transfer(token, alice_private, alice_public, dave_address, timestamp=issued_at + 30)
+        proof = ind_token.create_conflict_proof(bob_to_carol, late_alice_to_dave, detected_at=issued_at + 40)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ind_token.INDLocalStore(temp_dir + "/ind_test.db")
+            store.ingest_message(ind_token.create_receipt_announcement(bob_to_carol, carol_private, carol_public))
+            finalized_at = int(time.time()) + ind_token.FINALITY_BUFFER_SECONDS + 1
+            store.finalize_pending(now=finalized_at, buffer_seconds=0)
+
+            before = store.token_confidence(
+                bob_to_carol["token_id"],
+                expected_owner=carol_address,
+                min_settled_seconds=0,
+                now=finalized_at,
+            )
+            result = store.ingest_message(proof)
+            after = store.token_confidence(
+                bob_to_carol["token_id"],
+                expected_owner=carol_address,
+                min_settled_seconds=0,
+                now=finalized_at,
+            )
+
+        self.assertTrue(before["accepted"])
+        self.assertEqual(result["status"], "conflict")
+        self.assertTrue(after["accepted"])
+        self.assertEqual(after["level"], "strong_local")
 
     def test_conflict_detection_after_rebuilt_history(self):
         issuer_private, issuer_public, _issuer_address = keypair()
@@ -482,11 +593,12 @@ class INDTokenTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = ind_token.INDLocalStore(temp_dir + "/ind_test.db")
             store.ingest_message(ind_token.create_transfer_announcement(transfer_a))
-            result = store.ingest_message(ind_token.create_transfer_announcement(transfer_b))
-            self.assertEqual(result["status"], "conflict")
-            self.assertTrue(ind_token.verify_conflict_proof(result["conflict_proof"]))
+            with self.assertRaisesRegex(ind_token.ValidationError, "conflicting transfer rejected"):
+                store.ingest_message(ind_token.create_transfer_announcement(transfer_b))
+            messages = store.conflict_messages(limit=10)
+            self.assertEqual(messages, [])
 
-    def test_store_decomposes_history_and_rebuilds_token(self):
+    def test_store_decomposes_history_and_rebuilds_bill(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         alice_private, alice_public, alice_address = keypair()
         bob_private, bob_public, bob_address = keypair()
@@ -609,7 +721,7 @@ class INDTokenTests(unittest.TestCase):
         with temporary_env(IND_ALLOW_UNTRUSTED_GENESIS="1", IND_TRUSTED_GENESIS_ISSUER_KEYS=None):
             self.assertEqual(ind_token.verify_token(token).owner_address, alice_address)
 
-    def test_lazy_genesis_manifest_mints_verifiable_tokens_without_materializing_supply(self):
+    def test_lazy_genesis_manifest_mints_verifiable_bills_without_materializing_supply(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         _owner_private, _owner_public, owner_address = keypair()
         ranges = ind_token.make_denomination_ranges(
@@ -720,39 +832,25 @@ class INDTokenTests(unittest.TestCase):
         keys = [keypair(), keypair()]
         base_timestamp = 1_700_000_000
         token = ind_token.make_genesis_token(15, keys[0][2], issuer_private, issuer_public, issued_at=base_timestamp)
-        self.assertEqual(ind_token.MAX_TRANSFERS_PER_TOKEN_PER_DAY, 10)
+        self.assertEqual(ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY, 10)
 
-        for index in range(ind_token.MAX_TRANSFERS_PER_TOKEN_PER_DAY):
+        for index in range(ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY):
             sender = keys[index % 2]
             recipient = keys[1 - (index % 2)][2]
             append_signed_transfer(token, sender[0], sender[1], recipient, base_timestamp + index)
-        self.assertEqual(ind_token.verify_token(token).sequence, ind_token.MAX_TRANSFERS_PER_TOKEN_PER_DAY)
+        self.assertEqual(ind_token.verify_token(token).sequence, ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY)
 
-        sender = keys[ind_token.MAX_TRANSFERS_PER_TOKEN_PER_DAY % 2]
-        recipient = keys[1 - (ind_token.MAX_TRANSFERS_PER_TOKEN_PER_DAY % 2)][2]
+        sender = keys[ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY % 2]
+        recipient = keys[1 - (ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY % 2)][2]
         append_signed_transfer(
             token,
             sender[0],
             sender[1],
             recipient,
-            base_timestamp + ind_token.MAX_TRANSFERS_PER_TOKEN_PER_DAY,
+            base_timestamp + ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY,
         )
         with self.assertRaisesRegex(ind_token.ValidationError, "daily transfer limit"):
             ind_token.verify_token(token)
-
-    def test_lifetime_history_cap_rejects_oversized_valid_histories(self):
-        issuer_private, issuer_public, _issuer_address = keypair()
-        alice_private, alice_public, alice_address = keypair()
-        _bob_private, _bob_public, bob_address = keypair()
-        token = ind_token.make_genesis_token(806, alice_address, issuer_private, issuer_public)
-        transferred = ind_token.create_transfer(token, alice_private, alice_public, bob_address)
-        previous = ind_protocol.MAX_TRANSFERS_PER_TOKEN_HISTORY
-        try:
-            ind_protocol.MAX_TRANSFERS_PER_TOKEN_HISTORY = 0
-            with self.assertRaisesRegex(ind_token.ValidationError, "maximum lifetime transfer count"):
-                ind_token.verify_token(transferred)
-        finally:
-            ind_protocol.MAX_TRANSFERS_PER_TOKEN_HISTORY = previous
 
     def test_protocol_timestamps_are_int64_unix_seconds_past_2106(self):
         issuer_private, issuer_public, _issuer_address = keypair()
@@ -807,15 +905,15 @@ class INDTokenTests(unittest.TestCase):
         base_timestamp = 1_700_000_000
         token = ind_token.make_genesis_token(16, keys[0][2], issuer_private, issuer_public, issued_at=base_timestamp)
 
-        for index in range(ind_token.MAX_TRANSFERS_PER_TOKEN_PER_DAY):
+        for index in range(ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY):
             sender = keys[index % 2]
             recipient = keys[1 - (index % 2)][2]
             append_signed_transfer(token, sender[0], sender[1], recipient, base_timestamp + index)
-        sender = keys[ind_token.MAX_TRANSFERS_PER_TOKEN_PER_DAY % 2]
-        recipient = keys[1 - (ind_token.MAX_TRANSFERS_PER_TOKEN_PER_DAY % 2)][2]
+        sender = keys[ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY % 2]
+        recipient = keys[1 - (ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY % 2)][2]
         next_day = ((base_timestamp // 86400) + 1) * 86400
         append_signed_transfer(token, sender[0], sender[1], recipient, next_day)
-        self.assertEqual(ind_token.verify_token(token).sequence, ind_token.MAX_TRANSFERS_PER_TOKEN_PER_DAY + 1)
+        self.assertEqual(ind_token.verify_token(token).sequence, ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY + 1)
 
     def test_non_increasing_transfer_timestamp_is_rejected(self):
         issuer_private, issuer_public, _issuer_address = keypair()
@@ -894,6 +992,18 @@ class INDTokenTests(unittest.TestCase):
         with self.assertRaisesRegex(ind_token.ValidationError, "safety limit"):
             ind_token.unpack_wire_message(packed)
 
+    def test_packed_wire_oversize_is_rejected_before_decode(self):
+        old_limit = protocol_impl.MAX_WIRE_COMPRESSED_BYTES
+        protocol_impl.MAX_WIRE_COMPRESSED_BYTES = 8
+        try:
+            packed = ind_token.WIRE_PACKED_PREFIX + ("0" * 11)
+            with mock.patch("ind.protocol.base64.b85decode") as decode:
+                with self.assertRaisesRegex(ind_token.WireSizeError, "compressed wire message is too large"):
+                    ind_token.unpack_wire_message(packed)
+                decode.assert_not_called()
+        finally:
+            protocol_impl.MAX_WIRE_COMPRESSED_BYTES = old_limit
+
     def test_peer_rate_limiter_blocks_after_limit(self):
         limiter = node_client.PeerRateLimiter(window_seconds=60)
         self.assertTrue(limiter.allow("203.0.113.1", "gossip", 2, now=100))
@@ -953,14 +1063,28 @@ class INDTokenTests(unittest.TestCase):
         self.assertTrue(node_client.append_unique_gossip(pool, "c", limit=2))
         self.assertEqual(pool, ["b", "c"])
 
-    def test_peer_discovery_rejects_non_global_ipv4(self):
+    def test_peer_discovery_accepts_global_ipv4_and_ipv6(self):
         self.assertTrue(sender_node._valid_ipv4("8.8.8.8"))
         self.assertTrue(node_client._valid_ipv4("8.8.4.4"))
-        for ip in ("127.0.0.1", "10.0.0.1", "192.168.1.2", "0.0.0.0", "224.0.0.1"):
+        self.assertTrue(sender_node._valid_peer_address("2606:4700:4700::1111"))
+        self.assertTrue(node_client._valid_peer_address("2001:4860:4860::8888"))
+        for ip in (
+            "127.0.0.1",
+            "10.0.0.1",
+            "192.168.1.2",
+            "0.0.0.0",
+            "224.0.0.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "ff02::1",
+        ):
             self.assertFalse(sender_node._valid_ipv4(ip))
             self.assertFalse(node_client._valid_ipv4(ip))
+            self.assertFalse(sender_node._valid_peer_address(ip))
+            self.assertFalse(node_client._valid_peer_address(ip))
 
-    def test_dns_seed_settings_and_resolution_filter_to_public_ipv4(self):
+    def test_dns_seed_settings_and_resolution_filter_to_public_ipv4_and_ipv6(self):
         settings = ind_settings.normalize_security_settings(
             {
                 "dns_seed_hosts": [
@@ -971,19 +1095,60 @@ class INDTokenTests(unittest.TestCase):
             }
         )
         self.assertEqual(settings["dns_seed_hosts"], ["seed.example.test", "seed.linkifier.me"])
+        ipv6_settings = ind_settings.normalize_security_settings(
+            {"peer_ping_servers": ["[2606:4700:4700::1111]:8888", "2001:4860:4860::8888"]}
+        )
+        self.assertEqual(
+            ipv6_settings["peer_ping_servers"],
+            ["2606:4700:4700::1111", "2001:4860:4860::8888"],
+        )
 
         records = [
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 8888)),
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 8888)),
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 8888)),
             (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:4860:4860::8888", 8888, 0, 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fc00::1", 8888, 0, 0)),
             (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.1.1.1", 8888)),
         ]
-        with mock.patch("ind.sender_node.socket.getaddrinfo", return_value=records):
+        with mock.patch("ind.sender_node.socket.getaddrinfo", return_value=records) as getaddrinfo:
             self.assertEqual(
                 sender_node.resolve_dns_seed_hosts(["seed.example.test"]),
-                ["8.8.8.8", "1.1.1.1"],
+                ["8.8.8.8", "2001:4860:4860::8888", "1.1.1.1"],
             )
+        self.assertEqual(getaddrinfo.call_args.kwargs["family"], socket.AF_UNSPEC)
+
+    def test_ipv6_peer_cache_uses_safe_filenames_and_diverse_blocks(self):
+        previous = os.getcwd()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                os.chdir(temp_dir)
+                runtime_json.ensure_runtime_files()
+                self.assertTrue(sender_node.add_peer("2606:4700:4700::1111"))
+                self.assertTrue(sender_node.add_peer("8.8.8.8"))
+
+                ipv6_path = runtime_json.peer_path("2606:4700:4700::1111")
+                self.assertTrue(ipv6_path.exists())
+                self.assertNotIn(":", ipv6_path.name)
+                self.assertIn("2606:4700:4700::1111", sender_node._peer_files("ip_folder/2"))
+                self.assertIn("8.8.8.8", sender_node._peer_files("ip_folder/2"))
+
+                sample = sender_node.diverse_peer_sample(
+                    [
+                        "2606:4700:4700::1111",
+                        "2606:4700:4700::1001",
+                        "2001:4860:4860::8888",
+                        "8.8.8.8",
+                        "8.8.4.4",
+                        "example.com",
+                    ],
+                    limit=6,
+                )
+                self.assertTrue(any(item.startswith("2606:4700:4700:") for item in sample))
+                self.assertIn("example.com", sample)
+                self.assertTrue(all(":" not in Path(item).name or sender_node._valid_peer_address(item) for item in sample))
+            finally:
+                os.chdir(previous)
 
     def test_ind_transport_round_trips_and_pins_peer_key(self):
         old_private = ind_transport.NOISE_PRIVATE_KEY_PATH

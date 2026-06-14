@@ -1,0 +1,42 @@
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+skip-string-normalization = true
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [
+    "output",
+    "wallet_folder",
+    "transaction_folder",
+    "print_folder",
+    "ip_folder",
+    "full_activation",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "B",
+    "SIM",
+    "UP",
+]
+ignore = [
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"ind/token.py" = ["F403", "F405"]
+"*_token.py" = ["F403", "F405"]
+"wallet_*.py" = ["F403", "F405"]
+"node_client.py" = ["F403", "F405"]
+"sender_node.py" = ["F403", "F405"]
+"confirm_validity.py" = ["F403", "F405"]
+"portforwardlib.py" = ["F403", "F405"]

@@ -1,4 +1,5 @@
 import base64
+import logging
 import os
 
 from cryptography.fernet import Fernet
@@ -12,6 +13,7 @@ from . import wallet_crypto
 
 WALLET_V1_PREFIX = b'INDW1:'
 LEGACY_WALLET_SALT = b'w\x8a\xb3\x97d\x17D\xba\x86\xcc\xea\x9a\x11\\=\xe2'
+logger = logging.getLogger(__name__)
 
 
 def _derive_key(password, salt):
@@ -46,12 +48,12 @@ def secure_delete(path):
             handle.write(b'\x00' * size)
             handle.flush()
             os.fsync(handle.fileno())
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("could not overwrite temporary wallet file %s: %s", path, exc)
     try:
         os.remove(path)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("could not remove temporary wallet file %s: %s", path, exc)
 
 
 def _clear_plaintext_wallet_files():

@@ -4,24 +4,24 @@ Status: experimental alpha.
 
 ## Security Goals
 
-- A token cannot be transferred without the current owner's private key.
-- A malformed token, transfer, receipt, or conflict proof is rejected.
-- A double-spend from the same token state can be proven from signatures alone.
+- A bill cannot be transferred without the current owner's private key.
+- A malformed bill, transfer, receipt, or conflict proof is rejected.
+- A double-spend from the same bill state can be proven from signatures alone.
 - Nodes do not rely on IP voting or stake voting to decide ownership.
 
 ## In Scope
 
 ## Double-Spend Attempts
 
-An attacker can sign two transfers from the same token state to different recipients. IND cannot prevent the attempt before gossip sees both branches. Once both branches are known, any node can create a conflict proof and invalidate the token.
+An attacker can sign two transfers from the same bill state to different recipients. IND cannot prevent the attempt before gossip sees both branches. Once a node already knows one branch, it rejects a later sibling branch from that same bill state. A conflict proof remains evidence that the signer double-spent, but it does not burn already accepted downstream bills.
 
 ## Network Partitions And Eclipse Attacks
 
-An isolated node may settle a token before hearing about a conflicting branch. The 60-second buffer reduces ordinary propagation risk, but it is not global consensus. Merchants should run well-connected nodes and treat high-value transfers more conservatively.
+An isolated node may settle a bill before hearing about a conflicting branch. The 60-second buffer reduces ordinary propagation risk, but it is not global consensus. Merchants should run well-connected nodes and treat high-value transfers more conservatively.
 
 ## Delayed Gossip
 
-Peers can withhold messages. A late conflict proof remains valid and invalidates the token when received.
+Peers can withhold messages. A late conflict proof remains valid evidence, but receiving it does not invalidate an already settled local branch.
 
 ## Retroactive History Forgery
 
@@ -31,10 +31,10 @@ transparency log layer addresses this by requiring each transfer hash in a bill
 history to have an inclusion proof against a mirrored signed root near the
 transfer timestamp.
 
-The log does not make ownership decisions. Two valid conflicting signatures
-from the same key over the same predecessor still burn the token through the
-existing conflict-proof rule. The log only makes hidden or backfilled history
-detectable.
+The log does not make ownership decisions. The reference transparency operator
+rejects a conflicting spend claim for a spend key it has already accepted, so
+late double-spend attempts do not enter the spend map and do not burn
+downstream holders. The log still makes hidden or backfilled history detectable.
 
 ## Log Operator Equivocation
 
@@ -48,6 +48,14 @@ Clients should fetch historical roots from mirrors independent of the operator
 serving inclusion proofs. If two mirrors or peers produce valid signed roots
 from the same operator for the same timestamp with different tree sizes or root
 hashes, that is durable evidence of operator dishonesty.
+
+If an operator signs a root whose spend map accepts two different transfers for
+the same spend key, the affected bill is rejected. When the spend-map proof
+contains the conflicting transfer bodies, clients store
+`ind.transparency_operator_policy_violation.v1`, blacklist that operator
+locally, and gossip the evidence. This detects a malicious operator
+manipulating the present; it does not replace future multi-operator quorum
+finality.
 
 Mirror diversity is load-bearing. A "mirror" controlled by the same operator
 or served from the same infrastructure does not give strong protection.
@@ -71,26 +79,26 @@ Nodes can lie by omission, refuse to relay messages, or serve stale peer lists. 
 
 Attackers can flood peers with invalid or repeated messages. The current implementation validates before storing, deduplicates by message hash, caps wire payload sizes, rate-limits peers, penalizes invalid gossip, and bounds in-memory dedupe/peer tracking. These are alpha-grade controls, not a full production anti-DoS layer.
 
-One token can have at most 10 transfers per UTC day, which limits deliberate per-bill history growth. This does not remove network-level spam risk from attackers using many tokens.
+One bill can have at most 10 transfers per UTC day, which limits deliberate per-bill history growth. This does not remove network-level spam risk from attackers using many bills.
 
-Genesis and transfer metadata are capped, which prevents using token metadata as arbitrary bulk storage.
+Genesis and transfer metadata are capped, which prevents using bill metadata as arbitrary bulk storage.
 
-The reference TCP node also limits per-IP connection and request rates, cheaply caps gossip decode attempts before expensive parsing, caps active handler connections, bounds encrypted request frames, bounds compressed/decompressed wire payloads, and rejects non-global peer discovery addresses. Peers use an X25519/ChaCha20-Poly1305 transport with first-seen key pinning by IP address. These controls reduce trivial memory, socket exhaustion, slow-client thread pinning, and local-address pollution attacks; they do not replace a real peer reputation system, authenticated peer identities, or network-layer DDoS filtering.
+The reference TCP node also limits per-IP connection and request rates, cheaply caps gossip decode attempts before expensive parsing, caps active handler connections, bounds encrypted request frames, bounds compressed/decompressed wire payloads, and rejects non-global IPv4/IPv6 peer discovery addresses. Peers use an X25519/ChaCha20-Poly1305 transport with first-seen key pinning by IP address. These controls reduce trivial memory, socket exhaustion, slow-client thread pinning, and local-address pollution attacks; they do not replace a real peer reputation system, authenticated peer identities, or network-layer DDoS filtering.
 
 ## Issuer And Genesis Trust
 
-The issuer controls genesis creation. A serious release must publish the trusted issuer key policy and a full supply commitment, such as a Merkle root over the genesis set. Without this, users must trust that no extra genesis tokens exist.
+The issuer controls genesis creation. A serious release must publish the trusted issuer key policy and a full supply commitment, such as a Merkle root over the genesis set. Without this, users must trust that no extra genesis bills exist.
 
 The stronger current path is a signed lazy genesis manifest pinned by hash. This avoids publishing every bill while still letting users verify that a bill index, denomination, owner, and nonce come from the exact launch supply map. If nodes pin only an issuer key and not the manifest hash, the issuer could sign a second supply map; public networks should pin the exact manifest hash.
 
 ## Privacy
 
-Token histories reveal transfer paths to anyone who receives the token. This is closer to a traceable bearer bill than private cash. Privacy improvements require a separate design review.
+Bill histories reveal transfer paths to anyone who receives the bill. This is closer to a traceable bearer bill than private cash. Privacy improvements require a separate design review.
 
 The encrypted node transport protects message contents from passive observers, but it does not make IND traffic indistinguishable from other TCP traffic. A censor can still identify reachable IND nodes by port, timing, packet shape, peer lists, or active probing.
 
 The transparency log stores only transfer hashes, not full transfer payloads.
-This keeps mirrors small and avoids publishing full token histories, but a
+This keeps mirrors small and avoids publishing full bill histories, but a
 party that already knows a transfer can test whether that exact transfer hash
 appears in a log root.
 
@@ -102,9 +110,9 @@ signed root.
 
 ## Key Loss And Theft
 
-If a wallet private key is lost, the token is lost. If a wallet private key is
-stolen, the thief can spend the token. There is no recovery authority in the
-token protocol.
+If a wallet private key is lost, the bill is lost. If a wallet private key is
+stolen, the thief can spend the bill. There is no recovery authority in the
+bill protocol.
 
 Transparency operators have a separate signing-key lifecycle. Operators can
 publish signed rotation records, signed by both old and successor keys, and
@@ -135,5 +143,6 @@ Operators should rotate early and keep successor/recovery material offline.
 - Add independent protocol test vectors for every message type.
 - Add authenticated peer identity and longer-lived reputation.
 - Add multi-operator transparency policy.
+- Replace transparency-operator full spend-map rebuilds with an incremental persistent map before high-volume public operation.
 - Add automated publishing from staged root JSON to website, git, IPFS, and archive.org mirrors.
 - Run external cryptographic and implementation review before real value is used.

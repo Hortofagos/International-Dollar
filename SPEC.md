@@ -4,7 +4,21 @@ Status: experimental alpha.
 
 ## Goals
 
-IND is a fixed-supply digital bearer-token protocol. Tokens carry their own ownership history. Nodes gossip transfers, receipts, and conflict proofs; they do not vote on ownership.
+IND is a fixed-supply digital bearer-bill protocol. Bills carry their own ownership history. Nodes gossip transfers, receipts, and conflict proofs; they do not vote on ownership.
+
+## Network Roles
+
+The protocol uses a small set of roles:
+
+- **Wallet:** stores and spends bills owned by one user.
+- **Node:** validates and relays transfers, receipts, conflict proofs, and transparency-root gossip it sees. A node is not required to store every possible bill index.
+- **Transparency operator:** runs the Merkle receipt log, accepts validated transfer hashes, and signs append-only roots.
+- **Mirror/auditor:** republishes or checks signed roots and hash-log archives.
+- **Archive/index service:** optional infrastructure for historical search and public explorers.
+
+"Full operator" is deprecated terminology. The precise role name is
+**transparency operator**. A full IND node means a node that fully verifies the
+messages it sees, not a node that archives the whole supply universe.
 
 ## Cryptography
 
@@ -18,9 +32,9 @@ IND is a fixed-supply digital bearer-token protocol. Tokens carry their own owne
   legacy-compatible.
 - Canonical JSON: sorted keys, compact separators, ASCII output.
 
-## Token
+## Bill
 
-A token is:
+A protocol-v1 full-history bill is encoded as:
 
 ```json
 {
@@ -33,6 +47,93 @@ A token is:
 ```
 
 The current owner is the owner produced by validating `genesis` and every transfer in `history` in order.
+
+A protocol-v2 compact bill is encoded as:
+
+```json
+{
+  "type": "ind.bill.v2",
+  "version": 2,
+  "token_id": "ind1_...",
+  "genesis": {},
+  "checkpoint": {},
+  "recent_history": []
+}
+```
+
+The v2 bill keeps traceability to genesis without carrying every old transfer
+body in every payment. Validation verifies the genesis, verifies the compact
+checkpoint against that genesis, then replays only `recent_history` from the
+checkpoint state. `verify_bill(...)` accepts both v1 full-history bills and v2
+compact bills. `verify_token(...)` remains a compatibility alias for older
+callers.
+
+`token_id` remains the internal field name for database and API compatibility.
+Protocol text may call it the bill id.
+
+## Compact Checkpoints
+
+A compact checkpoint is encoded as:
+
+```json
+{
+  "type": "ind.bill_checkpoint.v2",
+  "version": 2,
+  "token_id": "ind1_...",
+  "genesis_hash": "<hash of genesis>",
+  "sequence": 12,
+  "owner_address": "x1...",
+  "value": 1,
+  "display_id": "IND-...",
+  "last_transfer_hash": "<hash of transfer 12>",
+  "last_transfer_timestamp": 1700000100,
+  "last_transfer_day": "2023-11-14",
+  "transfers_in_last_day": 3,
+  "previous_checkpoint_hash": "<previous checkpoint hash or null>",
+  "checkpoint_hash": "<hash of the checkpoint core>",
+  "transparency": {}
+}
+```
+
+`checkpoint_hash` is computed over the checkpoint core fields only. Embedded
+proofs, local status, and transport metadata are not part of the checkpoint
+hash. The first checkpoint has `previous_checkpoint_hash: null`; later
+checkpoints commit to the previous checkpoint hash.
+
+Compact checkpoint acceptance requires transparency evidence and fails closed
+without it. The checkpoint transparency payload includes:
+
+- a checkpoint inclusion proof showing `checkpoint_hash` is a Merkle leaf in a
+  signed root that independent mirrors also publish
+- a spend-map proof for `last_transfer_hash`, proving the settled transfer tip
+  is the non-conflicting logged spend for that bill sequence
+
+This is not operator-declared ownership. Ownership still comes from genesis,
+transfer signatures, receipts, and conflict proofs. The checkpoint is a compact
+state commitment backed by public log evidence. The tradeoff is that v2 compact
+payments are not fully offline full-history verification of old transfer
+bodies. They are log-backed, mirror-backed, and archive-auditable. Full transfer
+archives remain important for deep audits, recovery, and rebuilding old v1
+bills.
+
+Wallets create checkpoints only after local settlement. A wallet may spend a v1
+full-history bill until the first checkpoint exists. Once a valid checkpoint is
+available, normal wallet sends prefer v2 compact bills and append new transfers
+to `recent_history`. The reference local-store policy creates the first
+automatic checkpoint after 10 settled transfers, then checkpoints every 10
+settled transfers after the latest checkpoint. Operators can tune those values
+with `IND_FIRST_CHECKPOINT_AFTER_TRANSFERS` and
+`IND_CHECKPOINT_INTERVAL_TRANSFERS`. A settled bill may also be compacted
+immediately by an explicit wallet/operator "compact now" action. If
+`IND_HIGH_VALUE_CHECKPOINT_THRESHOLD` is set to a positive bill value, settled
+bills at or above that value checkpoint immediately.
+
+`ind.checkpoint_announcement.v2` includes both the checkpoint and the source
+bill used to derive it. The source bill can be a v1 full-history bill or an
+already-valid v2 compact bill with recent transfers. The operator validates the
+source bill, recomputes the checkpoint, and appends only `checkpoint_hash` to
+the public log. The source bill is validation input; it is not the checkpoint
+leaf.
 
 ## Genesis
 
@@ -70,7 +171,7 @@ A public launch does not need to pre-generate every possible bill. Instead, the 
 
 The manifest also commits to `total_token_count`, `total_value`, `issuer_public_key`, and `issued_at`. The manifest hash is SHA3-256 over the unsigned manifest. Public nodes should pin this hash with `IND_TRUSTED_GENESIS_MANIFEST_HASHES`.
 
-A lazy genesis token carries a `manifest_ref` with the signed manifest. Verification checks the manifest signature, trusted manifest hash or issuer key, index coverage, denomination value, genesis owner, deterministic nonce, commitment, and token id. This lets the network support up to 33,000,000,000 possible bill indexes without publishing 33,000,000,000 genesis payloads.
+A lazy genesis bill carries a `manifest_ref` with the signed manifest. Verification checks the manifest signature, trusted manifest hash or issuer key, index coverage, denomination value, genesis owner, deterministic nonce, commitment, and bill id (`token_id`). This lets the network support up to 33,000,000,000 possible bill indexes without publishing 33,000,000,000 genesis payloads.
 
 ## Transfer
 
@@ -92,21 +193,27 @@ Validation requires the sender public key to match `sender_address`, the sender 
 
 Transfer timestamps are part of validation:
 
-- timestamps must be strictly increasing inside one token history
+- timestamps must be strictly increasing inside one bill history
 - timestamps cannot be more than 300 seconds in the future when verified
-- a token may have at most 10 transfers in the same UTC day
+- a bill may have at most 10 transfers in the same UTC day
 
-The daily transfer cap limits deliberate per-bill history bloat without setting a hard byte-size cap on valid bearer tokens.
+The daily transfer cap limits deliberate per-bill history bloat without setting a hard byte-size cap on valid bearer bills.
+
+For v2 compact bills, the same 10/day rule is enforced across the checkpoint
+boundary. `last_transfer_day` and `transfers_in_last_day` seed the daily counter
+before replaying `recent_history`.
 
 Transfer metadata must be a JSON object and cannot exceed 256 canonical JSON bytes.
 
 ## Transparency Log
 
-IND transfer history can be checked against an append-only transparency log so
-an old wallet owner cannot fabricate an old-looking transfer chain after the
-fact. The log does not decide ownership. Ownership still comes from genesis,
-transfer signatures, receipts, and conflict proofs. The log only proves that a
-signed transfer hash was publicly committed near the time the transfer claims.
+IND transfer history is checked against an append-only transparency log by
+default so an old wallet owner cannot fabricate an old-looking transfer chain
+after the fact. Nodes also submit accepted transfer announcements by default
+when a transparency operator is configured. The log does not decide ownership.
+Ownership still comes from genesis, transfer signatures, receipts, and conflict
+proofs. The log proves that a signed transfer hash was publicly committed near
+the time the transfer claims.
 
 The reference log uses a Certificate Transparency-style Merkle tree: leaves are
 domain-separated from interior nodes, every append changes the tree root, and
@@ -123,10 +230,18 @@ logs where possible:
 
 ### Log Entries
 
-The log stores only the SHA3-256 transfer hash already committed by the IND
-token history. Full token and transfer data remains peer-to-peer. A transfer
-announcement submitted by a node is validated, then the operator appends only
-the latest transfer hash from that announcement.
+The log stores compact leaves for validated protocol events. Transfer leaves
+store the SHA3-256 transfer hash already committed by the IND bill history.
+Checkpoint leaves store the SHA3-256 checkpoint hash already committed by the
+checkpoint object. Full bill, transfer, and checkpoint bodies remain
+peer-to-peer or archived separately.
+
+The reference database records `entry_kind` and optional `entry_json` beside
+the leaf hash so operators can distinguish transfer and checkpoint leaves while
+preserving the existing hash-log proof format. A transfer announcement submitted
+by a node is validated, then the operator appends only the latest transfer hash
+from that announcement. A checkpoint announcement is validated against its
+source bill, then the operator appends only the checkpoint hash.
 
 Each signed root contains:
 
@@ -153,10 +268,10 @@ algorithm identifiers must fail closed.
 
 `log_server.py` exposes:
 
-- `POST /v1/append`: accept a validated `ind.transfer_announcement.v1` and append the latest transfer hash
+- `POST /v1/append`: accept a validated `ind.transfer_announcement.v1`, `ind.transfer_announcement.v2`, or `ind.checkpoint_announcement.v2` and append the latest transfer hash or checkpoint hash
 - `GET /v1/root`: latest signed root
 - `GET /v1/root-at?timestamp=<seconds>`: first signed root at or after a timestamp
-- `GET /v1/proof?entry_hash=<hex>&tree_size=<n>`: inclusion proof for a transfer hash against a tree size
+- `GET /v1/proof?entry_hash=<hex>&tree_size=<n>`: inclusion proof for a transfer or checkpoint hash against a tree size
 - `GET /v1/consistency?first=<n>&second=<m>`: append-only consistency proof
 - `GET /v1/roots`: recent signed roots for mirrors and auditors
 
@@ -166,6 +281,20 @@ for example to the project website, a git repo, IPFS, and archive.org. The
 reference server can stage root JSON into one or more local mirror directories;
 external publishing to IPFS/archive.org is deployment work because it needs
 operator credentials.
+
+The reference operator's current SQLite database is a local implementation
+backend, not a protocol requirement. SQLite is acceptable for development,
+ordinary desktop experiments, and early testnet operators. High-volume public
+operators should not solve scale merely by switching to PostgreSQL or MariaDB;
+they first need an incremental persistent spend map so root publication and
+spend proofs update/read only the changed Merkle path. After that, PostgreSQL,
+RocksDB, FoundationDB, or another production backend can be selected by
+operational needs.
+
+Operators can set `IND_LOG_WRITE_MIRROR_PROOF_ARCHIVES=0` to avoid writing a
+complete proof-archive snapshot for every mirrored root. Public mirrors should
+prefer segmented hash-log exports until proof archives are backed by an
+incremental structure.
 
 ### Mirror Independence: Protocol Check vs. Operator Duty
 
@@ -388,12 +517,37 @@ outbound gossip queue, rebroadcast persisted evidence on startup, and send it
 before ordinary root/transfer gossip subject to rate limits. Evidence-bound
 roots are never pruned, even when peer-root storage caps are enforced.
 
+Operators also violate transparency policy if they sign a root whose spend map
+contains two different transfer claims for the same spend key. A client rejects
+the affected bill and, when the spend-map proof contains the conflicting
+transfer bodies, stores and gossips this evidence:
+
+```json
+{
+  "type": "ind.transparency_operator_policy_violation.v1",
+  "version": 1,
+  "violation_type": "accepted_conflicting_spend",
+  "log_id": "<log_id>",
+  "root": { "... signed root ..." },
+  "spend_proof": { "... spend-map proof with conflicting claims ..." },
+  "detected_at": 1700000000
+}
+```
+
+Receiving peers verify the root signature, verify the spend-map proof against
+the signed root, require at least two sibling claims for the same spend key,
+and require the transfer bodies needed to verify the conflicting signatures.
+Valid evidence blacklists that operator locally. If the proof only shows an
+unverifiable conflicting claim without transfer bodies, clients reject the bill
+but do not blacklist the operator from that incomplete evidence alone.
+
 ### Client Verification
 
-When strict transparency verification is enabled, a client validating a bill:
+With the default strict transparency policy, a client validating a v1
+full-history bill:
 
 1. Verifies the normal IND signature chain.
-2. For each transfer, computes the transfer hash from the peer-to-peer token.
+2. For each transfer, computes the transfer hash from the peer-to-peer bill.
 3. Fetches signed historical roots for the transfer timestamp from at least two independent mirrors, not from the operator that serves the proof.
 4. Fetches an inclusion proof from the operator for that transfer hash and mirrored tree size.
 5. Recomputes the Merkle root with the proof and rejects the bill if it does not match the mirrored signed root.
@@ -402,6 +556,21 @@ When strict transparency verification is enabled, a client validating a bill:
 The root timestamp must be at or shortly after the transfer timestamp. The
 reference verifier defaults to a 120-second maximum lag because roots are
 intended to be published every 60 seconds.
+
+When validating a v2 compact bill, a client:
+
+1. Verifies the genesis and bill id.
+2. Verifies the checkpoint core and recomputes `checkpoint_hash`.
+3. Verifies the checkpoint inclusion proof against mirrored signed roots.
+4. Verifies the checkpoint spend-map proof for `last_transfer_hash`.
+5. Replays only `recent_history` from the checkpoint state, checking sender
+   keys, signatures, previous hashes, timestamp monotonicity, and the 10/day
+   counter seeded by the checkpoint.
+6. Verifies transparency proofs for recent transfers under the default strict
+   transparency policy.
+
+Compact verification fails closed if the checkpoint has no transparency proof
+or if no transparency verifier/root proof is available.
 
 Nodes that submit a transfer to the operator must not trust the append response
 alone. The response has to identify the appended `entry_hash`, zero-based
@@ -518,13 +687,13 @@ A receipt confirms that the current recipient saw the transfer:
 - `received_at`
 - `signature`
 
-Receipts are attached to `ind.receipt_announcement.v1` messages. The recipient key must match the token tip owner.
+Receipts are attached to `ind.receipt_announcement.v1` messages. The recipient key must match the bill tip owner.
 
 Receipt timestamps cannot predate the transfer tip and cannot be more than 300 seconds in the future when verified.
 
 ## Conflict Proof
 
-A conflict proof contains two valid token branches with different last transfer hashes but the same:
+A conflict proof contains two valid bill branches with different last transfer hashes but the same:
 
 - `token_id`
 - `sequence`
@@ -532,17 +701,31 @@ A conflict proof contains two valid token branches with different last transfer 
 - `sender_address`
 - `sender_public_key`
 
-This proves the owner signed two spends from the same token state. A valid conflict proof invalidates the token locally and should be gossiped.
+This proves the owner signed two spends from the same bill state. Conflict
+proofs are evidence. They do not invalidate the bill by themselves. The
+reference node rejects a newly received transfer or receipt branch when it
+conflicts with an already known local branch, and the transparency operator
+rejects conflicting spend claims for the same spend key.
 
 ## Gossip Messages
 
 Supported message types:
 
 - `ind.transfer_announcement.v1`
+- `ind.transfer_announcement.v2`
 - `ind.receipt_announcement.v1`
+- `ind.receipt_announcement.v2`
+- `ind.checkpoint_announcement.v2`
 - `ind.conflict_proof.v1`
 - `ind.transparency_root_announcement.v1`
 - `ind.transparency_equivocation_proof.v1`
+- `ind.transparency_operator_policy_violation.v1`
+
+The v2 transfer and receipt announcement flow is the same as v1, but the bill
+payload field is named `bill` instead of `token`.
+
+Checkpoint announcements also use a `bill` field. That source bill is present
+so the operator can verify the checkpoint before logging its hash.
 
 Plain canonical JSON is accepted. Nodes may also send compressed wire messages with the prefix `indz1:`. The payload is zlib-compressed canonical JSON encoded with base85.
 
@@ -570,32 +753,31 @@ The active network is selected with `IND_NETWORK` or the `network` security sett
 
 Mainnet default DNS seed hostnames are:
 
-- `seed.interneational-dollard.com`
+- `seed.international-dollar.com`
 - `seed.linkifier.me`
 - `seed.internetofthebots.com`
 
 Public testnet default DNS seed hostnames are:
 
-- `testnet-seed.interneational-dollard.com`
-- `testnet-seed.linkifier.me`
+- `testnet-seed.international-dollar.com`
 - `testnet-seed.internetofthebots.com`
 
-Each DNS seed should publish A records for reachable IND TCP nodes. The reference client resolves seeds as IPv4 only, rejects private, loopback, multicast, reserved, unspecified, and link-local addresses, then stores accepted results as ordinary version-2 peer hints. DNS seed results are not trusted identities, do not grant voting power, and do not affect token validity.
+Each DNS seed should publish A and AAAA records for reachable IND TCP nodes. The reference client resolves both IPv4 and IPv6, rejects private, loopback, multicast, reserved, unspecified, and link-local addresses, then stores accepted results as ordinary version-2 peer hints. DNS seed results are not trusted identities, do not grant voting power, and do not affect bill validity.
 
-Public testnet tokens are normal IND lazy-genesis tokens signed by the testnet manifest. They are isolated from mainnet by separate port/runtime state and by public nodes pinning a testnet manifest hash instead of any future mainnet genesis hash.
+Public testnet bills are normal IND lazy-genesis bills signed by the testnet manifest. They are isolated from mainnet by separate port/runtime state and by public nodes pinning a testnet manifest hash instead of any future mainnet genesis hash.
 
 ## Local Settlement
 
-Receipt announcements enter `pending` status. The default finality buffer is 60 seconds, and clients may configure a shorter or longer local buffer as a risk policy. If no conflict appears during that window, the token becomes `settled` locally. A later valid conflict proof still invalidates the token.
+Receipt announcements enter `pending` status. The default finality buffer is 60 seconds, and clients may configure a shorter or longer local buffer as a risk policy. If no conflicting sibling branch appears during that window, the bill becomes `settled` locally. Later conflict proofs are retained as evidence but do not burn an already settled branch.
 
-Local stores expose a confidence decision for a token id:
+Local stores expose a confidence decision for a bill id (`token_id`):
 
-- `unknown`: the node has no token record
-- `conflict`: a valid conflict proof is known
-- `wrong_owner`: the token tip owner does not match the expected recipient
-- `unreceipted` or `pending`: the token is valid but not locally settled
-- `settled_fresh`: the token is settled but below the caller's requested extra age
-- `strong_local`: the token is settled locally with no known conflict
+- `unknown`: the node has no bill record
+- `rejected`: a locally known branch conflicted before settlement and is not spendable
+- `wrong_owner`: the bill tip owner does not match the expected recipient
+- `unreceipted` or `pending`: the bill is valid but not locally settled
+- `settled_fresh`: the bill is settled but below the caller's requested extra age
+- `strong_local`: the bill is settled locally
 
 Wallets and merchants should treat only `strong_local` as accepted for ordinary payments.
 
@@ -603,13 +785,17 @@ Wallets and merchants should treat only `strong_local` as accepted for ordinary 
 
 Nodes store:
 
-- genesis once per token
+- genesis once per bill
 - signed lazy genesis manifests once per manifest hash
 - each transfer once by transfer hash
-- compact state references for token tips
+- compact checkpoints keyed by checkpoint hash
+- compact state references for bill tips
 - compact message references for recipient inboxes
 
-Nodes rebuild the full bearer token when a wallet needs to spend or export it. This prevents repeated local storage of the same growing history without adding checkpoint trust.
+Nodes can rebuild a full bearer bill when a wallet needs to export or audit it.
+For ordinary spends, wallets prefer a v2 compact bill once a valid checkpoint
+exists. This prevents repeated local storage and repeated payment transport of
+the same growing history while preserving archive-based full-history audit.
 
 ## Network Abuse Controls
 
@@ -627,4 +813,4 @@ The reference TCP node applies soft per-IP abuse guards. Defaults are intentiona
 
 These limits are anti-abuse backpressure, not operator approval. A rate-limited peer can retry later, and valid bill ownership never depends on a node admitting a request immediately.
 
-Peer discovery entries are accepted only if they are globally routable IPv4 addresses. Loopback, private, multicast, unspecified, and reserved addresses are rejected. In-memory peer tracking and gossip deduplication are bounded so long-running nodes cannot be forced to keep unbounded unique peer/message records. These controls reduce spam, socket exhaustion, slow-client thread pinning, and path traversal risk, but they are not a full peer reputation system or a replacement for network-layer DDoS protection.
+Peer discovery entries are accepted only if they are globally routable IPv4 or IPv6 addresses. Loopback, private, multicast, unspecified, link-local, and reserved addresses are rejected. Cached IPv6 peer hints use Windows-safe filenames while keeping the canonical address in the peer JSON. In-memory peer tracking and gossip deduplication are bounded so long-running nodes cannot be forced to keep unbounded unique peer/message records. These controls reduce spam, socket exhaustion, slow-client thread pinning, and path traversal risk, but they are not a full peer reputation system or a replacement for network-layer DDoS protection.

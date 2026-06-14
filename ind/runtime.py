@@ -1,6 +1,9 @@
 import json
 import os
 import time
+import ipaddress
+import tempfile
+import threading
 from pathlib import Path
 
 from . import settings as ind_settings
@@ -29,19 +32,19 @@ WALLET_DECRYPTED_PREFIX = "wallet_decrypted_"
 _DECRYPTED_WALLETS = {}
 _PASSPHRASE_REQUEST = None
 _WALLET_GENERATION = None
+_WRITE_LOCK = threading.RLock()
 
 DEFAULT_STATE = {
     "schema": 1,
-    "last_luck": 0,
     "my_public_ip": "",
     "spam_protection": "",
     "kill_node": True,
     "check_signed_in": False,
     "node": {
-        "class": "FULL NODE",
+        "class": "NODE",
         "run_on_startup": "NO",
         "run_in_background": "NO",
-        "full_operator": "NO",
+        "transparency_operator": "NO",
     },
 }
 
@@ -51,7 +54,7 @@ DEFAULT_WALLET_GENERATION = {
     "private_key": "",
     "public_key": "",
     "passphrase": "",
-    "tokens": [],
+    "bills": [],
 }
 
 DEFAULT_PASSPHRASE_REQUEST = {
@@ -108,15 +111,42 @@ def _clone(data):
     return json.loads(json.dumps(data))
 
 
+def _bill_lines_from_wallet_data(data):
+    if not isinstance(data, dict):
+        return []
+    return list(data.get("bills") or data.get("tokens") or [])
+
+
 def _write_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(path.name + ".tmp")
-    tmp_path.write_text(
-        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n",
-        encoding="utf-8",
-    )
-    os.replace(tmp_path, path)
+    tmp_path = None
+    with _WRITE_LOCK:
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=path.name + ".",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                tmp_path = Path(handle.name)
+                handle.write(json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n")
+            for attempt in range(5):
+                try:
+                    os.replace(tmp_path, path)
+                    break
+                except PermissionError:
+                    if os.name != "nt" or attempt == 4:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 def _read_json(path, default=None):
@@ -146,18 +176,22 @@ def _parse_bool(value, default=False):
 
 def _merge_state(data):
     merged = _clone(DEFAULT_STATE)
+    legacy_node = data.get("node") if isinstance(data, dict) and isinstance(data.get("node"), dict) else {}
     if isinstance(data, dict):
         for key, value in data.items():
             if key == "node" and isinstance(value, dict):
                 merged["node"].update(value)
             elif key in merged:
                 merged[key] = value
+    node = merged["node"]
+    if "transparency_operator" not in legacy_node and "full_operator" in legacy_node:
+        node["transparency_operator"] = legacy_node["full_operator"]
+    if str(node.get("class", "")).strip() == "FULL NODE":
+        node["class"] = "NODE"
+    node["transparency_operator"] = "YES" if _parse_bool(node.get("transparency_operator", "NO"), default=False) else "NO"
+    node.pop("full_operator", None)
     merged["kill_node"] = _parse_bool(merged["kill_node"], default=True)
     merged["check_signed_in"] = False
-    try:
-        merged["last_luck"] = int(merged["last_luck"])
-    except (TypeError, ValueError):
-        merged["last_luck"] = 0
     return merged
 
 
@@ -165,7 +199,8 @@ def _state_from_legacy_files():
     state = _clone(DEFAULT_STATE)
     legacy_node = _read_legacy_text("files/node_class.txt").splitlines()
     if legacy_node:
-        state["node"]["class"] = legacy_node[0].strip() or "FULL NODE"
+        legacy_class = legacy_node[0].strip() or "NODE"
+        state["node"]["class"] = "NODE" if legacy_class == "FULL NODE" else legacy_class
     if len(legacy_node) > 1:
         state["node"]["run_on_startup"] = legacy_node[1].strip() or "NO"
     if len(legacy_node) > 2:
@@ -174,13 +209,6 @@ def _state_from_legacy_files():
     kill_node = _read_legacy_text("files/kill_node.txt")
     if kill_node != "":
         state["kill_node"] = _parse_bool(kill_node, default=True)
-
-    last_luck = _read_legacy_text("files/last_luck.txt").strip()
-    if last_luck:
-        try:
-            state["last_luck"] = int(last_luck)
-        except ValueError:
-            state["last_luck"] = 0
 
     state["my_public_ip"] = _read_legacy_text("files/my_public_ip.txt").strip()
     state["spam_protection"] = _read_legacy_text("files/spam_protection.txt")
@@ -217,7 +245,7 @@ def write_state(state):
 def read_node_config():
     node = read_state()["node"]
     return (
-        str(node.get("class", "FULL NODE")),
+        str(node.get("class", "NODE")),
         str(node.get("run_on_startup", "NO")),
         str(node.get("run_in_background", "NO")),
     )
@@ -225,19 +253,24 @@ def read_node_config():
 
 def read_node_operator_enabled():
     node = read_state()["node"]
-    return "YES" if _parse_bool(node.get("full_operator", "NO"), default=False) else "NO"
+    return "YES" if _parse_bool(node.get("transparency_operator", "NO"), default=False) else "NO"
 
 
-def write_node_config(node_class, run_on_startup, run_in_background, full_operator=None):
+def write_node_config(node_class, run_on_startup, run_in_background, transparency_operator=None, **legacy_options):
     state = read_state()
     node = state["node"]
-    if full_operator is None:
-        full_operator = node.get("full_operator", "NO")
+    if transparency_operator is None:
+        transparency_operator = legacy_options.pop("full_operator", None)
+    if legacy_options:
+        unexpected = ", ".join(sorted(legacy_options))
+        raise TypeError(f"unexpected node config option(s): {unexpected}")
+    if transparency_operator is None:
+        transparency_operator = node.get("transparency_operator", "NO")
     state["node"] = {
         "class": str(node_class),
         "run_on_startup": str(run_on_startup),
         "run_in_background": str(run_in_background),
-        "full_operator": "YES" if _parse_bool(full_operator, default=False) else "NO",
+        "transparency_operator": "YES" if _parse_bool(transparency_operator, default=False) else "NO",
     }
     write_state(state)
 
@@ -293,11 +326,11 @@ def wallet_generation_from_payload(payload):
         data["private_key"] = lines[1].strip()
     if len(lines) > 2:
         data["public_key"] = lines[2].strip()
-    data["tokens"] = [line.rstrip("\n") for line in wallet_token_lines(lines)]
+    data["bills"] = [line.rstrip("\n") for line in wallet_bill_lines(lines)]
     return data
 
 
-def is_wallet_token_line(line):
+def is_wallet_bill_line(line):
     parts = str(line).strip().split()
     if not parts:
         return False
@@ -306,32 +339,43 @@ def is_wallet_token_line(line):
     return separator == "x" and value.isdigit() and bool(index)
 
 
-def wallet_token_start_index(lines):
+def wallet_bill_start_index(lines):
     lines = list(lines or [])
     if len(lines) <= 3:
         return len(lines)
-    return 3 if is_wallet_token_line(lines[3]) else 4
+    return 3 if is_wallet_bill_line(lines[3]) else 4
 
 
-def wallet_token_lines(lines):
+def wallet_bill_lines(lines):
     lines = list(lines or [])
-    return lines[wallet_token_start_index(lines):]
+    return lines[wallet_bill_start_index(lines):]
 
 
-def write_wallet_generation(address, private_key, public_key, passphrase="", tokens=None):
+is_wallet_token_line = is_wallet_bill_line
+wallet_token_start_index = wallet_bill_start_index
+wallet_token_lines = wallet_bill_lines
+
+
+def write_wallet_generation(address, private_key, public_key, passphrase="", bills=None, tokens=None):
+    """Keep generated wallet secrets in memory until encryption consumes them."""
+
     global _WALLET_GENERATION
+    if bills is None and tokens is not None:
+        bills = tokens
     _WALLET_GENERATION = {
         "schema": 1,
         "address": str(address).strip(),
         "private_key": str(private_key).strip(),
         "public_key": str(public_key).strip(),
         "passphrase": "",
-        "tokens": list(tokens or []),
+        "bills": list(bills or []),
     }
     _write_json(wallet_generation_path(), DEFAULT_WALLET_GENERATION)
 
 
 def write_wallet_generation_from_payload(payload):
+    """Load generated wallet material into memory without persisting plaintext secrets."""
+
     global _WALLET_GENERATION
     _WALLET_GENERATION = wallet_generation_from_payload(payload)
     _write_json(wallet_generation_path(), DEFAULT_WALLET_GENERATION)
@@ -347,7 +391,8 @@ def read_wallet_generation():
     merged = _clone(DEFAULT_WALLET_GENERATION)
     if isinstance(data, dict):
         merged.update(data)
-    merged["tokens"] = list(merged.get("tokens") or [])
+    merged["bills"] = _bill_lines_from_wallet_data(merged)
+    merged.pop("tokens", None)
     return merged
 
 
@@ -372,9 +417,10 @@ def wallet_generation_lines(include_passphrase=False):
         str(data.get("private_key", "")).strip(),
         str(data.get("public_key", "")).strip(),
     ]
-    if include_passphrase or data.get("passphrase") or data.get("tokens"):
+    bills = _bill_lines_from_wallet_data(data)
+    if include_passphrase or data.get("passphrase") or bills:
         lines.append(str(data.get("passphrase", "")).strip())
-    lines.extend(str(line).rstrip("\n") for line in data.get("tokens", []))
+    lines.extend(str(line).rstrip("\n") for line in bills)
     return [line + "\n" for line in lines if line != ""]
 
 
@@ -389,7 +435,7 @@ def wallet_generation_payload():
         str(data["public_key"]).strip(),
         str(data["passphrase"]).strip(),
     ]
-    lines.extend(str(line).rstrip("\n") for line in data.get("tokens", []))
+    lines.extend(str(line).rstrip("\n") for line in _bill_lines_from_wallet_data(data))
     return "\n".join(lines) + "\n"
 
 
@@ -403,7 +449,7 @@ def wallet_generation_secret_payload():
         str(data["private_key"]).strip(),
         str(data["public_key"]).strip(),
     ]
-    lines.extend(str(line).rstrip("\n") for line in data.get("tokens", []))
+    lines.extend(str(line).rstrip("\n") for line in _bill_lines_from_wallet_data(data))
     return "\n".join(lines) + "\n"
 
 
@@ -501,7 +547,7 @@ def _payload_json(address, payload):
         "address": address,
         "private_key": lines[1].strip() if len(lines) > 1 else "",
         "public_key": lines[2].strip() if len(lines) > 2 else "",
-        "tokens": [line.rstrip("\n") for line in wallet_token_lines(lines)],
+        "bills": [line.rstrip("\n") for line in wallet_bill_lines(lines)],
         "payload": str(payload),
     }
 
@@ -543,7 +589,7 @@ def read_decrypted_wallet_payload(path):
                 str(data.get("public_key", "")).strip(),
                 str(data.get("passphrase", "")).strip(),
             ]
-            lines.extend(str(line).rstrip("\n") for line in data.get("tokens", []))
+            lines.extend(str(line).rstrip("\n") for line in _bill_lines_from_wallet_data(data))
             return "\n".join(line for line in lines if line != "") + "\n"
         return ""
     return _read_legacy_text(path)
@@ -675,8 +721,22 @@ def read_transaction_message(path):
     return _read_legacy_text(path)
 
 
+def peer_file_stem(peer):
+    """Return a Windows-safe peer-cache filename stem for an IP literal."""
+
+    peer = str(peer).strip()
+    try:
+        ip = ipaddress.ip_address(peer)
+    except ValueError:
+        safe = "".join(char if char.isalnum() or char in {"-", "_", "."} else "_" for char in peer)
+        return safe or "peer"
+    if ip.version == 4:
+        return ip.compressed
+    return "ipv6_" + ip.exploded.replace(":", "-")
+
+
 def peer_path(ip, version="2"):
-    return peer_root() / str(version) / f"{ip}.json"
+    return peer_root() / str(version) / f"{peer_file_stem(ip)}.json"
 
 
 def write_peer(ip, version="2"):
@@ -684,7 +744,7 @@ def write_peer(ip, version="2"):
         peer_path(ip, version),
         {
             "schema": 1,
-            "ip": str(ip),
+            "ip": str(ip).strip(),
             "version": str(version),
             "added_at": int(time.time()),
         },

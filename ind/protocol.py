@@ -1,4 +1,6 @@
-﻿import base64
+"""Core IND bill protocol validation, transfer construction, and compact checkpoints."""
+
+import base64
 import copy
 import json
 import os
@@ -28,6 +30,7 @@ BIRTHDAY_NUMBER = 9
 BIRTHDAY_CODE = "09.10.2003"
 TOTAL_SUPPLY = MASTER_SUPPLY_NUMBER * 1_000_000_000
 TOKEN_VERSION = 1
+BILL_VERSION = 2
 ADDRESS_VERSION = "1"
 ADDRESS_PREFIX = "x"
 ADDRESS_SUFFIX = "x"
@@ -46,13 +49,19 @@ GENESIS_NONCE_SEED_PREFIX = f"IND-LAZY-GENESIS-v{TOKEN_VERSION}:{MASTER_SUPPLY_N
 NUMEROLOGY_METADATA_KEY = "ind_alignment"
 
 TOKEN_TYPE = "ind.token.v1"
+BILL_TYPE = "ind.bill.v2"
+BILL_CHECKPOINT_TYPE = "ind.bill_checkpoint.v2"
+CHECKPOINT_ANNOUNCEMENT_TYPE = "ind.checkpoint_announcement.v2"
 TRANSFER_TYPE = "ind.transfer.v1"
 TRANSFER_ANNOUNCEMENT_TYPE = "ind.transfer_announcement.v1"
+TRANSFER_ANNOUNCEMENT_V2_TYPE = "ind.transfer_announcement.v2"
 RECEIPT_TYPE = "ind.receipt.v1"
 RECEIPT_ANNOUNCEMENT_TYPE = "ind.receipt_announcement.v1"
+RECEIPT_ANNOUNCEMENT_V2_TYPE = "ind.receipt_announcement.v2"
 CONFLICT_PROOF_TYPE = "ind.conflict_proof.v1"
 TRANSPARENCY_ROOT_ANNOUNCEMENT_TYPE = "ind.transparency_root_announcement.v1"
 TRANSPARENCY_EQUIVOCATION_PROOF_TYPE = "ind.transparency_equivocation_proof.v1"
+TRANSPARENCY_OPERATOR_POLICY_VIOLATION_TYPE = "ind.transparency_operator_policy_violation.v1"
 TOKEN_STATE_REF_TYPE = "ind.token_state_ref.v1"
 STORED_MESSAGE_REF_TYPE = "ind.stored_message_ref.v1"
 GENESIS_MANIFEST_TYPE = "ind.genesis_manifest.v1"
@@ -64,6 +73,25 @@ TRANSFER_SIGNATURE_DOMAIN = "IND_TRANSFER_V1"
 RECEIPT_SIGNATURE_DOMAIN = "IND_RECEIPT_V1"
 
 TOKEN_FIELDS = {"type", "version", "token_id", "genesis", "history"}
+BILL_FIELDS = {"type", "version", "token_id", "genesis", "checkpoint", "recent_history"}
+CHECKPOINT_CORE_FIELDS = {
+    "type",
+    "version",
+    "token_id",
+    "genesis_hash",
+    "sequence",
+    "owner_address",
+    "value",
+    "display_id",
+    "last_transfer_hash",
+    "last_transfer_timestamp",
+    "last_transfer_day",
+    "transfers_in_last_day",
+    "previous_checkpoint_hash",
+}
+CHECKPOINT_FIELDS = CHECKPOINT_CORE_FIELDS | {"checkpoint_hash", "transparency"}
+CHECKPOINT_TRANSPARENCY_FIELDS = {"type", "version", "root", "inclusion_proof", "spend_proof"}
+CHECKPOINT_ANNOUNCEMENT_FIELDS = {"type", "version", "checkpoint", "bill", "announced_at"}
 GENESIS_FIELDS = {
     "type",
     "version",
@@ -105,6 +133,7 @@ TRANSFER_FIELDS = {
 }
 TRANSFER_ANNOUNCEMENT_FIELDS = {"type", "version", "token", "announced_at"}
 TRANSFER_ANNOUNCEMENT_OPTIONAL_FIELDS = set()
+TRANSFER_ANNOUNCEMENT_V2_FIELDS = {"type", "version", "bill", "announced_at"}
 RECEIPT_FIELDS = {
     "type",
     "version",
@@ -117,6 +146,7 @@ RECEIPT_FIELDS = {
     "signature",
 }
 RECEIPT_ANNOUNCEMENT_FIELDS = {"type", "version", "token", "receipt", "announced_at"}
+RECEIPT_ANNOUNCEMENT_V2_FIELDS = {"type", "version", "bill", "receipt", "announced_at"}
 CONFLICT_PROOF_FIELDS = {
     "type",
     "version",
@@ -140,6 +170,15 @@ TRANSPARENCY_EQUIVOCATION_PROOF_FIELDS = {
     "root_b",
     "detected_at",
 }
+TRANSPARENCY_OPERATOR_POLICY_VIOLATION_FIELDS = {
+    "type",
+    "version",
+    "violation_type",
+    "log_id",
+    "root",
+    "spend_proof",
+    "detected_at",
+}
 
 WIRE_PACKED_PREFIX = "indz1:"
 DEFAULT_FINALITY_BUFFER_SECONDS = 60
@@ -148,9 +187,13 @@ FINALITY_BUFFER_SECONDS = max(
     MIN_FINALITY_BUFFER_SECONDS,
     _env_int("IND_FINALITY_BUFFER_SECONDS", DEFAULT_FINALITY_BUFFER_SECONDS),
 )
-MAX_TRANSFERS_PER_TOKEN_PER_DAY = 10
-MAX_TRANSFERS_PER_TOKEN_HISTORY = _env_int("IND_MAX_TRANSFERS_PER_TOKEN_HISTORY", 10_000)
-MAX_TOKEN_HISTORY_BYTES = _env_int("IND_MAX_TOKEN_HISTORY_BYTES", 8 * 1024 * 1024)
+MAX_TRANSFERS_PER_BILL_PER_DAY = 10
+MAX_TRANSFERS_PER_TOKEN_PER_DAY = MAX_TRANSFERS_PER_BILL_PER_DAY
+MAX_BILL_HISTORY_BYTES = _env_int(
+    "IND_MAX_BILL_HISTORY_BYTES",
+    _env_int("IND_MAX_TOKEN_HISTORY_BYTES", 8 * 1024 * 1024),
+)
+MAX_TOKEN_HISTORY_BYTES = MAX_BILL_HISTORY_BYTES
 MAX_TRANSFER_FUTURE_SKEW_SECONDS = 300
 MAX_GENESIS_METADATA_BYTES = 1024
 MAX_TRANSFER_METADATA_BYTES = 256
@@ -158,6 +201,10 @@ MAX_WIRE_COMPRESSED_BYTES = _env_int("IND_MAX_WIRE_COMPRESSED_BYTES", 16 * 1024 
 MAX_WIRE_DECOMPRESSED_BYTES = _env_int("IND_MAX_WIRE_DECOMPRESSED_BYTES", 64 * 1024 * 1024)
 MAX_TRANSPARENCY_ROOT_GOSSIP_BYTES = _env_int("IND_MAX_TRANSPARENCY_ROOT_GOSSIP_BYTES", 16 * 1024)
 MAX_TRANSPARENCY_EQUIVOCATION_GOSSIP_BYTES = _env_int("IND_MAX_TRANSPARENCY_EQUIVOCATION_GOSSIP_BYTES", 32 * 1024)
+MAX_TRANSPARENCY_OPERATOR_POLICY_VIOLATION_GOSSIP_BYTES = _env_int(
+    "IND_MAX_TRANSPARENCY_OPERATOR_POLICY_VIOLATION_GOSSIP_BYTES",
+    128 * 1024,
+)
 MAX_VERIFY_KEY_CACHE = _env_int("IND_MAX_VERIFY_KEY_CACHE", 4096)
 MAX_JSON_DEPTH = _env_int("IND_MAX_JSON_DEPTH", 64)
 MAX_JSON_LIST_ITEMS = _env_int("IND_MAX_JSON_LIST_ITEMS", 100_000)
@@ -173,11 +220,15 @@ _VERIFY_KEY_CACHE = {}
 
 
 class TokenError(Exception):
-    """Base exception for IND bearer-token validation failures."""
+    """Base exception for IND bearer-bill validation failures."""
 
 
 class ValidationError(TokenError):
-    """Raised when a token, transfer, receipt, or proof is malformed."""
+    """Raised when a bill, transfer, receipt, or proof is malformed."""
+
+
+class WireSizeError(ValidationError):
+    """Raised when a wire payload exceeds protocol size limits."""
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -200,7 +251,7 @@ def configure_sqlite_connection(conn):
 
 @dataclass(frozen=True)
 class TokenState:
-    """Validated view of the current token tip used by wallets and nodes."""
+    """Validated view of the current bill tip used by wallets and nodes."""
 
     token_id: str
     owner_address: str
@@ -326,37 +377,61 @@ def _require_str(value, label, max_bytes=MAX_JSON_STRING_BYTES):
 def _packed_json(data):
     raw = canonical_json(data).encode("utf-8")
     if len(raw) > MAX_WIRE_DECOMPRESSED_BYTES:
-        raise ValidationError("wire message is too large")
+        raise WireSizeError("wire message is too large")
     compressed = zlib.compress(raw, level=9)
     if len(compressed) > MAX_WIRE_COMPRESSED_BYTES:
-        raise ValidationError("compressed wire message is too large")
+        raise WireSizeError("compressed wire message is too large")
     return WIRE_PACKED_PREFIX + base64.b85encode(compressed).decode("utf-8")
 
 
+def _max_b85_encoded_size(decoded_size):
+    full_groups, remainder = divmod(int(decoded_size), 4)
+    if not remainder:
+        return full_groups * 5
+    return full_groups * 5 + remainder + 1
+
+
 def _safe_zlib_decompress(data):
-    decompressor = zlib.decompressobj()
-    result = decompressor.decompress(data, MAX_WIRE_DECOMPRESSED_BYTES + 1)
-    if decompressor.unconsumed_tail or len(result) > MAX_WIRE_DECOMPRESSED_BYTES:
-        raise ValidationError("wire message expands beyond safety limit")
-    result += decompressor.flush(MAX_WIRE_DECOMPRESSED_BYTES + 1 - len(result))
-    if len(result) > MAX_WIRE_DECOMPRESSED_BYTES:
-        raise ValidationError("wire message expands beyond safety limit")
-    return result
+    try:
+        decompressor = zlib.decompressobj()
+        result = decompressor.decompress(data, MAX_WIRE_DECOMPRESSED_BYTES + 1)
+        if decompressor.unconsumed_tail or len(result) > MAX_WIRE_DECOMPRESSED_BYTES:
+            raise WireSizeError("wire message expands beyond safety limit")
+        result += decompressor.flush(MAX_WIRE_DECOMPRESSED_BYTES + 1 - len(result))
+        if len(result) > MAX_WIRE_DECOMPRESSED_BYTES:
+            raise WireSizeError("wire message expands beyond safety limit")
+        return result
+    except WireSizeError:
+        raise
+    except zlib.error as exc:
+        raise ValidationError("invalid compressed wire payload") from exc
 
 
 def _unpacked_json(raw):
     if isinstance(raw, bytes):
-        raw = raw.decode("utf-8")
+        try:
+            raw = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValidationError("invalid wire payload encoding") from exc
     raw = raw.strip()
     if len(raw.encode("utf-8")) > MAX_WIRE_DECOMPRESSED_BYTES:
-        raise ValidationError("wire message is too large")
+        raise WireSizeError("wire message is too large")
     if raw.startswith(WIRE_PACKED_PREFIX):
         packed = raw[len(WIRE_PACKED_PREFIX):]
-        compressed = base64.b85decode(packed.encode("utf-8"))
+        if len(packed) > _max_b85_encoded_size(MAX_WIRE_COMPRESSED_BYTES):
+            raise WireSizeError("compressed wire message is too large")
+        try:
+            compressed = base64.b85decode(packed.encode("utf-8"))
+        except Exception as exc:
+            raise ValidationError("invalid packed wire payload") from exc
         if len(compressed) > MAX_WIRE_COMPRESSED_BYTES:
-            raise ValidationError("compressed wire message is too large")
+            raise WireSizeError("compressed wire message is too large")
         decompressed = _safe_zlib_decompress(compressed)
-        return _json_loads_strict(decompressed.decode("utf-8"))
+        try:
+            text = decompressed.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValidationError("invalid compressed wire payload encoding") from exc
+        return _json_loads_strict(text)
     return _json_loads_strict(raw)
 
 
@@ -510,7 +585,7 @@ def _address_checksum(version, payload):
 
 
 def legacy_address_from_public_key(public_key_base85):
-    """Derive the pre-checksum IND address for old wallets and token histories."""
+    """Derive the pre-checksum IND address for old wallets and bill histories."""
 
     digest = sha3_256(public_key_base85.strip().encode("utf-8")).digest()
     return base58.b58encode(digest).decode("utf-8")[:LEGACY_ADDRESS_LENGTH]
@@ -593,7 +668,7 @@ def _owner_address_for_public_key(public_key_base85, owner_address, label):
     owner_address = validate_address(owner_address, "owner address")
     if public_key_matches_address(public_key_base85, owner_address):
         return owner_address
-    raise ValidationError(f"{label} does not own the token tip")
+    raise ValidationError(f"{label} does not own the bill tip")
 
 
 def _without_signature(data):
@@ -650,10 +725,21 @@ def _timestamp_day(timestamp):
 
 
 def _last_history_timestamp(token):
-    history = token.get("history", [])
+    history = _bill_history(token)
     if not history:
+        checkpoint = token.get("checkpoint") if isinstance(token, dict) else None
+        if isinstance(checkpoint, dict) and checkpoint.get("last_transfer_timestamp") is not None:
+            return int(checkpoint["last_transfer_timestamp"])
         return None
     return int(history[-1]["timestamp"])
+
+
+def _bill_history(token):
+    if not isinstance(token, dict):
+        return []
+    if token.get("type") == BILL_TYPE:
+        return token.get("recent_history", [])
+    return token.get("history", [])
 
 
 def _state_ref_from_state(state):
@@ -666,6 +752,102 @@ def _state_ref_from_state(state):
         "last_transfer_hash": state.last_transfer_hash,
         "sequence": int(state.sequence),
         "value": int(state.value),
+    }
+
+
+def _checkpoint_core(checkpoint):
+    return {
+        field: checkpoint[field]
+        for field in sorted(CHECKPOINT_CORE_FIELDS)
+    }
+
+
+def checkpoint_hash(checkpoint):
+    """Hash the compact checkpoint core without embedded proof material."""
+
+    return sha3_hex(b"IND-BILL-CHECKPOINT-v2:" + _canonical_bytes(_checkpoint_core(checkpoint)))
+
+
+def _checkpoint_day_count_from_bill(bill, last_transfer):
+    last_day = _timestamp_day(last_transfer["timestamp"])
+    count = 0
+    checkpoint = bill.get("checkpoint") if isinstance(bill, dict) else None
+    if isinstance(checkpoint, dict) and int(checkpoint.get("last_transfer_day", -1)) == last_day:
+        count += int(checkpoint.get("transfers_in_last_day", 0))
+    for transfer in _bill_history(bill):
+        if _timestamp_day(transfer["timestamp"]) == last_day:
+            count += 1
+    return last_day, count
+
+
+def create_bill_checkpoint(bill, transparency=None):
+    """Create a compact checkpoint for the current settled bill tip."""
+
+    state = verify_bill(bill, require_checkpoint_transparency=False, require_recent_transparency=False)
+    if state.sequence == 0:
+        raise ValidationError("genesis bill cannot be checkpointed")
+    last_transfer = _last_transfer(bill)
+    last_day, transfers_in_last_day = _checkpoint_day_count_from_bill(bill, last_transfer)
+    previous_checkpoint = bill.get("checkpoint") if isinstance(bill, dict) and bill.get("type") == BILL_TYPE else None
+    checkpoint = {
+        "type": BILL_CHECKPOINT_TYPE,
+        "version": BILL_VERSION,
+        "token_id": state.token_id,
+        "genesis_hash": genesis_hash(bill["genesis"]),
+        "sequence": int(state.sequence),
+        "owner_address": state.owner_address,
+        "value": int(state.value),
+        "display_id": state.display_id,
+        "last_transfer_hash": state.last_transfer_hash,
+        "last_transfer_timestamp": int(last_transfer["timestamp"]),
+        "last_transfer_day": int(last_day),
+        "transfers_in_last_day": int(transfers_in_last_day),
+        "previous_checkpoint_hash": previous_checkpoint.get("checkpoint_hash") if isinstance(previous_checkpoint, dict) else None,
+    }
+    checkpoint["checkpoint_hash"] = checkpoint_hash(checkpoint)
+    if transparency is not None:
+        checkpoint["transparency"] = copy.deepcopy(transparency)
+    return checkpoint
+
+
+def create_compact_bill(bill, checkpoint):
+    """Return a v2 compact bill rooted at a transparency-backed checkpoint."""
+
+    verify_checkpoint_for_genesis(checkpoint, bill["genesis"], require_transparency=False)
+    return {
+        "type": BILL_TYPE,
+        "version": BILL_VERSION,
+        "token_id": checkpoint["token_id"],
+        "genesis": copy.deepcopy(bill["genesis"]),
+        "checkpoint": copy.deepcopy(checkpoint),
+        "recent_history": [],
+    }
+
+
+def create_checkpoint_announcement(checkpoint, bill=None, now=None):
+    """Wrap a compact checkpoint for transparency-log submission."""
+
+    _require_exact_fields(
+        checkpoint,
+        CHECKPOINT_CORE_FIELDS | {"checkpoint_hash"},
+        "bill checkpoint",
+        optional={"transparency"},
+    )
+    if checkpoint["checkpoint_hash"] != checkpoint_hash(checkpoint):
+        raise ValidationError("checkpoint hash mismatch")
+    if bill is None:
+        raise ValidationError("checkpoint announcement requires source bill")
+    verify_bill(bill, require_recent_transparency=False)
+    expected = create_bill_checkpoint(bill)
+    for field in CHECKPOINT_CORE_FIELDS | {"checkpoint_hash"}:
+        if checkpoint[field] != expected[field]:
+            raise ValidationError(f"checkpoint does not match source bill: {field}")
+    return {
+        "type": CHECKPOINT_ANNOUNCEMENT_TYPE,
+        "version": BILL_VERSION,
+        "checkpoint": copy.deepcopy(checkpoint),
+        "bill": copy.deepcopy(bill),
+        "announced_at": current_time(now),
     }
 
 
@@ -769,12 +951,12 @@ def _validate_manifest_ranges(ranges):
         if current["start_index"] < previous["end_index"]:
             raise ValidationError("genesis manifest ranges overlap")
     if total_count > TOTAL_SUPPLY:
-        raise ValidationError("genesis manifest exceeds fixed IND token supply")
+        raise ValidationError("genesis manifest exceeds fixed IND bill supply")
     return normalized, total_count, total_value
 
 
 def make_genesis_manifest(ranges, issuer_private_key, issuer_public_key, issued_at=None, metadata=None):
-    """Create the issuer-signed supply manifest used to mint lazy genesis tokens."""
+    """Create the issuer-signed supply manifest used to mint lazy genesis bills."""
 
     normalized, total_count, total_value = _validate_manifest_ranges(ranges)
     metadata = _with_numerology_metadata(metadata, MAX_GENESIS_METADATA_BYTES, "genesis manifest")
@@ -830,7 +1012,7 @@ def verify_genesis_manifest(manifest, now=None):
         raise ValidationError("genesis manifest issued_at is too far in the future")
     normalized, total_count, total_value = _validate_manifest_ranges(manifest["ranges"])
     if _require_int(manifest["total_token_count"], "genesis manifest total_token_count", minimum=1) != total_count:
-        raise ValidationError("genesis manifest token count mismatch")
+        raise ValidationError("genesis manifest bill count mismatch")
     if _require_int(manifest["total_value"], "genesis manifest total_value", minimum=1) != total_value:
         raise ValidationError("genesis manifest value mismatch")
     unsigned = _unsigned_manifest(manifest)
@@ -880,7 +1062,7 @@ def _lazy_genesis_nonce(manifest_hash_value, range_def, index):
 
 
 def make_lazy_genesis_token(index, manifest, metadata=None):
-    """Materialize one token from a signed lazy-genesis manifest."""
+    """Materialize one bill from a signed lazy-genesis manifest."""
 
     manifest_hash_value, ranges = verify_genesis_manifest(manifest)
     index = int(index)
@@ -927,14 +1109,14 @@ def make_lazy_genesis_token(index, manifest, metadata=None):
 
 
 def make_genesis_token(index, owner_address, issuer_private_key, issuer_public_key, value=1, nonce=None, metadata=None, issued_at=None):
-    """Create a fully materialized genesis token signed directly by the issuer."""
+    """Create a fully materialized genesis bill signed directly by the issuer."""
 
     index = int(index)
     owner_address = validate_address(str(owner_address).strip(), "owner address")
     if index < 0 or index >= TOTAL_SUPPLY:
         raise ValidationError("genesis index outside fixed IND supply")
     if value <= 0:
-        raise ValidationError("token value must be positive")
+        raise ValidationError("bill value must be positive")
     metadata = _with_numerology_metadata(metadata, MAX_GENESIS_METADATA_BYTES, "genesis")
     issued_at = _require_timestamp(
         int(issued_at if issued_at is not None else time.time()),
@@ -969,7 +1151,7 @@ def make_genesis_token(index, owner_address, issuer_private_key, issuer_public_k
 
 
 def verify_genesis(genesis, token_id, now=None):
-    """Validate a genesis record and prove that it belongs to the supplied token id."""
+    """Validate a genesis record and prove that it belongs to the supplied bill id."""
 
     _require_exact_fields(genesis, GENESIS_FIELDS, "genesis", optional={"manifest_ref"})
     if genesis["type"] != "ind.genesis.v1" or _require_int(genesis["version"], "genesis version") != TOKEN_VERSION:
@@ -979,7 +1161,7 @@ def verify_genesis(genesis, token_id, now=None):
     if index < 0 or index >= TOTAL_SUPPLY:
         raise ValidationError("genesis index outside fixed IND supply")
     if value <= 0:
-        raise ValidationError("token value must be positive")
+        raise ValidationError("bill value must be positive")
     owner_address = validate_address(genesis["owner_address"], "genesis owner address")
     _require_metadata(genesis["metadata"], MAX_GENESIS_METADATA_BYTES, "genesis")
     issued_at = _require_timestamp(genesis["issued_at"], "genesis issued_at")
@@ -991,7 +1173,7 @@ def verify_genesis(genesis, token_id, now=None):
     unsigned = _without_signature(genesis)
     expected_token_id = "ind1_" + sha3_hex(_canonical_bytes(unsigned))[:56]
     if token_id != expected_token_id:
-        raise ValidationError("token id does not match genesis structure")
+        raise ValidationError("bill id does not match genesis structure")
     issuer_public_key = genesis["issuer_public_key"]
     if "manifest_ref" in genesis:
         manifest_ref = genesis["manifest_ref"]
@@ -1074,7 +1256,12 @@ def _configured_transparency_verifier():
 
 
 def _configured_transparency_submitter():
-    if not _env_true("IND_SUBMIT_TO_TRANSPARENCY_LOG"):
+    try:
+        from . import settings as ind_settings
+        submit_to_transparency = ind_settings.submit_to_transparency_log()
+    except Exception:
+        submit_to_transparency = _env_true("IND_SUBMIT_TO_TRANSPARENCY_LOG")
+    if not submit_to_transparency:
         return None
     try:
         from . import transparency_client as log_client
@@ -1092,10 +1279,19 @@ def _environment_transparency_verifier():
 
 
 def verify_token_transparency(token, transparency_verifier, now=None, require_current_root=True):
-    """Verify that every transfer in a token history is present in the public log."""
+    """Verify that every transfer in a bill history is present in the public log."""
 
     if transparency_verifier is None:
         raise ValidationError("transparency verifier is required")
+    if isinstance(token, dict) and token.get("type") == BILL_TYPE:
+        verify_bill(
+            token,
+            now=now,
+            transparency_verifier=transparency_verifier,
+            require_transparency=True,
+            require_current_root=require_current_root,
+        )
+        return True
     try:
         transparency_verifier.verify_token(token, now=now, require_current_root=require_current_root)
     except Exception as exc:
@@ -1103,25 +1299,25 @@ def verify_token_transparency(token, transparency_verifier, now=None, require_cu
     return True
 
 
-def verify_token(
+def _verify_full_token(
     token,
     now=None,
     transparency_verifier=None,
     require_transparency=False,
     require_current_root=True,
 ):
-    """Validate a complete bearer token and return the owner at the current tip."""
+    """Validate a complete bearer bill and return the owner at the current tip."""
 
     if isinstance(token, str):
         token = _load_json(token)
-    _require_exact_fields(token, TOKEN_FIELDS, "token payload")
+    _require_exact_fields(token, TOKEN_FIELDS, "bill payload")
     if token.get("type") != TOKEN_TYPE:
-        raise ValidationError("malformed token payload")
-    if _require_int(token.get("version"), "token version") != TOKEN_VERSION:
-        raise ValidationError("unsupported token version")
-    token_id = _require_str(token.get("token_id"), "token id")
+        raise ValidationError("malformed bill payload")
+    if _require_int(token.get("version"), "bill version") != TOKEN_VERSION:
+        raise ValidationError("unsupported bill version")
+    token_id = _require_str(token.get("token_id"), "bill id")
     if not token_id:
-        raise ValidationError("missing token id")
+        raise ValidationError("missing bill id")
 
     genesis = token.get("genesis")
     verify_genesis(genesis, token_id, now=now)
@@ -1135,26 +1331,25 @@ def verify_token(
 
     history = token.get("history", [])
     if not isinstance(history, list):
-        raise ValidationError("token history must be a list")
-    if len(history) > MAX_TRANSFERS_PER_TOKEN_HISTORY:
-        raise ValidationError("token exceeds maximum lifetime transfer count")
-    if len(_canonical_bytes(token)) > MAX_TOKEN_HISTORY_BYTES:
-        raise ValidationError("token history exceeds maximum serialized size")
+        raise ValidationError("bill history must be a list")
+    if len(_canonical_bytes(token)) > MAX_BILL_HISTORY_BYTES:
+        raise ValidationError("bill history exceeds maximum serialized size")
 
     for transfer in history:
+        # Each transfer must extend the exact current tip and be signed by its owner.
         _require_exact_fields(transfer, TRANSFER_FIELDS, "transfer")
         if transfer["type"] != TRANSFER_TYPE or _require_int(transfer["version"], "transfer version") != TOKEN_VERSION:
             raise ValidationError("unsupported transfer version")
         _require_metadata(transfer["metadata"], MAX_TRANSFER_METADATA_BYTES, "transfer")
         if transfer["token_id"] != token_id:
-            raise ValidationError("transfer references a different token")
+            raise ValidationError("transfer references a different bill")
         sender_address = validate_address(transfer["sender_address"], "sender address")
         recipient_address = validate_address(transfer["recipient_address"], "recipient address")
         transfer_sequence = _require_int(transfer["sequence"], "transfer sequence", minimum=1)
         if transfer_sequence != sequence + 1:
             raise ValidationError("transfer sequence gap")
         if transfer["previous_hash"] != last_hash:
-            raise ValidationError("transfer does not extend the current token tip")
+            raise ValidationError("transfer does not extend the current bill tip")
         if sender_address != owner_address:
             raise ValidationError("transfer sender is not the current owner")
         transfer_timestamp = _require_timestamp(transfer["timestamp"], "transfer timestamp")
@@ -1166,14 +1361,15 @@ def verify_token(
             raise ValidationError("transfer timestamps must be strictly increasing")
         transfer_day = _timestamp_day(transfer_timestamp)
         transfer_days[transfer_day] = transfer_days.get(transfer_day, 0) + 1
-        if transfer_days[transfer_day] > MAX_TRANSFERS_PER_TOKEN_PER_DAY:
-            raise ValidationError("token exceeds daily transfer limit")
+        if transfer_days[transfer_day] > MAX_TRANSFERS_PER_BILL_PER_DAY:
+            raise ValidationError("bill exceeds daily transfer limit")
         _verify_transfer_signature(transfer)
         owner_address = recipient_address
         last_hash = transfer_hash(transfer)
         sequence = transfer_sequence
         previous_timestamp = transfer_timestamp
 
+    # Transparency verification is intentionally last: structural failures should be local.
     state = TokenState(
         token_id=token_id,
         owner_address=owner_address,
@@ -1196,9 +1392,307 @@ def verify_token(
     return state
 
 
+def _require_hex32(value, label):
+    text = _require_str(value, label).lower()
+    if len(text) != 64:
+        raise ValidationError(f"invalid {label}")
+    try:
+        bytes.fromhex(text)
+    except ValueError as exc:
+        raise ValidationError(f"invalid {label}") from exc
+    return text
+
+
+def _verify_checkpoint_transparency(
+    checkpoint,
+    transparency_verifier=None,
+    now=None,
+    require_current_root=True,
+):
+    transparency = checkpoint.get("transparency")
+    if not isinstance(transparency, dict):
+        raise ValidationError("compact checkpoint is missing transparency proof")
+    _require_exact_fields(transparency, CHECKPOINT_TRANSPARENCY_FIELDS, "checkpoint transparency proof")
+    if transparency["type"] != "ind.checkpoint_transparency.v2":
+        raise ValidationError("malformed checkpoint transparency proof")
+    if _require_int(transparency["version"], "checkpoint transparency version") != BILL_VERSION:
+        raise ValidationError("unsupported checkpoint transparency version")
+    try:
+        from . import transparency_client as log_client
+        if transparency_verifier is not None:
+            transparency_verifier.verify_checkpoint(
+                checkpoint,
+                now=now,
+                require_current_root=require_current_root,
+            )
+            return True
+        root = transparency["root"]
+        log_client.verify_inclusion_proof(
+            checkpoint["checkpoint_hash"],
+            transparency["inclusion_proof"],
+            root,
+            operator_public_key=root.get("operator_public_key"),
+        )
+        log_client.verify_spend_map_proof_for_checkpoint(
+            checkpoint,
+            transparency["spend_proof"],
+            root,
+            operator_public_key=root.get("operator_public_key"),
+        )
+    except Exception as exc:
+        raise ValidationError(f"checkpoint transparency verification failed: {exc}") from exc
+    return True
+
+
+def verify_checkpoint_for_genesis(
+    checkpoint,
+    genesis,
+    now=None,
+    require_transparency=True,
+    transparency_verifier=None,
+    require_current_root=True,
+):
+    """Validate a compact checkpoint against its genesis and optional proof."""
+
+    if isinstance(checkpoint, str):
+        checkpoint = _load_json(checkpoint)
+    required_fields = CHECKPOINT_FIELDS if require_transparency else (CHECKPOINT_CORE_FIELDS | {"checkpoint_hash"})
+    _require_exact_fields(
+        checkpoint,
+        required_fields,
+        "bill checkpoint",
+        optional=set() if require_transparency else {"transparency"},
+    )
+    if checkpoint["type"] != BILL_CHECKPOINT_TYPE:
+        raise ValidationError("malformed bill checkpoint")
+    if _require_int(checkpoint["version"], "bill checkpoint version") != BILL_VERSION:
+        raise ValidationError("unsupported bill checkpoint version")
+    token_id = _require_str(checkpoint["token_id"], "checkpoint bill id")
+    verify_genesis(genesis, token_id, now=now)
+    if checkpoint["genesis_hash"] != genesis_hash(genesis):
+        raise ValidationError("checkpoint genesis hash mismatch")
+    if checkpoint["checkpoint_hash"] != checkpoint_hash(checkpoint):
+        raise ValidationError("checkpoint hash mismatch")
+    _require_int(checkpoint["sequence"], "checkpoint sequence", minimum=1)
+    validate_address(checkpoint["owner_address"], "checkpoint owner address")
+    checkpoint_value = _require_int(checkpoint["value"], "checkpoint value", minimum=1)
+    _require_str(checkpoint["display_id"], "checkpoint display id")
+    expected_value = int(genesis.get("value", 1))
+    if checkpoint_value != expected_value:
+        raise ValidationError("checkpoint value mismatch")
+    if checkpoint["display_id"] != token_display_id({"genesis": genesis}):
+        raise ValidationError("checkpoint display id mismatch")
+    _require_hex32(checkpoint["last_transfer_hash"], "checkpoint last transfer hash")
+    last_transfer_timestamp = _require_timestamp(
+        checkpoint["last_transfer_timestamp"],
+        "checkpoint last transfer timestamp",
+    )
+    last_transfer_day = _require_int(checkpoint["last_transfer_day"], "checkpoint last transfer day", minimum=0)
+    if last_transfer_day != _timestamp_day(last_transfer_timestamp):
+        raise ValidationError("checkpoint last transfer day mismatch")
+    _require_int(
+        checkpoint["transfers_in_last_day"],
+        "checkpoint transfers in last day",
+        minimum=1,
+        maximum=MAX_TRANSFERS_PER_BILL_PER_DAY,
+    )
+    previous_checkpoint_hash = checkpoint.get("previous_checkpoint_hash")
+    if previous_checkpoint_hash is not None:
+        _require_hex32(previous_checkpoint_hash, "previous checkpoint hash")
+    if require_transparency:
+        _verify_checkpoint_transparency(
+            checkpoint,
+            transparency_verifier=transparency_verifier,
+            now=now,
+            require_current_root=require_current_root,
+        )
+    return TokenState(
+        token_id=token_id,
+        owner_address=checkpoint["owner_address"],
+        last_transfer_hash=checkpoint["last_transfer_hash"],
+        sequence=int(checkpoint["sequence"]),
+        display_id=checkpoint["display_id"],
+        value=int(checkpoint["value"]),
+    )
+
+
+def verify_compact_bill(
+    bill,
+    now=None,
+    transparency_verifier=None,
+    require_transparency=False,
+    require_current_root=True,
+    require_checkpoint_transparency=True,
+    require_recent_transparency=None,
+):
+    """Validate a v2 compact bill from its checkpoint plus recent transfers."""
+
+    if isinstance(bill, str):
+        bill = _load_json(bill)
+    _require_exact_fields(bill, BILL_FIELDS, "compact bill payload")
+    if bill.get("type") != BILL_TYPE:
+        raise ValidationError("malformed compact bill payload")
+    if _require_int(bill.get("version"), "compact bill version") != BILL_VERSION:
+        raise ValidationError("unsupported compact bill version")
+    token_id = _require_str(bill.get("token_id"), "compact bill id")
+    if transparency_verifier is None and require_transparency:
+        transparency_verifier = _configured_transparency_verifier()
+    checkpoint = bill["checkpoint"]
+    state = verify_checkpoint_for_genesis(
+        checkpoint,
+        bill["genesis"],
+        now=now,
+        require_transparency=require_checkpoint_transparency,
+        transparency_verifier=transparency_verifier,
+        require_current_root=require_current_root,
+    )
+    if state.token_id != token_id:
+        raise ValidationError("compact bill id does not match checkpoint")
+    owner_address = state.owner_address
+    last_hash = state.last_transfer_hash
+    sequence = int(state.sequence)
+    issued_at = int(bill["genesis"]["issued_at"])
+    previous_timestamp = int(checkpoint["last_transfer_timestamp"])
+    transfer_days = {}
+    checkpoint_day = int(checkpoint["last_transfer_day"])
+    transfer_days[checkpoint_day] = int(checkpoint["transfers_in_last_day"])
+    max_allowed_timestamp = current_time(now) + MAX_TRANSFER_FUTURE_SKEW_SECONDS
+
+    history = bill.get("recent_history", [])
+    if not isinstance(history, list):
+        raise ValidationError("compact bill recent history must be a list")
+    if len(_canonical_bytes(bill)) > MAX_BILL_HISTORY_BYTES:
+        raise ValidationError("compact bill history exceeds maximum serialized size")
+
+    if require_recent_transparency is None:
+        require_recent_transparency = require_transparency or transparency_verifier is not None
+    recent_for_transparency = []
+    for transfer in history:
+        # Recent history resumes from the checkpoint tip, not from genesis.
+        _require_exact_fields(transfer, TRANSFER_FIELDS, "transfer")
+        if transfer["type"] != TRANSFER_TYPE or _require_int(transfer["version"], "transfer version") != TOKEN_VERSION:
+            raise ValidationError("unsupported transfer version")
+        _require_metadata(transfer["metadata"], MAX_TRANSFER_METADATA_BYTES, "transfer")
+        if transfer["token_id"] != token_id:
+            raise ValidationError("transfer references a different bill")
+        sender_address = validate_address(transfer["sender_address"], "sender address")
+        recipient_address = validate_address(transfer["recipient_address"], "recipient address")
+        transfer_sequence = _require_int(transfer["sequence"], "transfer sequence", minimum=1)
+        if transfer_sequence != sequence + 1:
+            raise ValidationError("transfer sequence gap")
+        if transfer["previous_hash"] != last_hash:
+            raise ValidationError("transfer does not extend the current bill tip")
+        if sender_address != owner_address:
+            raise ValidationError("transfer sender is not the current owner")
+        transfer_timestamp = _require_timestamp(transfer["timestamp"], "transfer timestamp")
+        if transfer_timestamp > max_allowed_timestamp:
+            raise ValidationError("transfer timestamp is too far in the future")
+        if transfer_timestamp < issued_at:
+            raise ValidationError("transfer timestamp predates genesis")
+        if transfer_timestamp <= previous_timestamp:
+            raise ValidationError("transfer timestamps must be strictly increasing")
+        transfer_day = _timestamp_day(transfer_timestamp)
+        transfer_days[transfer_day] = transfer_days.get(transfer_day, 0) + 1
+        if transfer_days[transfer_day] > MAX_TRANSFERS_PER_BILL_PER_DAY:
+            raise ValidationError("bill exceeds daily transfer limit")
+        _verify_transfer_signature(transfer)
+        recent_for_transparency.append(transfer)
+        owner_address = recipient_address
+        last_hash = transfer_hash(transfer)
+        sequence = transfer_sequence
+        previous_timestamp = transfer_timestamp
+
+    if require_recent_transparency and recent_for_transparency:
+        # Checkpoint proof covers the past; recent transfers still need their own log proofs.
+        if transparency_verifier is None:
+            if require_transparency:
+                transparency_verifier = _configured_transparency_verifier()
+        if transparency_verifier is None:
+            raise ValidationError("transparency log verification is required for compact recent transfers")
+        try:
+            for transfer in recent_for_transparency:
+                transparency_verifier.verify_transfer(
+                    transfer,
+                    now=now,
+                    require_current_root=require_current_root,
+                )
+        except Exception as exc:
+            raise ValidationError(f"compact recent transfer transparency verification failed: {exc}") from exc
+
+    return TokenState(
+        token_id=token_id,
+        owner_address=owner_address,
+        last_transfer_hash=last_hash,
+        sequence=sequence,
+        display_id=checkpoint["display_id"],
+        value=int(checkpoint["value"]),
+    )
+
+
+def verify_bill(
+    bill,
+    now=None,
+    transparency_verifier=None,
+    require_transparency=False,
+    require_current_root=True,
+    require_checkpoint_transparency=True,
+    require_recent_transparency=None,
+):
+    """Validate a v1 full-history bill or a v2 compact bill."""
+
+    if isinstance(bill, str):
+        bill = _load_json(bill)
+    if isinstance(bill, dict) and bill.get("type") == BILL_TYPE:
+        return verify_compact_bill(
+            bill,
+            now=now,
+            transparency_verifier=transparency_verifier,
+            require_transparency=require_transparency,
+            require_current_root=require_current_root,
+            require_checkpoint_transparency=require_checkpoint_transparency,
+            require_recent_transparency=require_recent_transparency,
+        )
+    return _verify_full_token(
+        bill,
+        now=now,
+        transparency_verifier=transparency_verifier,
+        require_transparency=require_transparency,
+        require_current_root=require_current_root,
+    )
+
+
+def verify_token(
+    token,
+    now=None,
+    transparency_verifier=None,
+    require_transparency=False,
+    require_current_root=True,
+    **kwargs,
+):
+    """Compatibility alias for validating v1 full-history or v2 compact bills."""
+
+    return verify_bill(
+        token,
+        now=now,
+        transparency_verifier=transparency_verifier,
+        require_transparency=require_transparency,
+        require_current_root=require_current_root,
+        **kwargs,
+    )
+
+
 def create_transfer(token, sender_private_key, sender_public_key, recipient_address, metadata=None, timestamp=None):
     """Append a signed transfer from the current owner to a recipient address."""
 
+    if isinstance(token, dict) and token.get("type") == BILL_TYPE:
+        return create_transfer_v2(
+            token,
+            sender_private_key,
+            sender_public_key,
+            recipient_address,
+            metadata=metadata,
+            timestamp=timestamp,
+        )
     recipient_address = validate_address(str(recipient_address).strip(), "recipient address")
     state = verify_token(token)
     sender_address = _owner_address_for_public_key(sender_public_key, state.owner_address, "sender key")
@@ -1233,12 +1727,56 @@ def create_transfer(token, sender_private_key, sender_public_key, recipient_addr
     return new_token
 
 
+def create_transfer_v2(bill, sender_private_key, sender_public_key, recipient_address, metadata=None, timestamp=None):
+    """Append a signed transfer to a v2 compact bill's recent history."""
+
+    recipient_address = validate_address(str(recipient_address).strip(), "recipient address")
+    state = verify_compact_bill(bill, require_recent_transparency=False)
+    sender_address = _owner_address_for_public_key(sender_public_key, state.owner_address, "sender key")
+    transfer_timestamp = _require_timestamp(
+        int(timestamp if timestamp is not None else time.time()),
+        "transfer timestamp",
+    )
+    previous_timestamp = _last_history_timestamp(bill)
+    if previous_timestamp is not None:
+        transfer_timestamp = max(transfer_timestamp, previous_timestamp + 1)
+    transfer_unsigned = {
+        "type": TRANSFER_TYPE,
+        "version": TOKEN_VERSION,
+        "token_id": state.token_id,
+        "sequence": state.sequence + 1,
+        "previous_hash": state.last_transfer_hash,
+        "sender_address": sender_address,
+        "sender_public_key": sender_public_key,
+        "recipient_address": recipient_address,
+        "timestamp": transfer_timestamp,
+        "metadata": metadata or {},
+    }
+    transfer_signed = copy.deepcopy(transfer_unsigned)
+    transfer_signed["signature"] = b85_sign_domain(
+        sender_private_key,
+        TRANSFER_SIGNATURE_DOMAIN,
+        transfer_unsigned,
+    )
+    new_bill = copy.deepcopy(bill)
+    new_bill.setdefault("recent_history", []).append(transfer_signed)
+    verify_compact_bill(new_bill, require_recent_transparency=False)
+    return new_bill
+
+
 def create_transfer_announcement(token, now=None):
     """Wrap the latest transfer in the gossip message nodes relay to peers."""
 
     state = verify_token(token)
     if state.sequence == 0:
-        raise ValidationError("genesis token has no transfer to announce")
+        raise ValidationError("genesis bill has no transfer to announce")
+    if isinstance(token, dict) and token.get("type") == BILL_TYPE:
+        return {
+            "type": TRANSFER_ANNOUNCEMENT_V2_TYPE,
+            "version": BILL_VERSION,
+            "bill": token,
+            "announced_at": current_time(now),
+        }
     message = {
         "type": TRANSFER_ANNOUNCEMENT_TYPE,
         "version": TOKEN_VERSION,
@@ -1249,7 +1787,7 @@ def create_transfer_announcement(token, now=None):
 
 
 def create_receipt(token, recipient_private_key, recipient_public_key, timestamp=None, now=None):
-    """Countersign the token tip to show that the recipient has seen the transfer."""
+    """Countersign the bill tip to show that the recipient has seen the transfer."""
 
     state = verify_token(token)
     if state.sequence == 0:
@@ -1290,6 +1828,14 @@ def create_receipt_announcement(token, recipient_private_key, recipient_public_k
     """Build the gossip message that moves a received transfer into local settlement."""
 
     receipt = create_receipt(token, recipient_private_key, recipient_public_key, now=now)
+    if isinstance(token, dict) and token.get("type") == BILL_TYPE:
+        return {
+            "type": RECEIPT_ANNOUNCEMENT_V2_TYPE,
+            "version": BILL_VERSION,
+            "bill": token,
+            "receipt": receipt,
+            "announced_at": current_time(now),
+        }
     return {
         "type": RECEIPT_ANNOUNCEMENT_TYPE,
         "version": TOKEN_VERSION,
@@ -1306,16 +1852,24 @@ def verify_receipt_announcement(
     now=None,
     require_current_root=True,
 ):
-    """Validate a recipient receipt against the token tip it claims to acknowledge."""
+    """Validate a recipient receipt against the bill tip it claims to acknowledge."""
 
     if isinstance(message, str):
         message = _load_json(message)
-    _require_exact_fields(message, RECEIPT_ANNOUNCEMENT_FIELDS, "receipt announcement")
-    if message.get("type") != RECEIPT_ANNOUNCEMENT_TYPE:
+    if message.get("type") == RECEIPT_ANNOUNCEMENT_V2_TYPE:
+        _require_exact_fields(message, RECEIPT_ANNOUNCEMENT_V2_FIELDS, "v2 receipt announcement")
+        if _require_int(message["version"], "v2 receipt announcement version") != BILL_VERSION:
+            raise ValidationError("unsupported v2 receipt announcement version")
+        token = message.get("bill")
+    else:
+        _require_exact_fields(message, RECEIPT_ANNOUNCEMENT_FIELDS, "receipt announcement")
+        if message.get("type") != RECEIPT_ANNOUNCEMENT_TYPE:
+            raise ValidationError("not a receipt announcement")
+        if _require_int(message["version"], "receipt announcement version") != TOKEN_VERSION:
+            raise ValidationError("unsupported receipt announcement version")
+        token = message.get("token")
+    if message.get("type") not in {RECEIPT_ANNOUNCEMENT_TYPE, RECEIPT_ANNOUNCEMENT_V2_TYPE}:
         raise ValidationError("not a receipt announcement")
-    if _require_int(message["version"], "receipt announcement version") != TOKEN_VERSION:
-        raise ValidationError("unsupported receipt announcement version")
-    token = message.get("token")
     receipt = message.get("receipt")
     state = verify_token(
         token,
@@ -1330,11 +1884,11 @@ def verify_receipt_announcement(
     if _require_int(receipt["version"], "receipt version") != TOKEN_VERSION:
         raise ValidationError("unsupported receipt version")
     if receipt["token_id"] != state.token_id:
-        raise ValidationError("receipt references a different token")
+        raise ValidationError("receipt references a different bill")
     if receipt["transfer_hash"] != state.last_transfer_hash:
-        raise ValidationError("receipt does not reference the token tip")
+        raise ValidationError("receipt does not reference the bill tip")
     if _require_int(receipt["sequence"], "receipt sequence", minimum=1) != state.sequence:
-        raise ValidationError("receipt sequence does not match token tip")
+        raise ValidationError("receipt sequence does not match bill tip")
     received_at = _require_timestamp(receipt["received_at"], "receipt received_at")
     tip_timestamp = _last_history_timestamp(token)
     if tip_timestamp is not None and received_at < tip_timestamp:
@@ -1343,7 +1897,7 @@ def verify_receipt_announcement(
         raise ValidationError("receipt timestamp is too far in the future")
     recipient_address = validate_address(receipt["recipient_address"], "recipient address")
     if recipient_address != state.owner_address:
-        raise ValidationError("receipt signer is not the token recipient")
+        raise ValidationError("receipt signer is not the bill recipient")
     if not public_key_matches_address(receipt["recipient_public_key"], recipient_address):
         raise ValidationError("receipt public key does not match recipient address")
     if not b85_verify_domain(
@@ -1357,9 +1911,9 @@ def verify_receipt_announcement(
 
 
 def _last_transfer(token):
-    history = token.get("history", [])
+    history = _bill_history(token)
     if not history:
-        raise ValidationError("token has no transfer")
+        raise ValidationError("bill has no transfer")
     return history[-1]
 
 
@@ -1378,9 +1932,9 @@ def _find_conflicting_transfer_pair(token_a, token_b):
     if state_a.token_id != state_b.token_id:
         return None
     transfers_a = {}
-    for transfer in token_a.get("history", []):
+    for transfer in _bill_history(token_a):
         transfers_a.setdefault(_conflict_key(transfer), []).append(transfer)
-    for transfer_b in token_b.get("history", []):
+    for transfer_b in _bill_history(token_b):
         for transfer_a in transfers_a.get(_conflict_key(transfer_b), []):
             if transfer_hash(transfer_a) != transfer_hash(transfer_b):
                 return transfer_a, transfer_b
@@ -1419,7 +1973,7 @@ def create_conflict_proof(token_a, token_b, detected_at=None):
 
     pair = _find_conflicting_transfer_pair(token_a, token_b)
     if not pair:
-        raise ValidationError("tokens do not contain a double-spend conflict")
+        raise ValidationError("bills do not contain a double-spend conflict")
     proof_unsigned = _conflict_proof_unsigned(
         token_a,
         token_b,
@@ -1430,6 +1984,28 @@ def create_conflict_proof(token_a, token_b, detected_at=None):
     proof = copy.deepcopy(proof_unsigned)
     proof["proof_hash"] = sha3_hex(_canonical_bytes(proof_unsigned))
     return proof
+
+
+def conflict_proof_key(proof):
+    """Return the stable identity of a conflict, ignoring when a node observed it."""
+
+    if isinstance(proof, str):
+        proof = _load_json(proof)
+    _require_exact_fields(proof, CONFLICT_PROOF_FIELDS, "conflict proof")
+    hash_a = str(proof["transfer_hash_a"])
+    hash_b = str(proof["transfer_hash_b"])
+    if hash_b < hash_a:
+        hash_a, hash_b = hash_b, hash_a
+    identity = {
+        "type": CONFLICT_PROOF_TYPE,
+        "version": _require_int(proof["version"], "conflict proof version"),
+        "token_id": str(proof["token_id"]),
+        "previous_hash": str(proof["previous_hash"]),
+        "sequence": _require_int(proof["sequence"], "conflict proof sequence"),
+        "transfer_hash_a": hash_a,
+        "transfer_hash_b": hash_b,
+    }
+    return sha3_hex(_canonical_bytes(identity))
 
 
 def verify_conflict_proof(proof):
@@ -1444,7 +2020,7 @@ def verify_conflict_proof(proof):
         raise ValidationError("unsupported conflict proof version")
     pair = _find_conflicting_transfer_pair(proof.get("token_a"), proof.get("token_b"))
     if not pair:
-        raise ValidationError("conflict proof tokens are not conflicting")
+        raise ValidationError("conflict proof bills are not conflicting")
     expected_unsigned = _conflict_proof_unsigned(
         proof["token_a"],
         proof["token_b"],
@@ -1519,3 +2095,39 @@ def verify_transparency_equivocation_proof(message, operator_public_key=None):
         return log_client.verify_equivocation_proof(message, operator_public_key=operator_public_key)
     except Exception as exc:
         raise ValidationError(f"invalid transparency equivocation proof: {exc}") from exc
+
+
+def create_transparency_operator_policy_violation_proof(root, spend_proof, violation_type=None, detected_at=None):
+    """Build gossip evidence that a log operator signed a policy-violating root."""
+
+    from . import transparency_client as log_client
+
+    message = log_client.make_operator_policy_violation_proof(
+        root,
+        spend_proof,
+        violation_type=violation_type or "accepted_conflicting_spend",
+        detected_at=detected_at,
+    )
+    if len(canonical_json(message).encode("utf-8")) > MAX_TRANSPARENCY_OPERATOR_POLICY_VIOLATION_GOSSIP_BYTES:
+        raise ValidationError("transparency operator policy violation proof is too large")
+    return message
+
+
+def verify_transparency_operator_policy_violation_proof(message, operator_public_key=None):
+    """Verify self-contained evidence that a transparency operator violated log policy."""
+
+    from . import transparency_client as log_client
+
+    if isinstance(message, str):
+        message = _load_json(message)
+    _require_exact_fields(
+        message,
+        TRANSPARENCY_OPERATOR_POLICY_VIOLATION_FIELDS,
+        "transparency operator policy violation proof",
+    )
+    if len(canonical_json(message).encode("utf-8")) > MAX_TRANSPARENCY_OPERATOR_POLICY_VIOLATION_GOSSIP_BYTES:
+        raise ValidationError("transparency operator policy violation proof is too large")
+    try:
+        return log_client.verify_operator_policy_violation_proof(message, operator_public_key=operator_public_key)
+    except Exception as exc:
+        raise ValidationError(f"invalid transparency operator policy violation proof: {exc}") from exc

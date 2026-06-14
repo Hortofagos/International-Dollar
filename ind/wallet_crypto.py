@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import secrets
 import time
@@ -21,9 +22,10 @@ ARGON2_PARALLELISM = 4
 PASSWORD_WRAPPER = "password"
 RECOVERY_PHRASE_WRAPPER = "recovery_phrase"
 PASSKEY_WRAPPER = "passkey_prf"
-MIN_WALLET_PASSWORD_LENGTH = 6
-MIN_WALLET_PASSWORD_SCORE = 1
+MIN_WALLET_PASSWORD_LENGTH = 10
+MIN_WALLET_PASSWORD_SCORE = 3
 
+logger = logging.getLogger(__name__)
 _SESSION_MWKS = {}
 
 
@@ -57,8 +59,8 @@ def zeroize(value):
     try:
         for index in range(len(value)):
             value[index] = 0
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("could not zeroize value: %s", exc)
 
 
 def _json_clone(value):

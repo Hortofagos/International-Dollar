@@ -1,7 +1,7 @@
-"""Public IND token protocol API.
+"""Public IND bill protocol API.
 
 This module keeps the old `ind_token` surface area while the implementation is
-split between token validation/signing logic and the local SQLite gossip store.
+split between bill validation/signing logic and the local SQLite gossip store.
 """
 
 from . import protocol as _protocol

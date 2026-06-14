@@ -11,6 +11,7 @@ import platform
 import sys
 from pathlib import Path
 from functools import lru_cache
+from dataclasses import dataclass
 
 from . import address_generation as generate_address
 from . import runtime as runtime_json
@@ -26,6 +27,20 @@ BILL_GRID_ROWS = 2
 BILLS_PER_PRINT_PAGE = BILL_GRID_COLUMNS * BILL_GRID_ROWS
 BILL_GRID_X_STEP = 351
 BILL_GRID_Y_STEP = 805
+
+
+@dataclass
+class FullBillPrintState:
+    back_slot: int = 0
+    back_index: int = 0
+
+
+@dataclass
+class QrPrintState:
+    x: int = 50
+    y: int = 50
+    slot: int = 0
+    index: int = 0
 
 
 def bill_font(size):
@@ -53,9 +68,8 @@ def print_pdf():
 
 
 def _generate_address_lines():
-    generated_wallet = []
-    generate_address.hash_func(generated_wallet)
-    return [generated_wallet[0] + '\n', generated_wallet[1] + '\n', generated_wallet[2] + '\n']
+    address, private_key, public_key = generate_address.generate_keypair()
+    return [address + '\n', private_key + '\n', public_key + '\n']
 
 
 @lru_cache(maxsize=1)
@@ -107,27 +121,20 @@ def _clear_print_page(page):
 
 
 def full_bill(list_bills):
-    global count, count5
     a4_png = Image.open('img/bills_to_print/a4.png')
-    count = 0
-    count5 = 0
+    state = FullBillPrintState()
 
     def bill_gen_front():
-        c6 = 0
-        c7 = 0
-        for bill in list_bills:
+        for index, bill in enumerate(list_bills):
+            slot = index % BILLS_PER_PRINT_PAGE
             img = Image.open('img/bills_to_print/' + bill[0].split('x')[0] + '.png')
-            a4_png.paste(img, _bill_position(c7, a4_png, img.size))
-            if c7 == BILLS_PER_PRINT_PAGE - 1 or c6 == len(list_bills) - 1:
-                len_list = float(c6 / 5) * 2
+            a4_png.paste(img, _bill_position(slot, a4_png, img.size))
+            if slot == BILLS_PER_PRINT_PAGE - 1 or index == len(list_bills) - 1:
+                len_list = float(index / 5) * 2
                 _save_print_page(a4_png, 'print_folder/' + str(len_list) + '.pdf')
                 _clear_print_page(a4_png)
-                c7 -= BILLS_PER_PRINT_PAGE
-            c6 += 1
-            c7 += 1
 
     def bill_gen_back(bill):
-        global count, count5
         sm = bill.splitlines()[0]
         img = Image.open('img/bills_to_print/' + sm.split('x')[0] + '_back.png')
         address_qr = qrcode.QRCode(version=1, box_size=6, border=2, error_correction=qrcode.constants.ERROR_CORRECT_L)
@@ -153,13 +160,13 @@ def full_bill(list_bills):
         img.paste(ImageOps.colorize(rot, (255,255,255), (255,255,255)), (20,10),  rot)
         img.paste(qr_resize.rotate(90, expand=1), (55, 290))
         img.paste(qr_resize.rotate(90, expand=1), (55, 290))
-        a4_png.paste(img, _bill_position(count, a4_png, img.size))
-        if count == BILLS_PER_PRINT_PAGE - 1 or count5 == len(list_bills) - 1:
-            _save_print_page(a4_png, 'print_folder/' + str(float(count5 / 5) * 2 + 0.5) + '.pdf')
+        a4_png.paste(img, _bill_position(state.back_slot, a4_png, img.size))
+        if state.back_slot == BILLS_PER_PRINT_PAGE - 1 or state.back_index == len(list_bills) - 1:
+            _save_print_page(a4_png, 'print_folder/' + str(float(state.back_index / 5) * 2 + 0.5) + '.pdf')
             _clear_print_page(a4_png)
-            count = -1
-        count += 1
-        count5 += 1
+            state.back_slot = -1
+        state.back_slot += 1
+        state.back_index += 1
 
     bill_gen_front()
     used_addr = []
@@ -172,14 +179,10 @@ def full_bill(list_bills):
     return used_addr
 
 def only_qr(list_bills):
-    global x_pos_qr, y_pos_qr, c4, c5
-    x_pos_qr = 50
-    y_pos_qr = 50
     a4_png = Image.open('img/bills_to_print/a4.png')
-    c4 = 0
-    c5 = 0
+    state = QrPrintState()
+
     def bill_gen_qr(bill):
-        global y_pos_qr, x_pos_qr, c4, c5
         sm = bill.splitlines()[0]
         address_qr = qrcode.QRCode(version=1, box_size=6, border=2, error_correction=qrcode.constants.ERROR_CORRECT_L)
         address_qr.add_data(bill)
@@ -187,21 +190,21 @@ def only_qr(list_bills):
         qr_resize = qr_make.resize((240, 240), Image.Resampling.LANCZOS)
         f = bill_font(36)
         d = ImageDraw.Draw(a4_png)
-        d.text((x_pos_qr + 120 - len(sm) * 7, y_pos_qr - 37), sm, font=f, fill=0)
-        a4_png.paste(qr_resize, (x_pos_qr, y_pos_qr))
-        if c4 == 23 or c5 == len(list_bills) - 1:
+        d.text((state.x + 120 - len(sm) * 7, state.y - 37), sm, font=f, fill=0)
+        a4_png.paste(qr_resize, (state.x, state.y))
+        if state.slot == 23 or state.index == len(list_bills) - 1:
             a4_png.save('print_folder/' + str(len(os.listdir('print_folder'))) + '.pdf')
             a4_png.paste(Image.new('L', (1190, 1680), color='white'))
-            x_pos_qr = 50
-            y_pos_qr = 50
-            c4 = -1
-        elif c4 == 3 or c4 == 7 or c4 == 11 or c4 == 15 or c4 == 19:
-            y_pos_qr += 275
-            x_pos_qr -= 750
+            state.x = 50
+            state.y = 50
+            state.slot = -1
+        elif state.slot in {3, 7, 11, 15, 19}:
+            state.y += 275
+            state.x -= 750
         else:
-            x_pos_qr += 250
-        c4 += 1
-        c5 += 1
+            state.x += 250
+        state.slot += 1
+        state.index += 1
 
     used_addr = []
     for i in list_bills:

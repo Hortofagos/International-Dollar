@@ -12,18 +12,18 @@ import ind_token
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Mint one IND lazy-genesis token from a signed supply manifest.")
+    parser = argparse.ArgumentParser(description="Mint one IND lazy-genesis bill from a signed supply manifest.")
     parser.add_argument("--manifest", required=True, help="path to signed genesis manifest JSON")
-    parser.add_argument("--index", type=int, required=True, help="token index to mint")
-    parser.add_argument("--output", help="output token JSON path; defaults to stdout")
+    parser.add_argument("--index", type=int, required=True, help="bill index to mint")
+    parser.add_argument("--output", help="output bill JSON path; defaults to stdout")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
-    token = ind_token.make_lazy_genesis_token(args.index, manifest)
-    payload = ind_token.canonical_json(token) + "\n"
+    bill = ind_token.make_lazy_genesis_token(args.index, manifest)
+    payload = ind_token.canonical_json(bill) + "\n"
     if args.output:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         Path(args.output).write_text(payload, encoding="utf-8")

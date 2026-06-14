@@ -9,6 +9,7 @@ setuptools
 base58
 pyglet
 pyzbar
+zxing-cpp==3.0.0
 qrcode
 colorama
 certifi

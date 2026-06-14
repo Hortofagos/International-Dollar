@@ -1,13 +1,14 @@
-﻿import argparse
+import argparse
 import base64
 import json
+import logging
 import os
 import sqlite3
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import ecdsa
 from pymerkle.concrete.sqlite import SqliteTree
@@ -18,6 +19,7 @@ from . import transparency_client as log_client
 
 
 DEFAULT_LOG_DB = "files/ind_transparency_log.db"
+logger = logging.getLogger(__name__)
 DEFAULT_LOG_PRIVATE_KEY = "files/log_operator_private_key.json"
 DEFAULT_LOG_PUBLIC_KEY = "files/log_operator_public_key.json"
 DEFAULT_ROOT_INTERVAL_SECONDS = 60
@@ -32,11 +34,19 @@ def _env_int(name, default):
         return int(default)
 
 
+def _env_bool(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 MAX_APPEND_BODY_BYTES = max(1024, _env_int("IND_LOG_MAX_APPEND_BODY_BYTES", DEFAULT_MAX_APPEND_BODY_BYTES))
 APPEND_BODY_READ_TIMEOUT_SECONDS = max(
     1,
     _env_int("IND_LOG_APPEND_BODY_READ_TIMEOUT_SECONDS", DEFAULT_APPEND_BODY_READ_TIMEOUT_SECONDS),
 )
+WRITE_MIRROR_PROOF_ARCHIVES = _env_bool("IND_LOG_WRITE_MIRROR_PROOF_ARCHIVES", True)
 
 
 class LogServerError(Exception):
@@ -140,6 +150,8 @@ class TransparencyLog:
                     entry_hash TEXT PRIMARY KEY,
                     leaf_index INTEGER NOT NULL UNIQUE,
                     submitted_at INTEGER NOT NULL,
+                    entry_kind TEXT NOT NULL DEFAULT 'transfer',
+                    entry_json TEXT,
                     transfer_json TEXT
                 );
 
@@ -174,6 +186,10 @@ class TransparencyLog:
 
     def _ensure_log_entry_columns(self, conn):
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(log_entries)").fetchall()}
+        if "entry_kind" not in columns:
+            conn.execute("ALTER TABLE log_entries ADD COLUMN entry_kind TEXT NOT NULL DEFAULT 'transfer'")
+        if "entry_json" not in columns:
+            conn.execute("ALTER TABLE log_entries ADD COLUMN entry_json TEXT")
         if "transfer_json" not in columns:
             conn.execute("ALTER TABLE log_entries ADD COLUMN transfer_json TEXT")
 
@@ -229,21 +245,25 @@ class TransparencyLog:
     def current_root_hash(self, tree_size=None):
         with self._tree() as tree:
             size = tree.get_size() if tree_size is None else int(tree_size)
+            if size == 0:
+                return log_client.LOG_EMPTY_ROOT_HASH
             return tree.get_state(size).hex()
 
-    def append_entry_hash(self, entry_hash, submitted_at=None, transfer=None):
-        """Append a transfer hash to the log, idempotently."""
+    def append_entry_hash(self, entry_hash, submitted_at=None, transfer=None, entry_kind="transfer", entry=None):
+        """Append a 32-byte protocol commitment to the log, idempotently."""
 
         entry_hash = str(entry_hash).lower()
         try:
             entry_bytes = bytes.fromhex(entry_hash)
         except ValueError as exc:
-            raise LogServerError("invalid transfer entry hash") from exc
+            raise LogServerError("invalid transparency entry hash") from exc
         if len(entry_bytes) != 32:
-            raise LogServerError("invalid transfer entry hash length")
+            raise LogServerError("invalid transparency entry hash length")
 
         submitted_at = int(submitted_at if submitted_at is not None else time.time())
         transfer_json = log_client.canonical_json(transfer) if transfer is not None else None
+        entry_json = log_client.canonical_json(entry) if entry is not None else None
+        entry_kind = str(entry_kind or "transfer")
         with self._append_lock:
             with self._connect() as conn:
                 existing = conn.execute(
@@ -251,14 +271,16 @@ class TransparencyLog:
                     (entry_hash,),
                 ).fetchone()
                 if existing:
-                    if transfer_json is not None:
+                    if transfer_json is not None or entry_json is not None:
                         conn.execute(
                             """
                             UPDATE log_entries
-                            SET transfer_json = COALESCE(transfer_json, ?)
+                            SET transfer_json = COALESCE(transfer_json, ?),
+                                entry_json = COALESCE(entry_json, ?),
+                                entry_kind = COALESCE(entry_kind, ?)
                             WHERE entry_hash = ?
                             """,
-                            (transfer_json, entry_hash),
+                            (transfer_json, entry_json, entry_kind, entry_hash),
                         )
                     return {
                         "accepted": True,
@@ -274,10 +296,10 @@ class TransparencyLog:
             with self._connect() as conn:
                 conn.execute(
                     """
-                    INSERT INTO log_entries(entry_hash, leaf_index, submitted_at, transfer_json)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO log_entries(entry_hash, leaf_index, submitted_at, entry_kind, entry_json, transfer_json)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (entry_hash, int(leaf_index), submitted_at, transfer_json),
+                    (entry_hash, int(leaf_index), submitted_at, entry_kind, entry_json, transfer_json),
                 )
         return {
             "accepted": True,
@@ -299,6 +321,17 @@ class TransparencyLog:
         return claim
 
     def _reject_conflicting_spend_claim(self, conn, claim, transfer_hash):
+        existing = conn.execute(
+            """
+            SELECT transfer_hash FROM spend_claims
+            WHERE spend_key = ? AND transfer_hash != ?
+            ORDER BY first_seen ASC
+            LIMIT 1
+            """,
+            (claim["spend_key"], transfer_hash),
+        ).fetchone()
+        if existing:
+            raise LogServerError("conflicting spend is rejected")
         return None
 
     def _record_spend_claim(
@@ -397,7 +430,7 @@ class TransparencyLog:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT entry_hash, leaf_index, submitted_at FROM log_entries
+                SELECT entry_hash, leaf_index, submitted_at, entry_kind, entry_json FROM log_entries
                 WHERE leaf_index <= ?
                 ORDER BY leaf_index ASC
                 """,
@@ -409,6 +442,8 @@ class TransparencyLog:
                 "leaf_index": int(row["leaf_index"]) - 1,
                 "entry_hash": row["entry_hash"],
                 "submitted_at": int(row["submitted_at"]),
+                "entry_kind": row["entry_kind"],
+                "entry": json.loads(row["entry_json"]) if row["entry_json"] else None,
             }
             for row in rows
         ]
@@ -423,23 +458,39 @@ class TransparencyLog:
             announcement = announcement.decode("utf-8")
         if isinstance(announcement, str):
             announcement = ind_token.unpack_wire_message(announcement)
-        if not isinstance(announcement, dict) or announcement.get("type") != ind_token.TRANSFER_ANNOUNCEMENT_TYPE:
+        if not isinstance(announcement, dict) or announcement.get("type") not in {
+            ind_token.TRANSFER_ANNOUNCEMENT_TYPE,
+            ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE,
+        }:
             raise LogServerError("expected an IND transfer announcement")
-        ind_token._require_exact_fields(
-            announcement,
-            ind_token.TRANSFER_ANNOUNCEMENT_FIELDS,
-            "transfer announcement",
-            optional=ind_token.TRANSFER_ANNOUNCEMENT_OPTIONAL_FIELDS,
-        )
-        token = announcement.get("token")
-        state = ind_token.verify_token(token)
+        if announcement.get("type") == ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE:
+            ind_token._require_exact_fields(
+                announcement,
+                ind_token.TRANSFER_ANNOUNCEMENT_V2_FIELDS,
+                "v2 transfer announcement",
+            )
+            if int(announcement["version"]) != ind_token.BILL_VERSION:
+                raise LogServerError("unsupported v2 transfer announcement version")
+            bill = announcement.get("bill")
+            state = ind_token.verify_bill(bill, require_recent_transparency=False)
+        else:
+            ind_token._require_exact_fields(
+                announcement,
+                ind_token.TRANSFER_ANNOUNCEMENT_FIELDS,
+                "transfer announcement",
+                optional=ind_token.TRANSFER_ANNOUNCEMENT_OPTIONAL_FIELDS,
+            )
+            bill = announcement.get("token")
+            state = ind_token.verify_token(bill)
         if state.sequence == 0:
-            raise LogServerError("genesis token has no transfer to log")
-        transfer = token["history"][-1]
+            raise LogServerError("genesis bill has no transfer to log")
+        transfer = ind_token._last_transfer(bill)
         entry_hash = ind_token.transfer_hash(transfer)
         claim = self._spend_claim_from_transfer(transfer)
         submitted_at = int(time.time())
         with self._append_lock:
+            with self._connect() as conn:
+                self._reject_conflicting_spend_claim(conn, claim, entry_hash)
             result = self.append_entry_hash(entry_hash, submitted_at=submitted_at, transfer=transfer)
             with self._connect() as conn:
                 self._record_spend_claim(
@@ -450,6 +501,55 @@ class TransparencyLog:
                     submitted_at,
                 )
             result["spend_key"] = claim["spend_key"]
+            return result
+
+    def append_checkpoint_announcement(self, announcement):
+        """Validate and append a compact bill checkpoint commitment."""
+
+        if isinstance(announcement, bytes):
+            announcement = announcement.decode("utf-8")
+        if isinstance(announcement, str):
+            announcement = ind_token.unpack_wire_message(announcement)
+        if isinstance(announcement, dict) and announcement.get("type") == ind_token.BILL_CHECKPOINT_TYPE:
+            raise LogServerError("checkpoint announcement requires source bill")
+        else:
+            if not isinstance(announcement, dict) or announcement.get("type") != ind_token.CHECKPOINT_ANNOUNCEMENT_TYPE:
+                raise LogServerError("expected an IND checkpoint announcement")
+            ind_token._require_exact_fields(
+                announcement,
+                ind_token.CHECKPOINT_ANNOUNCEMENT_FIELDS,
+                "checkpoint announcement",
+            )
+            if int(announcement["version"]) != ind_token.BILL_VERSION:
+                raise LogServerError("unsupported checkpoint announcement version")
+            checkpoint = announcement["checkpoint"]
+            bill = announcement["bill"]
+        ind_token._require_exact_fields(
+            checkpoint,
+            ind_token.CHECKPOINT_CORE_FIELDS | {"checkpoint_hash"},
+            "bill checkpoint",
+            optional={"transparency"},
+        )
+        try:
+            ind_token.verify_bill(bill, require_recent_transparency=False)
+            expected = ind_token.create_bill_checkpoint(bill)
+        except Exception as exc:
+            raise LogServerError(f"checkpoint source bill is invalid: {exc}") from exc
+        for field in ind_token.CHECKPOINT_CORE_FIELDS | {"checkpoint_hash"}:
+            if checkpoint[field] != expected[field]:
+                raise LogServerError(f"checkpoint does not match source bill: {field}")
+        checkpoint_hash_value = ind_token.checkpoint_hash(checkpoint)
+        if checkpoint.get("checkpoint_hash") != checkpoint_hash_value:
+            raise LogServerError("checkpoint hash mismatch")
+        submitted_at = int(time.time())
+        with self._append_lock:
+            result = self.append_entry_hash(
+                checkpoint_hash_value,
+                submitted_at=submitted_at,
+                entry_kind="checkpoint",
+                entry=checkpoint,
+            )
+            result["checkpoint_hash"] = checkpoint_hash_value
             return result
 
     def publish_root(self, timestamp=None):
@@ -539,12 +639,13 @@ class TransparencyLog:
             rows = conn.execute(
                 """
                 SELECT root_json FROM signed_roots
-                ORDER BY timestamp ASC, tree_size ASC
+                ORDER BY timestamp DESC, tree_size DESC
                 LIMIT ?
                 """,
                 (int(limit),),
             ).fetchall()
-        return [json.loads(row["root_json"]) for row in rows]
+        roots = [json.loads(row["root_json"]) for row in rows]
+        return sorted(roots, key=lambda root: (int(root["timestamp"]), int(root["tree_size"])))
 
     def entries(self, start=0, end=None, limit=1000):
         """Return logged transfer hashes by zero-based leaf index."""
@@ -640,6 +741,8 @@ class TransparencyLog:
             target.write_text(data, encoding="utf-8")
             with (mirror_dir / "roots.jsonl").open("a", encoding="utf-8") as handle:
                 handle.write(data)
+            if not WRITE_MIRROR_PROOF_ARCHIVES:
+                continue
             archive_dir = mirror_dir / "proof_archives"
             archive_dir.mkdir(parents=True, exist_ok=True)
             archive = self.proof_archive(int(root["tree_size"]))
@@ -649,6 +752,20 @@ class TransparencyLog:
 
 class TransparencyLogHandler(BaseHTTPRequestHandler):
     server_version = "INDTransparencyLog/1"
+
+    def _request_path(self):
+        """Return the URL path, rejecting traversal-shaped input before routing."""
+
+        path = urlparse(self.path).path
+        decoded = path
+        for _ in range(2):
+            next_decoded = unquote(decoded)
+            if next_decoded == decoded:
+                break
+            decoded = next_decoded
+        if "\\" in decoded or any(segment == ".." for segment in decoded.split("/")):
+            raise LogServerError("unsafe request path")
+        return path
 
     def _send_json(self, status, data):
         payload = log_client.canonical_json(data).encode("utf-8")
@@ -666,7 +783,7 @@ class TransparencyLogHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
-            path = urlparse(self.path).path
+            path = self._request_path()
             query = self._query()
             log = self.server.transparency_log
             if path == "/v1/root":
@@ -721,7 +838,7 @@ class TransparencyLogHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            path = urlparse(self.path).path
+            path = self._request_path()
             if path != "/v1/append":
                 self._send_error_json(404, "not found")
                 return
@@ -735,7 +852,10 @@ class TransparencyLogHandler(BaseHTTPRequestHandler):
             self.connection.settimeout(APPEND_BODY_READ_TIMEOUT_SECONDS)
             raw = self.rfile.read(length).decode("utf-8")
             payload = json.loads(raw)
-            result = self.server.transparency_log.append_transfer_announcement(payload)
+            if isinstance(payload, dict) and payload.get("type") == ind_token.CHECKPOINT_ANNOUNCEMENT_TYPE:
+                result = self.server.transparency_log.append_checkpoint_announcement(payload)
+            else:
+                result = self.server.transparency_log.append_transfer_announcement(payload)
             self._send_json(200, result)
         except Exception as exc:
             self._send_error_json(400, str(exc))
@@ -748,8 +868,8 @@ def _root_publisher(log, interval_seconds, stop_event):
     while not stop_event.is_set():
         try:
             log.maybe_publish_root(interval_seconds)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("background transparency root publishing failed: %s", exc)
         stop_event.wait(interval_seconds)
 
 

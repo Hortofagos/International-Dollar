@@ -40,6 +40,7 @@ Thumbs.db
 genesis/*
 !genesis/.gitignore
 !genesis/README.md
+output/
 
 # Runtime databases and node state
 *.db
@@ -104,4 +105,7 @@ print_folder/*
 # Transparency operator generated mirrors / archives
 operator/
 operator_tools/*-placeholder/
+operator_tools/git-root-mirror/
+operator_tools/website-root-mirror/
+operator_tools/hash-log-archive/
 operator_tools/*_state.json

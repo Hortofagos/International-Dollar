@@ -1,8 +1,11 @@
+"""Security, network, transparency, and update settings for IND clients."""
+
 import copy
+import ipaddress
 import json
 import os
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 
 SETTINGS_PATH = Path("files/security_settings.json")
@@ -21,14 +24,17 @@ DEFAULT_STORE_PATHS = {
 }
 DEFAULT_FINALITY_BUFFER_SECONDS = 60
 MIN_FINALITY_BUFFER_SECONDS = 0
+DEFAULT_PEER_REQUEST_TIMEOUT_SECONDS = 10
+MAX_PEER_REQUEST_TIMEOUT_SECONDS = 30
+DEFAULT_UPDATE_SOURCE = "international-dollar.com/update"
+DEFAULT_UPDATE_CHANNEL = "stable"
 DEFAULT_DNS_SEED_HOSTS = [
-    "seed.interneational-dollard.com",
+    "seed.international-dollar.com",
     "seed.linkifier.me",
     "seed.internetofthebots.com",
 ]
 DEFAULT_TESTNET_DNS_SEED_HOSTS = [
-    "testnet-seed.interneational-dollard.com",
-    "testnet-seed.linkifier.me",
+    "testnet-seed.international-dollar.com",
     "testnet-seed.internetofthebots.com",
 ]
 
@@ -44,7 +50,8 @@ DEFAULT_SECURITY_SETTINGS = {
     "transparency_proof_archives": [],
     "transparency_operator_url": "",
     "transparency_operator_public_key": "",
-    "require_transparency_log": False,
+    "require_transparency_log": True,
+    "submit_to_transparency_log": True,
     "min_root_mirrors": 2,
     "max_root_lag_seconds": 120,
     "max_current_root_age_seconds": 300,
@@ -55,11 +62,15 @@ DEFAULT_SECURITY_SETTINGS = {
     "transparency_consistency_max_stale_seconds": 3600,
     "transparency_root_gossip": True,
     "finality_buffer_seconds": DEFAULT_FINALITY_BUFFER_SECONDS,
-    "peer_request_timeout_seconds": 4,
+    "peer_request_timeout_seconds": DEFAULT_PEER_REQUEST_TIMEOUT_SECONDS,
     "reject_peer_key_changes": True,
     "trusted_genesis_issuer_keys": [],
     "trusted_genesis_manifest_hashes": [],
     "allow_untrusted_genesis": False,
+    "update_source": DEFAULT_UPDATE_SOURCE,
+    "update_channel": DEFAULT_UPDATE_CHANNEL,
+    "trusted_update_signing_keys": [],
+    "update_check_on_startup": False,
 }
 
 
@@ -73,6 +84,10 @@ def default_settings_json():
 
 def _env_true(name):
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_false(name):
+    return os.environ.get(name, "").strip().lower() in {"0", "false", "no", "off"}
 
 
 def _as_bool(value, default=False):
@@ -121,12 +136,20 @@ def _normalize_server(value):
     value = str(value).strip()
     if not value:
         return ""
+    try:
+        return ipaddress.ip_address(value).compressed
+    except ValueError:
+        pass
     if "://" in value:
         parsed = urlparse(value)
     else:
         parsed = urlparse("ind://" + value)
     host = parsed.hostname or value.split("/")[0].split(":")[0]
-    return host.strip().lower()
+    host = host.strip().lower()
+    try:
+        return ipaddress.ip_address(host).compressed
+    except ValueError:
+        return host
 
 
 def _normalize_network(value):
@@ -163,16 +186,54 @@ def _normalize_mirror(value):
     if not value:
         return ""
     if value.startswith(("http://", "https://")):
+        if not _safe_http_base_url(value):
+            return ""
         return value.rstrip("/")
     return value
 
 
+def _safe_http_base_url(value):
+    parsed = urlparse(str(value).strip())
+    if parsed.scheme not in {"http", "https"}:
+        return True
+    if not parsed.hostname or parsed.query or parsed.fragment:
+        return False
+    decoded_path = parsed.path or ""
+    for _ in range(3):
+        next_path = unquote(decoded_path)
+        if next_path == decoded_path:
+            break
+        decoded_path = next_path
+    return "\\" not in decoded_path and not any(segment == ".." for segment in decoded_path.split("/"))
+
+
+def _normalize_update_source(value):
+    value = str(value).strip()
+    return value.rstrip("/") if value else DEFAULT_UPDATE_SOURCE
+
+
+def _normalize_update_channel(value):
+    value = str(value or "").strip().lower()
+    if not value:
+        return DEFAULT_UPDATE_CHANNEL
+    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789-_.")
+    return value if all(char in allowed for char in value) else DEFAULT_UPDATE_CHANNEL
+
+
 def normalize_security_settings(settings):
+    """Merge user settings with defaults and coerce them into safe ranges.
+
+    The returned dictionary is the canonical shape used by the GUI, node, and
+    verifier code. Invalid enum values fall back to development/client defaults,
+    numeric values are clamped, and list-like values are normalized/deduped.
+    """
+
     merged = default_settings()
     if isinstance(settings, dict):
         merged.update(settings)
 
     normalized = default_settings()
+    # Core network identity and runtime role.
     normalized["network"] = _normalize_network(merged.get("network", MAINNET_NETWORK))
     security_profile = str(merged.get("security_profile", "development")).strip().lower() or "development"
     if security_profile not in {"development", "production"}:
@@ -183,6 +244,8 @@ def normalize_security_settings(settings):
         security_role = "client"
     normalized["security_role"] = security_role
     normalized["node_port"] = _as_int(merged.get("node_port"), 0, minimum=0, maximum=65535)
+
+    # Peer and mirror lists accept multiline text from the GUI.
     normalized["peer_ping_servers"] = _dedupe(
         _normalize_server(item) for item in _as_lines(merged.get("peer_ping_servers"))
     )
@@ -202,7 +265,10 @@ def normalize_security_settings(settings):
     normalized["transparency_operator_public_key"] = str(
         merged.get("transparency_operator_public_key", "")
     ).strip()
+
+    # Transparency knobs are bounded here so production checks can reason over one shape.
     normalized["require_transparency_log"] = _as_bool(merged.get("require_transparency_log"))
+    normalized["submit_to_transparency_log"] = _as_bool(merged.get("submit_to_transparency_log"), True)
     normalized["min_root_mirrors"] = _as_int(merged.get("min_root_mirrors"), 2, minimum=0, maximum=10)
     normalized["max_root_lag_seconds"] = _as_int(
         merged.get("max_root_lag_seconds"), 120, minimum=0, maximum=86400
@@ -233,9 +299,14 @@ def normalize_security_settings(settings):
         maximum=86400,
     )
     normalized["peer_request_timeout_seconds"] = _as_int(
-        merged.get("peer_request_timeout_seconds"), 4, minimum=1, maximum=30
+        merged.get("peer_request_timeout_seconds"),
+        DEFAULT_PEER_REQUEST_TIMEOUT_SECONDS,
+        minimum=1,
+        maximum=MAX_PEER_REQUEST_TIMEOUT_SECONDS,
     )
     normalized["reject_peer_key_changes"] = _as_bool(merged.get("reject_peer_key_changes"), True)
+
+    # Genesis trust pins are intentionally exact strings/hashes after whitespace cleanup.
     normalized["trusted_genesis_issuer_keys"] = _dedupe(
         str(item).strip() for item in _as_lines(merged.get("trusted_genesis_issuer_keys"))
     )
@@ -243,6 +314,12 @@ def normalize_security_settings(settings):
         str(item).strip().lower() for item in _as_lines(merged.get("trusted_genesis_manifest_hashes"))
     )
     normalized["allow_untrusted_genesis"] = _as_bool(merged.get("allow_untrusted_genesis"))
+    normalized["update_source"] = _normalize_update_source(merged.get("update_source", DEFAULT_UPDATE_SOURCE))
+    normalized["update_channel"] = _normalize_update_channel(merged.get("update_channel", DEFAULT_UPDATE_CHANNEL))
+    normalized["trusted_update_signing_keys"] = _dedupe(
+        str(item).strip() for item in _as_lines(merged.get("trusted_update_signing_keys"))
+    )
+    normalized["update_check_on_startup"] = _as_bool(merged.get("update_check_on_startup"), False)
     return normalized
 
 
@@ -262,6 +339,8 @@ def production_security_issues(settings, role=None):
     issues = []
     if not require_transparency_log(settings):
         issues.append("require_transparency_log must be true")
+    if not submit_to_transparency_log(settings):
+        issues.append("submit_to_transparency_log must be true")
     if not transparency_operator_url(settings):
         issues.append("transparency_operator_url must be configured")
     if not transparency_operator_public_key(settings):
@@ -405,7 +484,20 @@ def dns_seed_hosts(settings=None):
 
 def require_transparency_log(settings=None):
     settings = settings or load_security_settings()
-    return _env_true("IND_REQUIRE_TRANSPARENCY_LOG") or bool(settings["require_transparency_log"])
+    if _env_false("IND_REQUIRE_TRANSPARENCY_LOG"):
+        return False
+    if _env_true("IND_REQUIRE_TRANSPARENCY_LOG"):
+        return True
+    return bool(settings["require_transparency_log"])
+
+
+def submit_to_transparency_log(settings=None):
+    settings = settings or load_security_settings()
+    if _env_false("IND_SUBMIT_TO_TRANSPARENCY_LOG"):
+        return False
+    if _env_true("IND_SUBMIT_TO_TRANSPARENCY_LOG"):
+        return True
+    return bool(settings.get("submit_to_transparency_log", True))
 
 
 def transparency_operator_url(settings=None):
@@ -565,3 +657,33 @@ def trusted_genesis_manifest_hashes(settings=None):
 def allow_untrusted_genesis(settings=None):
     settings = settings or load_security_settings()
     return _env_true("IND_ALLOW_UNTRUSTED_GENESIS") or bool(settings["allow_untrusted_genesis"])
+
+
+def update_source(settings=None):
+    settings = settings or load_security_settings()
+    return (
+        os.environ.get("IND_UPDATE_SOURCE", "").strip()
+        or os.environ.get("IND_UPDATE_REMOTE", "").strip()
+        or settings["update_source"]
+    )
+
+
+def update_channel(settings=None):
+    settings = settings or load_security_settings()
+    env_value = os.environ.get("IND_UPDATE_CHANNEL", "").strip()
+    return _normalize_update_channel(env_value or settings.get("update_channel", DEFAULT_UPDATE_CHANNEL))
+
+
+def trusted_update_signing_keys(settings=None):
+    settings = settings or load_security_settings()
+    env_raw = os.environ.get("IND_UPDATE_SIGNING_KEYS", "")
+    env_items = [item.strip() for item in env_raw.replace("\n", ",").split(",") if item.strip()]
+    return _dedupe(env_items + list(settings.get("trusted_update_signing_keys", [])))
+
+
+def update_check_on_startup(settings=None):
+    settings = settings or load_security_settings()
+    env_value = os.environ.get("IND_AUTO_UPDATE", "").strip()
+    if env_value:
+        return _as_bool(env_value, True)
+    return bool(settings["update_check_on_startup"])

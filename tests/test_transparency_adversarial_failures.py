@@ -89,6 +89,59 @@ class AdversarialTransparencyTests(unittest.TestCase):
             public_key,
         )
 
+    def malicious_conflicting_spend_root(self):
+        issuer_private, issuer_public = keypair()
+        alice_private, alice_public = keypair()
+        _bob_private, bob_public = keypair()
+        _carol_private, carol_public = keypair()
+        operator_private, operator_public = keypair()
+        alice_address = ind_token.address_from_public_key(alice_public)
+        bob_address = ind_token.address_from_public_key(bob_public)
+        carol_address = ind_token.address_from_public_key(carol_public)
+        token = ind_token.make_genesis_token(
+            99110,
+            alice_address,
+            issuer_private,
+            issuer_public,
+            issued_at=1_700_000_000,
+        )
+        to_bob = ind_token.create_transfer(
+            token,
+            alice_private,
+            alice_public,
+            bob_address,
+            timestamp=1_700_000_010,
+        )
+        to_carol = ind_token.create_transfer(
+            token,
+            alice_private,
+            alice_public,
+            carol_address,
+            timestamp=1_700_000_011,
+        )
+        transfer_a = to_bob["history"][-1]
+        transfer_b = to_carol["history"][-1]
+        log_id = log_client.log_id_from_public_key(operator_public)
+        claims = [
+            log_client.spend_claim_for_transfer(transfer_a, log_id, 0, 1_700_000_020),
+            log_client.spend_claim_for_transfer(transfer_b, log_id, 1, 1_700_000_021),
+        ]
+        root = log_client.make_signed_root(
+            2,
+            "11" * 32,
+            1_700_000_060,
+            operator_private,
+            operator_public,
+            spend_map_root=log_client.spend_map_root(claims),
+            spend_map_size=len(claims),
+        )
+        proof = log_client.build_spend_map_proof(
+            claims,
+            log_client.spend_key_for_transfer(transfer_a),
+            root["tree_size"],
+        )
+        return transfer_a, proof, root, operator_public
+
     def test_single_root_mirror_is_rejected_by_default_policy(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             log, _private_key, public_key = self.make_log(temp_dir)
@@ -230,6 +283,77 @@ class AdversarialTransparencyTests(unittest.TestCase):
 
             self.assertEqual(verifier.consume_pending_gossip_messages(), [])
 
+    def test_conflicting_spend_root_builds_operator_policy_violation_proof(self):
+        transfer, spend_proof, root, operator_public = self.malicious_conflicting_spend_root()
+
+        with self.assertRaises(log_client.OperatorPolicyViolationError) as caught:
+            log_client.verify_spend_map_proof_for_transfer(
+                transfer,
+                spend_proof,
+                root,
+                operator_public_key=operator_public,
+            )
+
+        evidence = caught.exception.evidence
+        self.assertEqual(evidence["type"], log_client.LOG_OPERATOR_POLICY_VIOLATION_TYPE)
+        self.assertEqual(evidence["violation_type"], "accepted_conflicting_spend")
+        verified = log_client.verify_operator_policy_violation_proof(
+            evidence,
+            operator_public_key=operator_public,
+        )
+        self.assertEqual(verified["log_id"], root["log_id"])
+
+    def test_conflicting_spend_root_blacklists_operator_and_queues_evidence(self):
+        transfer, spend_proof, root, operator_public = self.malicious_conflicting_spend_root()
+
+        class PolicyViolatingOperator:
+            identity_id = ("custom", "policy-violating-operator")
+
+            def spend_map_proof(self, _spend_key, _tree_size):
+                return spend_proof
+
+        store = self.memory_store()
+        verifier = log_client.TransparencyVerifier(
+            PolicyViolatingOperator(),
+            [
+                log_client.StaticRootMirror([root], identity_id="policy-mirror-a"),
+                log_client.StaticRootMirror([root], identity_id="policy-mirror-b"),
+            ],
+            operator_public_key=operator_public,
+            observed_root_store=store,
+            run_startup_check=False,
+        )
+
+        with self.assertRaises(log_client.OperatorPolicyViolationError):
+            verifier.verify_transfer_current_spend(transfer, current_root=root)
+
+        status = store.status(root["log_id"])
+        self.assertEqual(status["status"], "blacklisted")
+        self.assertIn("operator policy violation", status["reason"])
+        self.assertIn(status["evidence_id"], store.policy_violations)
+        messages = verifier.consume_pending_gossip_messages()
+        self.assertEqual(messages[0]["type"], log_client.LOG_OPERATOR_POLICY_VIOLATION_TYPE)
+
+    def test_forwarded_operator_policy_violation_blacklists_independently(self):
+        transfer, spend_proof, root, operator_public = self.malicious_conflicting_spend_root()
+        try:
+            log_client.verify_spend_map_proof_for_transfer(
+                transfer,
+                spend_proof,
+                root,
+                operator_public_key=operator_public,
+            )
+        except log_client.OperatorPolicyViolationError as exc:
+            evidence = exc.evidence
+        else:
+            self.fail("expected operator policy violation")
+
+        store = self.memory_store()
+        verifier = self.verifier_for_gossip(operator_public, store=store)
+        verifier.process_operator_policy_violation_proof(evidence, peer_id="peer-a")
+
+        self.assertEqual(store.status(root["log_id"])["status"], "blacklisted")
+
     def test_peer_received_roots_do_not_satisfy_min_mirrors(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             log, _private_key, public_key = self.make_log(temp_dir)
@@ -253,6 +377,8 @@ class AdversarialTransparencyTests(unittest.TestCase):
 
             first = node_client.prepare_incoming_gossip("203.0.113.10", raw, seen, limiter)
             for _ in range(node_client.MAX_ROOT_GOSSIP_PER_PEER_WINDOW + 5):
+                if first.get("accepted"):
+                    seen.add(first["message_hash"])
                 replay = node_client.prepare_incoming_gossip("203.0.113.10", raw, seen, limiter)
 
             self.assertTrue(first["accepted"])
