@@ -1,5 +1,6 @@
 import argparse
 import base64
+import copy
 import json
 import logging
 import os
@@ -14,9 +15,9 @@ import ecdsa
 from pymerkle.concrete.sqlite import SqliteTree
 from pymerkle.core import InvalidChallenge
 
+from . import protocol_policy
 from . import token as ind_token
 from . import transparency_client as log_client
-
 
 DEFAULT_LOG_DB = "files/ind_transparency_log.db"
 logger = logging.getLogger(__name__)
@@ -41,7 +42,9 @@ def _env_bool(name, default=False):
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-MAX_APPEND_BODY_BYTES = max(1024, _env_int("IND_LOG_MAX_APPEND_BODY_BYTES", DEFAULT_MAX_APPEND_BODY_BYTES))
+MAX_APPEND_BODY_BYTES = max(
+    1024, _env_int("IND_LOG_MAX_APPEND_BODY_BYTES", DEFAULT_MAX_APPEND_BODY_BYTES)
+)
 APPEND_BODY_READ_TIMEOUT_SECONDS = max(
     1,
     _env_int("IND_LOG_APPEND_BODY_READ_TIMEOUT_SECONDS", DEFAULT_APPEND_BODY_READ_TIMEOUT_SECONDS),
@@ -49,8 +52,9 @@ APPEND_BODY_READ_TIMEOUT_SECONDS = max(
 WRITE_MIRROR_PROOF_ARCHIVES = _env_bool("IND_LOG_WRITE_MIRROR_PROOF_ARCHIVES", True)
 
 
+# Raised when the transparency log operator cannot serve a request.
 class LogServerError(Exception):
-    """Raised when the transparency log operator cannot serve a request."""
+    pass
 
 
 def _legacy_text_path(path):
@@ -90,9 +94,10 @@ def _read_key_json_or_legacy(path, field):
     return ""
 
 
-def load_or_create_operator_keys(private_key_path=DEFAULT_LOG_PRIVATE_KEY, public_key_path=DEFAULT_LOG_PUBLIC_KEY):
-    """Load or create the ECDSA key pair used to sign log roots."""
-
+# Load or create the ECDSA key pair used to sign log roots.
+def load_or_create_operator_keys(
+    private_key_path=DEFAULT_LOG_PRIVATE_KEY, public_key_path=DEFAULT_LOG_PUBLIC_KEY
+):
     private_key_path = Path(private_key_path)
     public_key_path = Path(public_key_path)
     private_key = _read_key_json_or_legacy(private_key_path, "private_key")
@@ -115,9 +120,8 @@ def load_or_create_operator_keys(private_key_path=DEFAULT_LOG_PRIVATE_KEY, publi
     return private_key, public_key
 
 
+# Persistent CT-style SHA3-256 append-only log of IND transfer hashes.
 class TransparencyLog:
-    """Persistent CT-style SHA3-256 append-only log of IND transfer hashes."""
-
     def __init__(
         self,
         db_path,
@@ -144,8 +148,7 @@ class TransparencyLog:
         with SqliteTree(self.db_path, algorithm=log_client.LOG_HASH_ALGORITHM):
             pass
         with self._connect() as conn:
-            conn.executescript(
-                """
+            conn.executescript("""
                 CREATE TABLE IF NOT EXISTS log_entries (
                     entry_hash TEXT PRIMARY KEY,
                     leaf_index INTEGER NOT NULL UNIQUE,
@@ -179,15 +182,36 @@ class TransparencyLog:
                 );
                 CREATE INDEX IF NOT EXISTS idx_spend_claims_token
                     ON spend_claims(token_id, sequence, previous_hash, sender_address);
-                """
-            )
+
+                CREATE TABLE IF NOT EXISTS spend_map_nodes_v3 (
+                    depth INTEGER NOT NULL,
+                    position TEXT NOT NULL,
+                    node_hash TEXT NOT NULL,
+                    PRIMARY KEY(depth, position)
+                );
+
+                CREATE TABLE IF NOT EXISTS spend_map_claims_v3 (
+                    spend_key TEXT NOT NULL,
+                    transfer_hash TEXT NOT NULL,
+                    transfer_leaf_index INTEGER NOT NULL,
+                    claim_json TEXT NOT NULL,
+                    PRIMARY KEY(spend_key, transfer_hash)
+                );
+
+                CREATE TABLE IF NOT EXISTS spend_map_meta_v3 (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                """)
             self._ensure_log_entry_columns(conn)
             self._ensure_spend_claim_columns(conn)
 
     def _ensure_log_entry_columns(self, conn):
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(log_entries)").fetchall()}
         if "entry_kind" not in columns:
-            conn.execute("ALTER TABLE log_entries ADD COLUMN entry_kind TEXT NOT NULL DEFAULT 'transfer'")
+            conn.execute(
+                "ALTER TABLE log_entries ADD COLUMN entry_kind TEXT NOT NULL DEFAULT 'transfer'"
+            )
         if "entry_json" not in columns:
             conn.execute("ALTER TABLE log_entries ADD COLUMN entry_json TEXT")
         if "transfer_json" not in columns:
@@ -206,8 +230,7 @@ class TransparencyLog:
             table_info = conn.execute("PRAGMA table_info(spend_claims)").fetchall()
             columns = {row["name"] for row in table_info}
         if primary_key_columns == ["spend_key"]:
-            conn.executescript(
-                """
+            conn.executescript("""
                 CREATE TABLE IF NOT EXISTS spend_claims_v2 (
                     spend_key TEXT NOT NULL,
                     token_id TEXT NOT NULL,
@@ -229,9 +252,10 @@ class TransparencyLog:
                 FROM spend_claims;
                 DROP TABLE spend_claims;
                 ALTER TABLE spend_claims_v2 RENAME TO spend_claims;
-                """
-            )
-            columns = {row["name"] for row in conn.execute("PRAGMA table_info(spend_claims)").fetchall()}
+                """)
+            columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(spend_claims)").fetchall()
+            }
         if "transfer_leaf_index" not in columns:
             conn.execute("ALTER TABLE spend_claims ADD COLUMN transfer_leaf_index INTEGER")
 
@@ -249,9 +273,10 @@ class TransparencyLog:
                 return log_client.LOG_EMPTY_ROOT_HASH
             return tree.get_state(size).hex()
 
-    def append_entry_hash(self, entry_hash, submitted_at=None, transfer=None, entry_kind="transfer", entry=None):
-        """Append a 32-byte protocol commitment to the log, idempotently."""
-
+    # Append a 32-byte protocol commitment to the log, idempotently.
+    def append_entry_hash(
+        self, entry_hash, submitted_at=None, transfer=None, entry_kind="transfer", entry=None
+    ):
         entry_hash = str(entry_hash).lower()
         try:
             entry_bytes = bytes.fromhex(entry_hash)
@@ -299,7 +324,14 @@ class TransparencyLog:
                     INSERT INTO log_entries(entry_hash, leaf_index, submitted_at, entry_kind, entry_json, transfer_json)
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (entry_hash, int(leaf_index), submitted_at, entry_kind, entry_json, transfer_json),
+                    (
+                        entry_hash,
+                        int(leaf_index),
+                        submitted_at,
+                        entry_kind,
+                        entry_json,
+                        transfer_json,
+                    ),
                 )
         return {
             "accepted": True,
@@ -310,6 +342,18 @@ class TransparencyLog:
         }
 
     def _spend_claim_from_transfer(self, transfer):
+        if isinstance(transfer, dict) and transfer.get("type") == "ind.transfer.v3":
+            from . import protocol_v3
+
+            claim = {
+                "token_id": transfer["token_id"],
+                "previous_hash": transfer["previous_hash"],
+                "sequence": int(transfer["sequence"]),
+                "sender_address": transfer["sender_address"],
+                "sender_public_key": transfer["sender_public_key"],
+            }
+            claim["spend_key"] = protocol_v3.spend_key_for_transfer(transfer)
+            return claim
         claim = {
             "token_id": transfer["token_id"],
             "previous_hash": transfer["previous_hash"],
@@ -342,6 +386,13 @@ class TransparencyLog:
         transfer_leaf_index,
         first_seen,
     ):
+        existing = conn.execute(
+            """
+            SELECT transfer_leaf_index FROM spend_claims
+            WHERE spend_key = ? AND transfer_hash = ?
+            """,
+            (claim["spend_key"], transfer_hash),
+        ).fetchone()
         conn.execute(
             """
             INSERT OR IGNORE INTO spend_claims(
@@ -373,6 +424,195 @@ class TransparencyLog:
                 transfer_hash,
             ),
         )
+        persisted = conn.execute(
+            """
+            SELECT spend_key, token_id, previous_hash, sequence, sender_address,
+                   sender_public_key, transfer_hash, transfer_leaf_index, first_seen
+            FROM spend_claims
+            WHERE spend_key = ? AND transfer_hash = ?
+            """,
+            (claim["spend_key"], transfer_hash),
+        ).fetchone()
+        if persisted is None:
+            raise LogServerError("spend claim was not recorded")
+        persisted_claim = {
+            "spend_key": persisted["spend_key"],
+            "token_id": persisted["token_id"],
+            "previous_hash": persisted["previous_hash"],
+            "sequence": int(persisted["sequence"]),
+            "sender_address": persisted["sender_address"],
+            "sender_public_key": persisted["sender_public_key"],
+        }
+        existing_was_unindexed = existing is not None and existing["transfer_leaf_index"] is None
+        self._record_current_spend_map_claim(
+            conn,
+            persisted_claim,
+            persisted["transfer_hash"],
+            persisted["transfer_leaf_index"],
+            persisted["first_seen"],
+            increment_size=existing is None or existing_was_unindexed,
+        )
+
+    def _spend_map_meta(self, conn, key, default=None):
+        row = conn.execute(
+            "SELECT value FROM spend_map_meta_v3 WHERE key = ?",
+            (str(key),),
+        ).fetchone()
+        return row["value"] if row else default
+
+    def _set_spend_map_meta(self, conn, key, value):
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO spend_map_meta_v3(key, value)
+            VALUES (?, ?)
+            """,
+            (str(key), str(value)),
+        )
+
+    def _spend_map_node(self, conn, depth, position):
+        row = conn.execute(
+            """
+            SELECT node_hash FROM spend_map_nodes_v3
+            WHERE depth = ? AND position = ?
+            """,
+            (int(depth), str(int(position))),
+        ).fetchone()
+        return row["node_hash"] if row else None
+
+    def _set_spend_map_node(self, conn, depth, position, node_hash):
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO spend_map_nodes_v3(depth, position, node_hash)
+            VALUES (?, ?, ?)
+            """,
+            (int(depth), str(int(position)), str(node_hash)),
+        )
+
+    def _current_claim_for_map(self, conn, claim, transfer_hash, transfer_leaf_index, first_seen):
+        row = conn.execute(
+            "SELECT transfer_json FROM log_entries WHERE entry_hash = ?",
+            (transfer_hash,),
+        ).fetchone()
+        result = {
+            "type": "ind.transparency_spend_claim.v1",
+            "version": log_client.LOG_VERSION,
+            "log_id": self.log_id,
+            "spend_key": claim["spend_key"],
+            "token_id": claim["token_id"],
+            "previous_hash": claim["previous_hash"],
+            "sequence": int(claim["sequence"]),
+            "sender_address": claim["sender_address"],
+            "sender_public_key": claim["sender_public_key"],
+            "transfer_hash": transfer_hash,
+            "transfer_leaf_index": int(transfer_leaf_index),
+            "accepted_at": int(first_seen),
+        }
+        if row and row["transfer_json"]:
+            result["transfer"] = json.loads(row["transfer_json"])
+        return log_client._normalize_spend_claim(result)
+
+    def _claims_for_current_spend_key(self, conn, spend_key):
+        rows = conn.execute(
+            """
+            SELECT claim_json FROM spend_map_claims_v3
+            WHERE spend_key = ?
+            ORDER BY transfer_leaf_index ASC, transfer_hash ASC
+            """,
+            (str(spend_key),),
+        ).fetchall()
+        return [json.loads(row["claim_json"]) for row in rows]
+
+    def _record_current_spend_map_claim(
+        self,
+        conn,
+        claim,
+        transfer_hash,
+        transfer_leaf_index,
+        first_seen,
+        increment_size=False,
+    ):
+        had_current_root = self._spend_map_meta(conn, "root_hash") is not None
+        self._ensure_current_spend_map(conn)
+        if not had_current_root:
+            increment_size = False
+        full_claim = self._current_claim_for_map(
+            conn,
+            claim,
+            transfer_hash,
+            transfer_leaf_index,
+            first_seen,
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO spend_map_claims_v3(
+                spend_key, transfer_hash, transfer_leaf_index, claim_json
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                full_claim["spend_key"],
+                full_claim["transfer_hash"],
+                int(full_claim["transfer_leaf_index"]),
+                log_client.canonical_json(full_claim),
+            ),
+        )
+        spend_key = full_claim["spend_key"]
+        claims = self._claims_for_current_spend_key(conn, spend_key)
+        current_hash = log_client._spend_map_slot_hash(spend_key, claims)
+        position = log_client._spend_key_position(spend_key)
+        empty_hashes = log_client._spend_map_empty_hashes()
+        for depth in range(log_client.SPEND_MAP_KEY_BITS, -1, -1):
+            self._set_spend_map_node(conn, depth, position, current_hash)
+            if depth == 0:
+                break
+            sibling_position = position ^ 1
+            sibling_hash = self._spend_map_node(conn, depth, sibling_position)
+            if sibling_hash is None:
+                sibling_hash = empty_hashes[depth]
+            if position % 2 == 0:
+                current_hash = log_client._spend_map_branch_hash(current_hash, sibling_hash)
+            else:
+                current_hash = log_client._spend_map_branch_hash(sibling_hash, current_hash)
+            position >>= 1
+        current_size = int(self._spend_map_meta(conn, "map_size", "0"))
+        if increment_size:
+            current_size += 1
+        self._set_spend_map_meta(conn, "map_size", current_size)
+        self._set_spend_map_meta(conn, "root_hash", current_hash)
+
+    def _rebuild_current_spend_map(self, conn):
+        conn.execute("DELETE FROM spend_map_nodes_v3")
+        conn.execute("DELETE FROM spend_map_claims_v3")
+        conn.execute("DELETE FROM spend_map_meta_v3")
+        claims = self._spend_claim_records(conn)
+        levels, _claims_by_key, total_claims = log_client._spend_map_levels(claims)
+        for depth, nodes in enumerate(levels):
+            for position, node_hash in nodes.items():
+                self._set_spend_map_node(conn, depth, position, node_hash)
+        for claim in claims:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO spend_map_claims_v3(
+                    spend_key, transfer_hash, transfer_leaf_index, claim_json
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    claim["spend_key"],
+                    claim["transfer_hash"],
+                    int(claim["transfer_leaf_index"]),
+                    log_client.canonical_json(claim),
+                ),
+            )
+        root_hash = levels[0].get(0, log_client._spend_map_empty_root())
+        self._set_spend_map_meta(conn, "map_size", total_claims)
+        self._set_spend_map_meta(conn, "root_hash", root_hash)
+        self._set_spend_map_meta(conn, "rebuilt_at", int(time.time()))
+        return root_hash, total_claims
+
+    def _ensure_current_spend_map(self, conn):
+        root = self._spend_map_meta(conn, "root_hash")
+        if root is None:
+            return self._rebuild_current_spend_map(conn)
+        return root, int(self._spend_map_meta(conn, "map_size", "0"))
 
     def _spend_claim_records(self, conn, tree_size=None):
         params = []
@@ -414,12 +654,48 @@ class TransparencyLog:
         return claims
 
     def spend_map_root(self, tree_size=None):
+        latest_tree_size = self.tree_size()
+        if tree_size is None or int(tree_size) == latest_tree_size:
+            with self._connect() as conn:
+                root_hash, map_size = self._ensure_current_spend_map(conn)
+            return root_hash, int(map_size)
         with self._connect() as conn:
             claims = self._spend_claim_records(conn, tree_size=tree_size)
         return log_client.spend_map_root(claims), len(claims)
 
     def spend_map_proof(self, spend_key, tree_size=None):
         tree_size = self.tree_size() if tree_size is None else int(tree_size)
+        if tree_size == self.tree_size():
+            spend_key = log_client._hex32(spend_key, "spend key")
+            position = log_client._spend_key_position(spend_key)
+            empty_hashes = log_client._spend_map_empty_hashes()
+            audit_path = []
+            with self._connect() as conn:
+                _root_hash, map_size = self._ensure_current_spend_map(conn)
+                claims = self._claims_for_current_spend_key(conn, spend_key)
+                if not claims:
+                    raise log_client.InclusionProofError(
+                        "spend key is not in the transparency spend map"
+                    )
+                node_position = position
+                for child_depth in range(log_client.SPEND_MAP_KEY_BITS, 0, -1):
+                    sibling_position = node_position ^ 1
+                    sibling_hash = self._spend_map_node(conn, child_depth, sibling_position)
+                    if sibling_hash is None:
+                        sibling_hash = empty_hashes[child_depth]
+                    side = "right" if node_position % 2 == 0 else "left"
+                    audit_path.append({"side": side, "hash": sibling_hash})
+                    node_position >>= 1
+            return {
+                "type": log_client.LOG_SPEND_MAP_PROOF_TYPE,
+                "version": log_client.LOG_VERSION,
+                "algorithm": log_client.LOG_SPEND_MAP_ALGORITHM,
+                "spend_key": spend_key,
+                "tree_size": int(tree_size),
+                "map_size": int(map_size),
+                "spend_claims": copy.deepcopy(claims),
+                "audit_path": audit_path,
+            }
         with self._connect() as conn:
             claims = self._spend_claim_records(conn, tree_size=tree_size)
         return log_client.build_spend_map_proof(claims, str(spend_key), tree_size)
@@ -451,19 +727,34 @@ class TransparencyLog:
         log_client.verify_proof_archive(archive, root, operator_public_key=self.public_key)
         return archive
 
+    # Validate a transfer announcement and append only its latest transfer hash.
     def append_transfer_announcement(self, announcement):
-        """Validate a transfer announcement and append only its latest transfer hash."""
-
         if isinstance(announcement, bytes):
             announcement = announcement.decode("utf-8")
         if isinstance(announcement, str):
             announcement = ind_token.unpack_wire_message(announcement)
+        from . import protocol_v3
+
         if not isinstance(announcement, dict) or announcement.get("type") not in {
+            protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE,
             ind_token.TRANSFER_ANNOUNCEMENT_TYPE,
             ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE,
         }:
             raise LogServerError("expected an IND transfer announcement")
-        if announcement.get("type") == ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE:
+        if announcement.get("type") == protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE:
+            try:
+                decoded = protocol_v3.verify_transfer_announcement(
+                    announcement,
+                    trusted_operator_public_key=self.public_key,
+                )
+            except Exception as exc:
+                raise LogServerError(f"v3 transfer announcement is invalid: {exc}") from exc
+            bill = decoded["bill"]
+            state = decoded["state"]
+            transfer = bill["recent_transfers"][-1]
+            entry_hash = protocol_v3.transfer_hash(transfer)
+        elif announcement.get("type") == ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE:
+            raise LogServerError(protocol_policy.legacy_disabled_message("legacy transfer append"))
             ind_token._require_exact_fields(
                 announcement,
                 ind_token.TRANSFER_ANNOUNCEMENT_V2_FIELDS,
@@ -472,8 +763,13 @@ class TransparencyLog:
             if int(announcement["version"]) != ind_token.BILL_VERSION:
                 raise LogServerError("unsupported v2 transfer announcement version")
             bill = announcement.get("bill")
-            state = ind_token.verify_bill(bill, require_recent_transparency=False)
+            state = ind_token.verify_bill(
+                bill,
+                require_recent_transparency=False,
+                trusted_operator_public_key=self.public_key,
+            )
         else:
+            raise LogServerError(protocol_policy.legacy_disabled_message("legacy transfer append"))
             ind_token._require_exact_fields(
                 announcement,
                 ind_token.TRANSFER_ANNOUNCEMENT_FIELDS,
@@ -484,14 +780,17 @@ class TransparencyLog:
             state = ind_token.verify_token(bill)
         if state.sequence == 0:
             raise LogServerError("genesis bill has no transfer to log")
-        transfer = ind_token._last_transfer(bill)
-        entry_hash = ind_token.transfer_hash(transfer)
+        if announcement.get("type") != protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE:
+            transfer = ind_token._last_transfer(bill)
+            entry_hash = ind_token.transfer_hash(transfer)
         claim = self._spend_claim_from_transfer(transfer)
         submitted_at = int(time.time())
         with self._append_lock:
             with self._connect() as conn:
                 self._reject_conflicting_spend_claim(conn, claim, entry_hash)
-            result = self.append_entry_hash(entry_hash, submitted_at=submitted_at, transfer=transfer)
+            result = self.append_entry_hash(
+                entry_hash, submitted_at=submitted_at, transfer=transfer
+            )
             with self._connect() as conn:
                 self._record_spend_claim(
                     conn,
@@ -503,17 +802,23 @@ class TransparencyLog:
             result["spend_key"] = claim["spend_key"]
             return result
 
+    # Validate and append a compact bill checkpoint commitment.
     def append_checkpoint_announcement(self, announcement):
-        """Validate and append a compact bill checkpoint commitment."""
-
+        raise LogServerError(protocol_policy.legacy_disabled_message("legacy checkpoint append"))
         if isinstance(announcement, bytes):
             announcement = announcement.decode("utf-8")
         if isinstance(announcement, str):
             announcement = ind_token.unpack_wire_message(announcement)
-        if isinstance(announcement, dict) and announcement.get("type") == ind_token.BILL_CHECKPOINT_TYPE:
+        if (
+            isinstance(announcement, dict)
+            and announcement.get("type") == ind_token.BILL_CHECKPOINT_TYPE
+        ):
             raise LogServerError("checkpoint announcement requires source bill")
         else:
-            if not isinstance(announcement, dict) or announcement.get("type") != ind_token.CHECKPOINT_ANNOUNCEMENT_TYPE:
+            if (
+                not isinstance(announcement, dict)
+                or announcement.get("type") != ind_token.CHECKPOINT_ANNOUNCEMENT_TYPE
+            ):
                 raise LogServerError("expected an IND checkpoint announcement")
             ind_token._require_exact_fields(
                 announcement,
@@ -531,7 +836,11 @@ class TransparencyLog:
             optional={"transparency"},
         )
         try:
-            ind_token.verify_bill(bill, require_recent_transparency=False)
+            ind_token.verify_bill(
+                bill,
+                require_recent_transparency=False,
+                trusted_operator_public_key=self.public_key,
+            )
             expected = ind_token.create_bill_checkpoint(bill)
         except Exception as exc:
             raise LogServerError(f"checkpoint source bill is invalid: {exc}") from exc
@@ -552,9 +861,8 @@ class TransparencyLog:
             result["checkpoint_hash"] = checkpoint_hash_value
             return result
 
+    # Sign and store the current tree root, then mirror it to configured dirs.
     def publish_root(self, timestamp=None):
-        """Sign and store the current tree root, then mirror it to configured dirs."""
-
         with self._append_lock:
             timestamp = int(timestamp if timestamp is not None else time.time())
             latest = self.latest_root()
@@ -593,13 +901,11 @@ class TransparencyLog:
 
     def latest_root(self):
         with self._connect() as conn:
-            row = conn.execute(
-                """
+            row = conn.execute("""
                 SELECT root_json FROM signed_roots
                 ORDER BY timestamp DESC, tree_size DESC
                 LIMIT 1
-                """
-            ).fetchone()
+                """).fetchone()
         return json.loads(row["root_json"]) if row else None
 
     def root_for_tree_size(self, tree_size):
@@ -617,9 +923,8 @@ class TransparencyLog:
             raise LogServerError("no signed root for tree size")
         return json.loads(row["root_json"])
 
+    # Return the first signed root at or after timestamp.
     def root_at(self, timestamp):
-        """Return the first signed root at or after timestamp."""
-
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -647,9 +952,8 @@ class TransparencyLog:
         roots = [json.loads(row["root_json"]) for row in rows]
         return sorted(roots, key=lambda root: (int(root["timestamp"]), int(root["tree_size"])))
 
+    # Return logged transfer hashes by zero-based leaf index.
     def entries(self, start=0, end=None, limit=1000):
-        """Return logged transfer hashes by zero-based leaf index."""
-
         start = max(0, int(start))
         if end is None:
             end = start + int(limit) - 1
@@ -753,9 +1057,8 @@ class TransparencyLog:
 class TransparencyLogHandler(BaseHTTPRequestHandler):
     server_version = "INDTransparencyLog/1"
 
+    # Return the URL path, rejecting traversal-shaped input before routing.
     def _request_path(self):
-        """Return the URL path, rejecting traversal-shaped input before routing."""
-
         path = urlparse(self.path).path
         decoded = path
         for _ in range(2):
@@ -852,7 +1155,10 @@ class TransparencyLogHandler(BaseHTTPRequestHandler):
             self.connection.settimeout(APPEND_BODY_READ_TIMEOUT_SECONDS)
             raw = self.rfile.read(length).decode("utf-8")
             payload = json.loads(raw)
-            if isinstance(payload, dict) and payload.get("type") == ind_token.CHECKPOINT_ANNOUNCEMENT_TYPE:
+            if (
+                isinstance(payload, dict)
+                and payload.get("type") == ind_token.CHECKPOINT_ANNOUNCEMENT_TYPE
+            ):
                 result = self.server.transparency_log.append_checkpoint_announcement(payload)
             else:
                 result = self.server.transparency_log.append_transfer_announcement(payload)
@@ -873,9 +1179,8 @@ def _root_publisher(log, interval_seconds, stop_event):
         stop_event.wait(interval_seconds)
 
 
+# Run the HTTP transparency log operator.
 def serve(log, host="127.0.0.1", port=8890, root_interval_seconds=DEFAULT_ROOT_INTERVAL_SECONDS):
-    """Run the HTTP transparency log operator."""
-
     stop_event = threading.Event()
     publisher = threading.Thread(
         target=_root_publisher,
@@ -898,8 +1203,14 @@ def main():
     parser.add_argument("--db", default=os.environ.get("IND_LOG_DB", DEFAULT_LOG_DB))
     parser.add_argument("--host", default=os.environ.get("IND_LOG_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("IND_LOG_PORT", "8890")))
-    parser.add_argument("--private-key-file", default=os.environ.get("IND_LOG_PRIVATE_KEY_FILE", DEFAULT_LOG_PRIVATE_KEY))
-    parser.add_argument("--public-key-file", default=os.environ.get("IND_LOG_PUBLIC_KEY_FILE", DEFAULT_LOG_PUBLIC_KEY))
+    parser.add_argument(
+        "--private-key-file",
+        default=os.environ.get("IND_LOG_PRIVATE_KEY_FILE", DEFAULT_LOG_PRIVATE_KEY),
+    )
+    parser.add_argument(
+        "--public-key-file",
+        default=os.environ.get("IND_LOG_PUBLIC_KEY_FILE", DEFAULT_LOG_PUBLIC_KEY),
+    )
     parser.add_argument(
         "--mirror-dir",
         action="append",
@@ -912,7 +1223,9 @@ def main():
         default=int(os.environ.get("IND_LOG_ROOT_INTERVAL_SECONDS", DEFAULT_ROOT_INTERVAL_SECONDS)),
     )
     args = parser.parse_args()
-    private_key, public_key = load_or_create_operator_keys(args.private_key_file, args.public_key_file)
+    private_key, public_key = load_or_create_operator_keys(
+        args.private_key_file, args.public_key_file
+    )
     log = TransparencyLog(
         args.db,
         private_key,

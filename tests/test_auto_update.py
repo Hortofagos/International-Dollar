@@ -56,11 +56,14 @@ class AutoUpdateTests(unittest.TestCase):
     def test_check_for_updates_is_disabled_by_default_for_automatic_checks(self):
         settings = auto_update_impl.ind_settings.default_settings()
         settings["update_check_on_startup"] = False
-        with mock.patch.object(
-            auto_update_impl.ind_settings,
-            "load_security_settings",
-            return_value=settings,
-        ), mock.patch.object(auto_update_impl, "_git_available") as git_available:
+        with (
+            mock.patch.object(
+                auto_update_impl.ind_settings,
+                "load_security_settings",
+                return_value=settings,
+            ),
+            mock.patch.object(auto_update_impl, "_git_available") as git_available,
+        ):
             info = auto_update_impl.check_for_updates(Path("."))
 
         self.assertFalse(info.available)
@@ -69,11 +72,17 @@ class AutoUpdateTests(unittest.TestCase):
     def test_manual_check_bypasses_startup_auto_update_toggle(self):
         settings = auto_update_impl.ind_settings.default_settings()
         settings["update_check_on_startup"] = False
-        with temporary_update_env(), mock.patch.object(
-            auto_update_impl.ind_settings,
-            "load_security_settings",
-            return_value=settings,
-        ), mock.patch.object(auto_update_impl, "_git_available", return_value=False) as git_available:
+        with (
+            temporary_update_env(),
+            mock.patch.object(
+                auto_update_impl.ind_settings,
+                "load_security_settings",
+                return_value=settings,
+            ),
+            mock.patch.object(
+                auto_update_impl, "_git_available", return_value=False
+            ) as git_available,
+        ):
             os.environ[auto_update.UPDATE_MODE_ENV] = "git"
             info = auto_update_impl.check_for_updates(Path("."), manual=True)
 
@@ -158,7 +167,7 @@ class AutoUpdateTests(unittest.TestCase):
         )
 
     def _signed_manifest(self, artifact, sequence=1, channel="stable"):
-        _address, private_key, public_key = address_generation.generate_keypair()
+        _address, private_key, public_key = address_generation.generate_legacy_keypair()
         manifest = {
             "type": update_manifest.UPDATE_MANIFEST_TYPE,
             "version": 1,
@@ -227,16 +236,28 @@ class AutoUpdateTests(unittest.TestCase):
             self.assertTrue(result.success, result.error)
             self.assertEqual((repo / "app.py").read_text(encoding="utf-8"), "new\n")
             self.assertEqual((repo / "files" / "secret.txt").read_text(encoding="utf-8"), "keep\n")
-            self.assertEqual(update_manifest.read_update_state(repo / "files" / "update_state.json")["last_accepted_sequence"], 7)
+            self.assertEqual(
+                update_manifest.read_update_state(repo / "files" / "update_state.json")[
+                    "last_accepted_sequence"
+                ],
+                7,
+            )
             self.assertTrue(artifact_path.exists())
 
     def test_signed_manifest_bad_signature_and_rollback_reject(self):
-        artifact = {"platform": "source", "url": "file:///release.zip", "sha3_256": "0" * 64, "size_bytes": 0}
+        artifact = {
+            "platform": "source",
+            "url": "file:///release.zip",
+            "sha3_256": "0" * 64,
+            "size_bytes": 0,
+        }
         manifest, public_key = self._signed_manifest(artifact, sequence=5)
         tampered = dict(manifest)
         tampered["sequence"] = 6
         with self.assertRaises(update_manifest.UpdateManifestError):
-            update_manifest.verify_update_manifest(tampered, [public_key], expected_channel="stable")
+            update_manifest.verify_update_manifest(
+                tampered, [public_key], expected_channel="stable"
+            )
         with self.assertRaises(update_manifest.UpdateManifestError):
             update_manifest.verify_update_manifest(manifest, [public_key], min_sequence=6)
 

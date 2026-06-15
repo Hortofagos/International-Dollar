@@ -10,7 +10,6 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 
-
 FORMAT = "INDW2"
 VERSION = 2
 MWK_BYTES = 32
@@ -68,11 +67,11 @@ def _json_clone(value):
 
 
 def _payload_aad(address):
-    return f"{FORMAT}:payload:{address}".encode("utf-8")
+    return f"{FORMAT}:payload:{address}".encode()
 
 
 def _wrapper_aad(address, wrapper_type, salt_b64):
-    return f"{FORMAT}:mwk-wrapper:{address}:{wrapper_type}:{salt_b64}".encode("utf-8")
+    return f"{FORMAT}:mwk-wrapper:{address}:{wrapper_type}:{salt_b64}".encode()
 
 
 def _derive_argon2id(secret, salt, params):
@@ -142,7 +141,9 @@ def validate_wallet_password(password):
     except Exception:
         score = _fallback_password_score(text)
     if score < MIN_WALLET_PASSWORD_SCORE:
-        raise PasswordPolicyError("Wallet password is too easy to guess. Use a longer mixed phrase.")
+        raise PasswordPolicyError(
+            "Wallet password is too easy to guess. Use a longer mixed phrase."
+        )
 
 
 def _wrapper_from_secret(address, wrapper_type, secret, mwk, params, expires_at=None):
@@ -183,7 +184,9 @@ def _unwrap_with_secret(address, wrapper, secret):
         zeroize(key)
 
 
-def create_wallet_record(address, wallet_payload, wallet_password, recovery_phrase=None, kdf_params=None):
+def create_wallet_record(
+    address, wallet_payload, wallet_password, recovery_phrase=None, kdf_params=None
+):
     validate_wallet_password(wallet_password)
     params = kdf_params or DEFAULT_ARGON2_PARAMS
     address = str(address).strip()
@@ -301,6 +304,8 @@ def generate_recovery_phrase(word_count=8):
     try:
         from mnemonic import Mnemonic
     except Exception as exc:
-        raise RuntimeError("Install the mnemonic package to generate BIP-39 recovery phrases.") from exc
+        raise RuntimeError(
+            "Install the mnemonic package to generate BIP-39 recovery phrases."
+        ) from exc
     words = Mnemonic("english").wordlist
     return " ".join(secrets.choice(words) for _ in range(int(word_count)))

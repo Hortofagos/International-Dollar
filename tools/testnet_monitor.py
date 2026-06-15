@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write a machine-readable health snapshot for the public IND testnet node."""
+# Write a machine-readable health snapshot for the public IND testnet node.
 
 import argparse
 import datetime as dt
@@ -18,7 +18,9 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 
-DEFAULT_STATUS_FILE = os.environ.get("IND_TESTNET_MONITOR_STATUS_FILE", "files/testnet/monitor_status.json")
+DEFAULT_STATUS_FILE = os.environ.get(
+    "IND_TESTNET_MONITOR_STATUS_FILE", "files/testnet/monitor_status.json"
+)
 DEFAULT_OPERATOR_ROOT_URL = "http://127.0.0.1:8890/v1/root"
 DEFAULT_STATIC_ROOT = os.environ.get("IND_TESTNET_MONITOR_STATIC_ROOT", "")
 DEFAULT_ARCHIVE_MANIFEST = os.environ.get("IND_TESTNET_MONITOR_ARCHIVE_MANIFEST", "")
@@ -63,7 +65,9 @@ def atomic_write_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
     os.replace(tmp, path)
 
 
@@ -109,7 +113,9 @@ def collect_systemd(report, units):
         status = service_status(unit)
         services[unit] = status
         if not status["ok"]:
-            add_issue(report, "error", "systemd_unit_inactive", f"{unit} is {status['active_state']}")
+            add_issue(
+                report, "error", "systemd_unit_inactive", f"{unit} is {status['active_state']}"
+            )
     report["systemd_units"] = services
 
 
@@ -135,7 +141,9 @@ def collect_disk(report, paths, warn_percent):
     report["disk"] = disks
 
 
-def collect_transparency(report, operator_root_url, static_root_path, archive_manifest_path, freshness_warn_seconds):
+def collect_transparency(
+    report, operator_root_url, static_root_path, archive_manifest_path, freshness_warn_seconds
+):
     transparency = {}
     now = int(report["timestamp"])
 
@@ -151,7 +159,9 @@ def collect_transparency(report, operator_root_url, static_root_path, archive_ma
             "log_id": root.get("log_id", ""),
         }
         if now - timestamp > freshness_warn_seconds:
-            add_issue(report, "warning", "operator_root_stale", f"operator root is {now - timestamp}s old")
+            add_issue(
+                report, "warning", "operator_root_stale", f"operator root is {now - timestamp}s old"
+            )
     except Exception as exc:  # noqa: BLE001 - this is an operator health probe.
         transparency["operator_root"] = {"ok": False, "error": str(exc)}
         add_issue(report, "error", "operator_root_unavailable", f"operator root unavailable: {exc}")
@@ -168,7 +178,9 @@ def collect_transparency(report, operator_root_url, static_root_path, archive_ma
             "log_id": static_root.get("log_id", ""),
         }
         if now - timestamp > freshness_warn_seconds:
-            add_issue(report, "warning", "static_root_stale", f"static root is {now - timestamp}s old")
+            add_issue(
+                report, "warning", "static_root_stale", f"static root is {now - timestamp}s old"
+            )
     else:
         transparency["static_root"] = {"ok": False, "error": static_error}
         add_issue(report, "error", "static_root_missing", static_error)
@@ -191,9 +203,19 @@ def collect_transparency(report, operator_root_url, static_root_path, archive_ma
             int(transparency.get("static_root", {}).get("tree_size", 0)),
         )
         if archived_count != signed_tree_size:
-            add_issue(report, "error", "archive_manifest_inconsistent", "archive entry count does not match signed root")
+            add_issue(
+                report,
+                "error",
+                "archive_manifest_inconsistent",
+                "archive entry count does not match signed root",
+            )
         elif latest_size and archived_count < latest_size:
-            add_issue(report, "warning", "archive_behind_latest_root", f"archive covers {archived_count}/{latest_size} entries")
+            add_issue(
+                report,
+                "warning",
+                "archive_behind_latest_root",
+                f"archive covers {archived_count}/{latest_size} entries",
+            )
     else:
         transparency["hash_log_archive"] = {"ok": False, "error": archive_error}
         add_issue(report, "error", "archive_manifest_missing", archive_error)
@@ -204,7 +226,12 @@ def collect_transparency(report, operator_root_url, static_root_path, archive_ma
 def collect_peers(report, peer_dir):
     path = Path(peer_dir)
     if not path.exists():
-        report["peers"] = {"ok": False, "directory": str(path), "count": 0, "error": "directory does not exist"}
+        report["peers"] = {
+            "ok": False,
+            "directory": str(path),
+            "count": 0,
+            "error": "directory does not exist",
+        }
         add_issue(report, "warning", "peer_directory_missing", f"{path} does not exist")
         return
     peers = set()
@@ -222,26 +249,48 @@ def collect_peers(report, peer_dir):
 
 def collect_cert(report, cert_file, warn_days):
     if not cert_file:
-        report["certificate"] = {"ok": True, "skipped": True, "reason": "certificate file is not configured"}
+        report["certificate"] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "certificate file is not configured",
+        }
         return
     cert_path = Path(cert_file)
     if not cert_path.exists():
-        report["certificate"] = {"ok": False, "path": str(cert_path), "error": "certificate file does not exist"}
+        report["certificate"] = {
+            "ok": False,
+            "path": str(cert_path),
+            "error": "certificate file does not exist",
+        }
         add_issue(report, "error", "certificate_missing", f"{cert_path} does not exist")
         return
     result = run_command(["openssl", "x509", "-enddate", "-noout", "-in", str(cert_path)])
     if result["returncode"] != 0:
-        report["certificate"] = {"ok": False, "path": str(cert_path), "error": result["stderr"] or result["stdout"]}
+        report["certificate"] = {
+            "ok": False,
+            "path": str(cert_path),
+            "error": result["stderr"] or result["stdout"],
+        }
         add_issue(report, "error", "certificate_unreadable", "certificate expiry could not be read")
         return
     raw = result["stdout"].removeprefix("notAfter=").strip()
     try:
-        expires = dt.datetime.strptime(raw, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=dt.timezone.utc)
-        now = dt.datetime.now(dt.timezone.utc)
+        expires = dt.datetime.strptime(raw, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=dt.UTC)
+        now = dt.datetime.now(dt.UTC)
         seconds_remaining = int((expires - now).total_seconds())
     except ValueError:
-        report["certificate"] = {"ok": False, "path": str(cert_path), "not_after": raw, "error": "unparsed expiry"}
-        add_issue(report, "warning", "certificate_expiry_unparsed", "certificate expiry could not be parsed")
+        report["certificate"] = {
+            "ok": False,
+            "path": str(cert_path),
+            "not_after": raw,
+            "error": "unparsed expiry",
+        }
+        add_issue(
+            report,
+            "warning",
+            "certificate_expiry_unparsed",
+            "certificate expiry could not be parsed",
+        )
         return
     warn_seconds = int(warn_days) * 24 * 60 * 60
     report["certificate"] = {
@@ -252,7 +301,12 @@ def collect_cert(report, cert_file, warn_days):
         "days_remaining": round(seconds_remaining / 86400, 2),
     }
     if seconds_remaining <= warn_seconds:
-        add_issue(report, "warning", "certificate_expiring", f"certificate expires in {round(seconds_remaining / 86400, 2)} days")
+        add_issue(
+            report,
+            "warning",
+            "certificate_expiring",
+            f"certificate expires in {round(seconds_remaining / 86400, 2)} days",
+        )
 
 
 def parse_fail2ban_status(text):
@@ -268,7 +322,9 @@ def collect_fail2ban(report):
     status = run_command(["fail2ban-client", "status", "sshd"])
     if status["returncode"] != 0:
         report["fail2ban"] = {"ok": False, "error": status["stderr"] or status["stdout"]}
-        add_issue(report, "warning", "fail2ban_status_unavailable", "fail2ban sshd status unavailable")
+        add_issue(
+            report, "warning", "fail2ban_status_unavailable", "fail2ban sshd status unavailable"
+        )
         return
     parsed = parse_fail2ban_status(status["stdout"])
     report["fail2ban"] = {"ok": True, **parsed}
@@ -298,7 +354,12 @@ def collect_convergence(report, peers, refs, ref_files, finality_buffer_seconds)
     )
     report["convergence"] = convergence
     if not convergence["ok"]:
-        add_issue(report, "error", "seed_convergence_failed", "seed bill status differs across configured peers")
+        add_issue(
+            report,
+            "error",
+            "seed_convergence_failed",
+            "seed bill status differs across configured peers",
+        )
 
 
 def build_report(args):
@@ -334,7 +395,9 @@ def build_report(args):
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Write a JSON health snapshot for the public IND testnet node")
+    parser = argparse.ArgumentParser(
+        description="Write a JSON health snapshot for the public IND testnet node"
+    )
     parser.add_argument("--status-file", default=DEFAULT_STATUS_FILE)
     parser.add_argument("--operator-root-url", default=DEFAULT_OPERATOR_ROOT_URL)
     parser.add_argument("--static-root", default=DEFAULT_STATIC_ROOT)
@@ -346,12 +409,23 @@ def parse_args(argv=None):
     parser.add_argument("--disk-warn-percent", type=float, default=85.0)
     parser.add_argument("--cert-warn-days", type=int, default=21)
     parser.add_argument("--root-freshness-warn-seconds", type=int, default=180)
-    parser.add_argument("--convergence-peer", action="append", help="seed/node for convergence checks")
-    parser.add_argument("--convergence-ref", action="append", default=[], help="canary bill display ID or bill ID")
-    parser.add_argument("--convergence-ref-file", action="append", default=[], help="JSON/text file containing canary refs")
+    parser.add_argument(
+        "--convergence-peer", action="append", help="seed/node for convergence checks"
+    )
+    parser.add_argument(
+        "--convergence-ref", action="append", default=[], help="canary bill display ID or bill ID"
+    )
+    parser.add_argument(
+        "--convergence-ref-file",
+        action="append",
+        default=[],
+        help="JSON/text file containing canary refs",
+    )
     parser.add_argument("--convergence-finality-buffer-seconds", type=int, default=60)
     parser.add_argument("--json", action="store_true", help="print the status JSON to stdout")
-    parser.add_argument("--strict", action="store_true", help="exit non-zero when an error-level issue is present")
+    parser.add_argument(
+        "--strict", action="store_true", help="exit non-zero when an error-level issue is present"
+    )
     return parser.parse_args(argv)
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render or install durable testnet seed peering systemd drop-ins."""
+# Render or install durable testnet seed peering systemd drop-ins.
 
 import argparse
 import os
@@ -12,7 +12,6 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from tools import testnet_peers
-
 
 DEFAULT_UNIT = "ind-testnet-seed-node.service"
 
@@ -44,7 +43,11 @@ def install_dropin(unit, peers, dropin_root="/etc/systemd/system", reload_daemon
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Configure explicit IND testnet seed peering")
-    parser.add_argument("--peer", action="append", help="seed hostname; repeatable/comma-separated; default testnet/testnet.json")
+    parser.add_argument(
+        "--peer",
+        action="append",
+        help="seed hostname; repeatable/comma-separated; default testnet/testnet.json",
+    )
     parser.add_argument("--unit", default=DEFAULT_UNIT)
     parser.add_argument("--dropin-root", default="/etc/systemd/system")
     parser.add_argument("--install", action="store_true", help="write the systemd drop-in")
@@ -56,7 +59,9 @@ def main(argv=None):
     args = parse_args(argv)
     peers = testnet_peers.parse_peer_args(args.peer)
     if args.install:
-        target = install_dropin(args.unit, peers, args.dropin_root, reload_daemon=not args.no_daemon_reload)
+        target = install_dropin(
+            args.unit, peers, args.dropin_root, reload_daemon=not args.no_daemon_reload
+        )
         print(str(target))
     else:
         print(render_dropin(peers), end="")

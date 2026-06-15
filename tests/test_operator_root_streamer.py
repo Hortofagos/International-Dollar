@@ -9,8 +9,7 @@ import ecdsa
 import ind_token
 import log_client
 import log_server
-from operator_tools import hash_log_exporter
-from operator_tools import root_streamer
+from operator_tools import hash_log_exporter, root_streamer
 
 
 def keypair():
@@ -25,7 +24,9 @@ class OperatorRootStreamerTests(unittest.TestCase):
     def test_publish_once_writes_static_website_root_log(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             private_key, public_key = keypair()
-            log = log_server.TransparencyLog(str(Path(temp_dir) / "log.db"), private_key, public_key)
+            log = log_server.TransparencyLog(
+                str(Path(temp_dir) / "log.db"), private_key, public_key
+            )
             log.append_entry_hash(ind_token.sha3_hex(b"entry"))
             root = log.publish_root(1_700_000_000)
 
@@ -57,7 +58,9 @@ class OperatorRootStreamerTests(unittest.TestCase):
     def test_static_writer_replaces_disabled_latest_placeholder(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             private_key, public_key = keypair()
-            log = log_server.TransparencyLog(str(Path(temp_dir) / "log.db"), private_key, public_key)
+            log = log_server.TransparencyLog(
+                str(Path(temp_dir) / "log.db"), private_key, public_key
+            )
             root = log.publish_root(1_700_000_000)
             website_dir = Path(temp_dir) / "website"
             website_dir.mkdir()
@@ -75,7 +78,9 @@ class OperatorRootStreamerTests(unittest.TestCase):
     def test_hash_log_exporter_writes_contiguous_entry_segments(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             private_key, public_key = keypair()
-            log = log_server.TransparencyLog(str(Path(temp_dir) / "log.db"), private_key, public_key)
+            log = log_server.TransparencyLog(
+                str(Path(temp_dir) / "log.db"), private_key, public_key
+            )
             first_hash = ind_token.sha3_hex(b"first")
             second_hash = ind_token.sha3_hex(b"second")
             log.append_entry_hash(first_hash)
@@ -104,7 +109,9 @@ class OperatorRootStreamerTests(unittest.TestCase):
 
             self.assertEqual(exported, 2)
             self.assertTrue((archive_dir / "manifest.json").exists())
-            manifest = ind_token._load_json((archive_dir / "manifest.json").read_text(encoding="utf-8"))
+            manifest = ind_token._load_json(
+                (archive_dir / "manifest.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(manifest["signed_root_hash"], root["root_hash"])
             self.assertTrue(hash_log_exporter.verify_manifest_signature(manifest, public_key))
             segment_files = list((archive_dir / "entries").glob("*.jsonl"))

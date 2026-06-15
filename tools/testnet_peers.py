@@ -1,4 +1,4 @@
-"""Shared public-testnet peer parsing and broadcast helpers."""
+# Shared public-testnet peer parsing and broadcast helpers.
 
 import json
 import sys
@@ -11,7 +11,6 @@ if str(ROOT_DIR) not in sys.path:
 
 from ind import sender_node
 from ind import token as ind_token
-
 
 DEFAULT_TESTNET_CONFIG = ROOT_DIR / "testnet" / "testnet.json"
 
@@ -37,9 +36,8 @@ def _split_peer_values(values):
     return result
 
 
+# Return durable public-testnet seed hostnames from testnet/testnet.json.
 def testnet_seed_hosts(config_path=DEFAULT_TESTNET_CONFIG):
-    """Return durable public-testnet seed hostnames from testnet/testnet.json."""
-
     try:
         data = json.loads(Path(config_path).read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -53,9 +51,8 @@ def testnet_seed_hosts(config_path=DEFAULT_TESTNET_CONFIG):
     return _dedupe(hosts)
 
 
+# Parse repeated and comma-separated peer arguments.
 def parse_peer_args(values, *, config_path=DEFAULT_TESTNET_CONFIG, default_to_config=True):
-    """Parse repeated and comma-separated peer arguments."""
-
     peers = _split_peer_values(values)
     if not peers and default_to_config:
         peers = testnet_seed_hosts(config_path)
@@ -66,9 +63,8 @@ def peers_env_value(peers):
     return ",".join(parse_peer_args(peers, default_to_config=False))
 
 
+# Broadcast one public gossip message to every configured seed.
 def broadcast_message_to_peers(message, peers, *, delay_seconds=0.05):
-    """Broadcast one public gossip message to every configured seed."""
-
     raw = ind_token.pack_wire_message(message)
     results = []
     for peer in parse_peer_args(peers, default_to_config=False):

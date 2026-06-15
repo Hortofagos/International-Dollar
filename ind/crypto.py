@@ -1,4 +1,4 @@
-"""Cryptographic primitives used by the IND protocol."""
+# Cryptographic primitives used by the IND protocol.
 
 from .protocol import (
     b85_sign,
@@ -19,4 +19,3 @@ __all__ = [
     "sha3_hex",
     "signature_payload",
 ]
-

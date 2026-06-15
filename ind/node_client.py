@@ -1,7 +1,7 @@
-"""TCP gossip node service for IND peer discovery, message relay, and settlement."""
+# TCP gossip node service for IND peer discovery, message relay, and settlement.
 
-import json
 import ipaddress
+import json
 import logging
 import os
 import random
@@ -16,7 +16,6 @@ from . import sender_node
 from . import settings as ind_settings
 from . import token as ind_token
 from . import transport as ind_transport
-
 
 PORT = 8888
 
@@ -52,7 +51,9 @@ MAX_RECIPIENT_LOOKUPS_PER_PEER_WINDOW = _env_int(
     120,
     minimum=1,
 )
-MAX_STATUS_REQUESTS_PER_PEER_WINDOW = _env_int("IND_NODE_MAX_STATUS_REQUESTS_PER_IP_WINDOW", 120, minimum=1)
+MAX_STATUS_REQUESTS_PER_PEER_WINDOW = _env_int(
+    "IND_NODE_MAX_STATUS_REQUESTS_PER_IP_WINDOW", 120, minimum=1
+)
 MAX_PEER_DISCOVERY_REQUESTS_PER_PEER_WINDOW = _env_int(
     "IND_NODE_MAX_PEER_DISCOVERY_REQUESTS_PER_IP_WINDOW",
     60,
@@ -63,10 +64,14 @@ MAX_PEER_ANNOUNCEMENTS_PER_PEER_WINDOW = _env_int(
     60,
     minimum=1,
 )
-MAX_MISC_REQUESTS_PER_PEER_WINDOW = _env_int("IND_NODE_MAX_MISC_REQUESTS_PER_IP_WINDOW", 60, minimum=1)
+MAX_MISC_REQUESTS_PER_PEER_WINDOW = _env_int(
+    "IND_NODE_MAX_MISC_REQUESTS_PER_IP_WINDOW", 60, minimum=1
+)
 MAX_ACTIVE_CONNECTIONS = _env_int("IND_NODE_MAX_ACTIVE_CONNECTIONS", 128, minimum=1)
 MAX_ACTIVE_CONNECTIONS_PER_PEER = _env_int("IND_NODE_MAX_ACTIVE_CONNECTIONS_PER_IP", 12, minimum=1)
-NODE_REQUEST_TIMEOUT_SECONDS = _env_int("IND_NODE_REQUEST_TIMEOUT_SECONDS", 10, minimum=1, maximum=120)
+NODE_REQUEST_TIMEOUT_SECONDS = _env_int(
+    "IND_NODE_REQUEST_TIMEOUT_SECONDS", 10, minimum=1, maximum=120
+)
 NODE_SOCKET_BACKLOG = _env_int("IND_NODE_SOCKET_BACKLOG", 128, minimum=1)
 MAX_STATUS_REFS_PER_REQUEST = _env_int("IND_NODE_MAX_STATUS_REFS_PER_REQUEST", 200, minimum=1)
 INVALID_SCORE_BAN_THRESHOLD = 5
@@ -78,9 +83,8 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 
+# Thread-safe counters for why the node closed peer connections.
 class ServerCloseCounters:
-    """Thread-safe counters for why the node closed peer connections."""
-
     def __init__(self):
         self.counts = {}
         self.lock = threading.Lock()
@@ -134,10 +138,11 @@ def _is_loopback_peer(value):
         return False
 
 
+# Small in-memory rate limiter for per-peer connection and gossip buckets.
 class PeerRateLimiter:
-    """Small in-memory rate limiter for per-peer connection and gossip buckets."""
-
-    def __init__(self, window_seconds=PEER_RATE_WINDOW_SECONDS, max_entries=MAX_PEER_TRACKING_ENTRIES):
+    def __init__(
+        self, window_seconds=PEER_RATE_WINDOW_SECONDS, max_entries=MAX_PEER_TRACKING_ENTRIES
+    ):
         self.window_seconds = int(window_seconds)
         self.max_entries = int(max_entries)
         self.events = {}
@@ -147,7 +152,9 @@ class PeerRateLimiter:
         overflow = len(self.events) - self.max_entries
         if overflow <= 0:
             return
-        oldest = sorted(self.events.items(), key=lambda item: item[1][-1] if item[1] else 0)[:overflow]
+        oldest = sorted(self.events.items(), key=lambda item: item[1][-1] if item[1] else 0)[
+            :overflow
+        ]
         for key, _timestamps in oldest:
             self.events.pop(key, None)
 
@@ -167,9 +174,8 @@ class PeerRateLimiter:
             return True
 
 
+# Tracks peers that repeatedly send malformed gossip and cools scores over time.
 class PeerPenaltyBook:
-    """Tracks peers that repeatedly send malformed gossip and cools scores over time."""
-
     def __init__(
         self,
         threshold=INVALID_SCORE_BAN_THRESHOLD,
@@ -215,10 +221,11 @@ class PeerPenaltyBook:
             return score < self.threshold
 
 
+# Caps concurrent handler threads globally and per peer IP.
 class ActivePeerConnections:
-    """Caps concurrent handler threads globally and per peer IP."""
-
-    def __init__(self, max_total=MAX_ACTIVE_CONNECTIONS, max_per_peer=MAX_ACTIVE_CONNECTIONS_PER_PEER):
+    def __init__(
+        self, max_total=MAX_ACTIVE_CONNECTIONS, max_per_peer=MAX_ACTIVE_CONNECTIONS_PER_PEER
+    ):
         self.max_total = int(max_total)
         self.max_per_peer = int(max_per_peer)
         self.total = 0
@@ -246,9 +253,8 @@ class ActivePeerConnections:
             self.total = max(0, self.total - 1)
 
 
+# Bounded dedupe set for recently processed gossip messages.
 class BoundedSeenSet:
-    """Bounded dedupe set for recently processed gossip messages."""
-
     def __init__(self, limit=MAX_SEEN_GOSSIP_MESSAGES):
         self.limit = int(limit)
         self.items = set()
@@ -274,15 +280,13 @@ class BoundedSeenSet:
             return value in self.items
 
 
+# Add a gossip payload to the shared queue while keeping memory bounded.
 def append_unique_gossip(gossip_pool, raw, limit=MAX_GOSSIP_POOL_MESSAGES):
-    """Add a gossip payload to the shared queue while keeping memory bounded."""
-
     return append_gossip(gossip_pool, raw, limit=limit, high_priority=False)
 
 
+# Add a gossip payload, optionally putting urgent evidence at the front.
 def append_gossip(gossip_pool, raw, limit=MAX_GOSSIP_POOL_MESSAGES, high_priority=False):
-    """Add a gossip payload, optionally putting urgent evidence at the front."""
-
     try:
         if raw in gossip_pool:
             return False
@@ -302,13 +306,15 @@ def append_gossip(gossip_pool, raw, limit=MAX_GOSSIP_POOL_MESSAGES, high_priorit
         return False
 
 
+# Queue follow-up gossip emitted by local store ingestion.
 def queue_store_result_gossip(gossip_pool, result):
-    """Queue follow-up gossip emitted by local store ingestion."""
+    from . import protocol_v3
 
     if not isinstance(result, dict):
         return
     for gossip_message in result.get("gossip_messages", []):
         high_priority = gossip_message.get("type") in {
+            protocol_v3.CONFLICT_PROOF_TYPE,
             ind_token.TRANSPARENCY_EQUIVOCATION_PROOF_TYPE,
             ind_token.TRANSPARENCY_OPERATOR_POLICY_VIOLATION_TYPE,
         }
@@ -362,6 +368,8 @@ def prepare_incoming_gossip(peer_ip, raw, seen, rate_limiter):
     if not rate_limiter.allow(peer_ip, "gossip_decode", MAX_GOSSIP_DECODE_ATTEMPTS_PER_PEER_WINDOW):
         return {"accepted": False, "rate_limited": True}
     message = ind_token.unpack_wire_message(raw)
+    if not isinstance(message, dict):
+        raise ind_token.ValidationError("malformed gossip message")
     mh = ind_token.message_hash(message)
     if mh in seen:
         return {"accepted": False, "duplicate": True, "message_hash": mh, "message": message}
@@ -371,8 +379,9 @@ def prepare_incoming_gossip(peer_ip, raw, seen, rate_limiter):
     return {"accepted": True, "message_hash": mh, "message": message}
 
 
+# Validate one incoming gossip payload and return its wire response text.
 def handle_incoming_gossip(peer_ip, msg, seen_gossip, rate_limiter, store, gossip_pool, penalties):
-    """Validate one incoming gossip payload and return its wire response text."""
+    from . import protocol_v3
 
     try:
         prepared = prepare_incoming_gossip(peer_ip, msg, seen_gossip, rate_limiter)
@@ -395,6 +404,7 @@ def handle_incoming_gossip(peer_ip, msg, seen_gossip, rate_limiter, store, gossi
         seen_gossip.add(prepared["message_hash"])
         if result.get("relay", True):
             high_priority = prepared["message"].get("type") in {
+                protocol_v3.CONFLICT_PROOF_TYPE,
                 ind_token.CONFLICT_PROOF_TYPE,
                 ind_token.TRANSPARENCY_EQUIVOCATION_PROOF_TYPE,
                 ind_token.TRANSPARENCY_OPERATOR_POLICY_VIOLATION_TYPE,
@@ -408,7 +418,9 @@ def handle_incoming_gossip(peer_ip, msg, seen_gossip, rate_limiter, store, gossi
     if result.get("conflict_proof"):
         logger.warning("queued double-spend proof from %s", peer_ip)
     if result.get("accepted"):
-        logger.info("accepted %s gossip from %s", prepared["message"].get("type", "message"), peer_ip)
+        logger.info(
+            "accepted %s gossip from %s", prepared["message"].get("type", "message"), peer_ip
+        )
     return "ok"
 
 
@@ -431,9 +443,8 @@ def _peer_files():
     return peers
 
 
+# Resolve wallet display ids or protocol bill ids into compact local confidence lines.
 def _status_lines_for_refs(refs):
-    """Resolve wallet display ids or protocol bill ids into compact local confidence lines."""
-
     store = ind_token.INDLocalStore()
     store.finalize_pending(buffer_seconds=ind_settings.finality_buffer_seconds())
     lines = []
@@ -455,9 +466,8 @@ def _status_response_for_request(msg):
     return _status_lines_for_refs(refs)
 
 
+# Register this desktop node with peers as a reachability hint.
 def new_ip(v):
-    """Register this desktop node with peers as a reachability hint."""
-
     sender_node.ensure_runtime_files()
     public_ip = sender_node.public_ip()
     if not public_ip:
@@ -471,15 +481,16 @@ def new_ip(v):
     def announce():
         runtime_json.set_public_ip(public_ip)
         for _ in range(len(ipnl)):
-            threading.Thread(target=sender_node.connect, args=("i", public_ip + "\n" + v, ipnl)).start()
+            threading.Thread(
+                target=sender_node.connect, args=("i", public_ip + "\n" + v, ipnl)
+            ).start()
 
     if runtime_json.get_public_ip() != public_ip:
         announce()
 
 
+# Run the TCP gossip service that validates and relays IND protocol messages.
 def node_protocol(rfb, rfb_response, gossip_pool, _unused_bill_pool):
-    """Run the TCP gossip service that validates and relays IND protocol messages."""
-
     sender_node.ensure_runtime_files()
     new_ip("2")
     logger.info("node protocol initialized")
@@ -499,18 +510,20 @@ def node_protocol(rfb, rfb_response, gossip_pool, _unused_bill_pool):
             conn.settimeout(NODE_REQUEST_TIMEOUT_SECONDS)
             try:
                 first_packet = conn.recv(1024)
-            except socket.timeout:
+            except TimeoutError:
                 record_server_close("timeout", peer_ip, "waiting for first packet", logging.WARNING)
                 return
             if not first_packet:
                 record_server_close("connection_closed", peer_ip, "empty first packet")
                 return
             if not ind_transport.is_noise_hello(first_packet):
-                record_server_close("bad_handshake", peer_ip, "missing INDN1 hello", logging.WARNING)
+                record_server_close(
+                    "bad_handshake", peer_ip, "missing INDN1 hello", logging.WARNING
+                )
                 return
             try:
                 session = ind_transport.server_handshake(conn, first_packet)
-            except socket.timeout:
+            except TimeoutError:
                 record_server_close("timeout", peer_ip, "during handshake", logging.WARNING)
                 return
             except ind_transport.TransportError as exc:
@@ -522,8 +535,10 @@ def node_protocol(rfb, rfb_response, gossip_pool, _unused_bill_pool):
 
             try:
                 request = session.recv_text(conn, ind_token.MAX_WIRE_DECOMPRESSED_BYTES + 1)
-            except socket.timeout:
-                record_server_close("timeout", peer_ip, "waiting for encrypted request", logging.WARNING)
+            except TimeoutError:
+                record_server_close(
+                    "timeout", peer_ip, "waiting for encrypted request", logging.WARNING
+                )
                 return
             except ind_transport.TransportError as exc:
                 if _transport_error_is_oversize(exc):
@@ -607,7 +622,7 @@ def node_protocol(rfb, rfb_response, gossip_pool, _unused_bill_pool):
             else:
                 record_server_close("invalid", peer_ip, "unknown indicator", logging.WARNING)
                 send_response("n")
-        except socket.timeout:
+        except TimeoutError:
             record_server_close("timeout", peer_ip, "handler timeout", logging.WARNING)
         except Exception as exc:
             logger.debug("peer handler failed for %s: %s", peer_ip, exc, exc_info=True)
@@ -651,9 +666,8 @@ def node_protocol(rfb, rfb_response, gossip_pool, _unused_bill_pool):
             time.sleep(0.2)
 
 
+# Maintain local settlement and ingest gossip collected by the TCP service.
 def database(_rfb, _rfb_response, gossip_pool):
-    """Maintain local settlement and ingest gossip collected by the TCP service."""
-
     logger.info("local settlement worker started")
     store = ind_token.INDLocalStore()
     seen = BoundedSeenSet()
@@ -680,22 +694,23 @@ def database(_rfb, _rfb_response, gossip_pool):
             except Exception as exc:
                 logger.debug("queued gossip was rejected locally: %s", exc)
         if len(gossip_pool) > MAX_GOSSIP_POOL_MESSAGES:
-            del gossip_pool[:len(gossip_pool) - MAX_GOSSIP_POOL_MESSAGES]
+            del gossip_pool[: len(gossip_pool) - MAX_GOSSIP_POOL_MESSAGES]
 
 
+# Compatibility stub for the old global bill database flow.
 def download_bills(_pos, _transaction_pool):
-    """Compatibility stub for the old global bill database flow."""
-
     return
 
 
+# Rebroadcast queued gossip to sampled peers so messages continue spreading.
 def maintain_connections(gossip_pool):
-    """Rebroadcast queued gossip to sampled peers so messages continue spreading."""
+    from . import protocol_v3
 
     sender_node.ensure_runtime_files()
     logger.info("gossip rebroadcaster started")
     last_evidence_broadcast = {}
     evidence_types = {
+        protocol_v3.CONFLICT_PROOF_TYPE,
         ind_token.CONFLICT_PROOF_TYPE,
         ind_token.TRANSPARENCY_EQUIVOCATION_PROOF_TYPE,
         ind_token.TRANSPARENCY_OPERATOR_POLICY_VIOLATION_TYPE,
@@ -730,7 +745,9 @@ def maintain_connections(gossip_pool):
                         ip_addr = sender_node._peer_ip(peer)
                         if ip_addr != my_ip:
                             sender_node.connect("b", raw, [peer])
-                candidates = [item for item in queued[1:] if unpack_type(item)[0] not in evidence_types]
+                candidates = [
+                    item for item in queued[1:] if unpack_type(item)[0] not in evidence_types
+                ]
                 if not candidates:
                     continue
                 raw = random.choice(candidates)
@@ -744,13 +761,15 @@ def maintain_connections(gossip_pool):
             logger.debug("gossip rebroadcast loop iteration failed: %s", exc, exc_info=True)
 
 
+# Run the IND gossip node service.
 def main():
-    """Run the IND gossip node service."""
-
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     port = node_port()
     print(f"IND {ind_settings.network_name()} gossip node is starting...", flush=True)
-    print(f"Open/forward TCP port {port} on your router and firewall so peers can reach this node.", flush=True)
+    print(
+        f"Open/forward TCP port {port} on your router and firewall so peers can reach this node.",
+        flush=True,
+    )
     with Manager() as manager:
         rf1 = manager.list()
         rf2 = manager.dict()

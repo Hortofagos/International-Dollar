@@ -1,4 +1,4 @@
-"""Compatibility wrapper for the IND transparency log client."""
+# Compatibility wrapper for the IND transparency log client.
 
 from ind import transparency_client as _impl
 

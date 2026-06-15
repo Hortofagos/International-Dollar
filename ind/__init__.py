@@ -1,2 +1,1 @@
-"""International Dollar implementation package."""
-
+# International Dollar implementation package.

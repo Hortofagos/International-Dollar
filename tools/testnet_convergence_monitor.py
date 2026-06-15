@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare public-testnet bill status across configured seed nodes."""
+# Compare public-testnet bill status across configured seed nodes.
 
 import argparse
 import ipaddress
@@ -14,10 +14,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from tools import testnet_peers
-from tools import testnet_report
 from ind import sender_node
-
+from tools import testnet_peers, testnet_report
 
 STALE_STATUSES = {
     "",
@@ -94,7 +92,9 @@ def _exception_records(refs, exc):
 
 
 def _records_are_stale(records):
-    return bool(records) and any(str(record.get("status", "")) in STALE_STATUSES for record in records)
+    return bool(records) and any(
+        str(record.get("status", "")) in STALE_STATUSES for record in records
+    )
 
 
 def _peer_is_ip_literal(peer):
@@ -131,7 +131,9 @@ def _resolved_alternate_peers(peer):
 def _query_peer_status_with_path_fallback(refs, peer, *, status_timeout_seconds=60):
     attempts = []
     try:
-        records = testnet_report.query_peer_status(refs, peer=peer, timeout_seconds=status_timeout_seconds)
+        records = testnet_report.query_peer_status(
+            refs, peer=peer, timeout_seconds=status_timeout_seconds
+        )
     except Exception as exc:  # noqa: BLE001 - monitor should convert probe failures to JSON.
         records = _exception_records(refs, exc)
     attempts.append({"peer": peer, "stale": _records_are_stale(records)})
@@ -160,7 +162,9 @@ def _query_peer_status_with_path_fallback(refs, peer, *, status_timeout_seconds=
     return records, {"queried_peer": peer, "path_status": "stale", "attempts": attempts}
 
 
-def build_report(peers, refs, *, finality_buffer_seconds=0, status_timeout_seconds=60, queried_at=None):
+def build_report(
+    peers, refs, *, finality_buffer_seconds=0, status_timeout_seconds=60, queried_at=None
+):
     peers = testnet_peers.parse_peer_args(peers)
     refs = _dedupe(refs)
     queried_at = int(time.time() if queried_at is None else queried_at)
@@ -175,11 +179,15 @@ def build_report(peers, refs, *, finality_buffer_seconds=0, status_timeout_secon
             peer,
             status_timeout_seconds=status_timeout_seconds,
         )
-        per_peer.append({"peer": peer, "queried_peer": path["queried_peer"], "path": path, "records": records})
+        per_peer.append(
+            {"peer": peer, "queried_peer": path["queried_peer"], "path": path, "records": records}
+        )
         if any(str(record.get("status", "")) in STALE_STATUSES for record in records):
             stale_peers.append(peer)
         for record in records:
-            records_by_ref.setdefault(record.get("ref") or record.get("display_id"), {})[peer] = record
+            records_by_ref.setdefault(record.get("ref") or record.get("display_id"), {})[
+                peer
+            ] = record
 
     for ref, peer_records in records_by_ref.items():
         signatures = {}
@@ -215,10 +223,18 @@ def build_report(peers, refs, *, finality_buffer_seconds=0, status_timeout_secon
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Compare IND testnet bill status across seeds")
-    parser.add_argument("--peer", action="append", help="seed/node to query; repeatable and comma-separated")
-    parser.add_argument("--ref", action="append", dest="refs", help="display ID or bill ID to compare; repeatable")
-    parser.add_argument("--ref-file", action="append", default=[], help="JSON/text file containing canary refs")
-    parser.add_argument("--canary-ref-file", action="append", default=[], help="alias for --ref-file")
+    parser.add_argument(
+        "--peer", action="append", help="seed/node to query; repeatable and comma-separated"
+    )
+    parser.add_argument(
+        "--ref", action="append", dest="refs", help="display ID or bill ID to compare; repeatable"
+    )
+    parser.add_argument(
+        "--ref-file", action="append", default=[], help="JSON/text file containing canary refs"
+    )
+    parser.add_argument(
+        "--canary-ref-file", action="append", default=[], help="alias for --ref-file"
+    )
     parser.add_argument("--finality-buffer-seconds", type=int, default=60)
     parser.add_argument(
         "--status-timeout-seconds",
@@ -227,7 +243,9 @@ def parse_args(argv=None):
         help="per-route status request timeout; defaults to the 60s settlement window",
     )
     parser.add_argument("--json", action="store_true", help="print JSON output")
-    parser.add_argument("--strict", action="store_true", help="return nonzero when convergence is not ok")
+    parser.add_argument(
+        "--strict", action="store_true", help="return nonzero when convergence is not ok"
+    )
     return parser.parse_args(argv)
 
 

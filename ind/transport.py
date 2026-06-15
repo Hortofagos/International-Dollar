@@ -14,7 +14,6 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from . import settings as ind_settings
 from . import token as ind_token
 
-
 PROTOCOL_NAME = "INDN1_X25519_ChaCha20Poly1305_SHA256"
 HELLO_PREFIX = b"INDN1 "
 MAX_HANDSHAKE_LINE_BYTES = 256
@@ -25,12 +24,14 @@ NOISE_PUBLIC_KEY_PATH = Path("files/noise_public_key.json")
 NOISE_PEER_KEY_DIR = Path("files/noise_peers")
 
 
+# Raised when the encrypted node transport cannot be established.
 class TransportError(ind_token.TokenError):
-    """Raised when the encrypted node transport cannot be established."""
+    pass
 
 
+# Raised when a known peer presents a different transport key.
 class PeerKeyMismatch(TransportError):
-    """Raised when a known peer presents a different transport key."""
+    pass
 
 
 def _b64(raw):
@@ -109,9 +110,8 @@ def _read_key_json_or_legacy(path, field):
     return ""
 
 
+# Create the node's long-term X25519 transport keypair if it is missing.
 def ensure_transport_keypair():
-    """Create the node's long-term X25519 transport keypair if it is missing."""
-
     private_path = _network_path(NOISE_PRIVATE_KEY_PATH)
     public_path = _network_path(NOISE_PUBLIC_KEY_PATH)
     peer_key_dir = _network_path(NOISE_PEER_KEY_DIR)
@@ -131,30 +131,26 @@ def ensure_transport_keypair():
     _write_key_json(public_path, "public_key", _b64(_public_bytes(public_key)))
 
 
+# Load the node's long-term X25519 transport private key.
 def load_static_private_key():
-    """Load the node's long-term X25519 transport private key."""
-
     ensure_transport_keypair()
     raw = _unb64(_read_key_json_or_legacy(_network_path(NOISE_PRIVATE_KEY_PATH), "private_key"))
     return x25519.X25519PrivateKey.from_private_bytes(raw)
 
 
+# Return the node's long-term X25519 transport public key bytes.
 def load_static_public_key_bytes():
-    """Return the node's long-term X25519 transport public key bytes."""
-
     ensure_transport_keypair()
     return _unb64(_read_key_json_or_legacy(_network_path(NOISE_PUBLIC_KEY_PATH), "public_key"))
 
 
+# Return whether an incoming connection starts with the IND encrypted transport.
 def is_noise_hello(first_packet):
-    """Return whether an incoming connection starts with the IND encrypted transport."""
-
     return first_packet.startswith(HELLO_PREFIX)
 
 
+# Pin first-seen transport keys and reject unexpected key changes later.
 def verify_or_pin_peer_key(peer_ip, public_key_bytes):
-    """Pin first-seen transport keys and reject unexpected key changes later."""
-
     if not peer_ip:
         return
     _network_path(NOISE_PEER_KEY_DIR).mkdir(parents=True, exist_ok=True)
@@ -187,7 +183,9 @@ def _read_line(conn, initial=b"", limit=MAX_HANDSHAKE_LINE_BYTES):
     return line
 
 
-def _derive_keys(client_eph_pub, server_static_pub, server_eph_pub, shared_static, shared_ephemeral):
+def _derive_keys(
+    client_eph_pub, server_static_pub, server_eph_pub, shared_static, shared_ephemeral
+):
     transcript = b"|".join((b"INDN1", client_eph_pub, server_static_pub, server_eph_pub))
     salt = hashlib.sha256(transcript).digest()
     material = shared_static + shared_ephemeral
@@ -210,9 +208,8 @@ def _recv_exact(conn, size):
     return bytes(received)
 
 
+# Small encrypted session for one IND node request and response.
 class TransportSession:
-    """Small encrypted session for one IND node request and response."""
-
     def __init__(self, send_key, recv_key):
         self.send_key = send_key
         self.recv_key = recv_key
@@ -246,9 +243,8 @@ class TransportSession:
         return plaintext.decode("utf-8")
 
 
+# Start an IND encrypted transport session as the connecting peer.
 def client_handshake(conn, peer_ip=None):
-    """Start an IND encrypted transport session as the connecting peer."""
-
     client_eph_private = x25519.X25519PrivateKey.generate()
     client_eph_pub = _public_bytes(client_eph_private.public_key())
     conn.sendall(HELLO_PREFIX + _b64(client_eph_pub).encode("ascii") + b"\n")
@@ -256,7 +252,7 @@ def client_handshake(conn, peer_ip=None):
     line = _read_line(conn)
     if not line.startswith(HELLO_PREFIX):
         raise TransportError("peer does not speak IND encrypted transport")
-    parts = line[len(HELLO_PREFIX):].split()
+    parts = line[len(HELLO_PREFIX) :].split()
     if len(parts) != 2:
         raise TransportError("malformed transport server hello")
     server_static_pub = _unb64(parts[0].decode("ascii"))
@@ -279,13 +275,12 @@ def client_handshake(conn, peer_ip=None):
     return TransportSession(client_to_server, server_to_client)
 
 
+# Accept an IND encrypted transport session as the listening node.
 def server_handshake(conn, first_packet):
-    """Accept an IND encrypted transport session as the listening node."""
-
     line = _read_line(conn, first_packet)
     if not line.startswith(HELLO_PREFIX):
         raise TransportError("not an IND encrypted transport hello")
-    client_eph_pub = _unb64(line[len(HELLO_PREFIX):].decode("ascii").strip())
+    client_eph_pub = _unb64(line[len(HELLO_PREFIX) :].decode("ascii").strip())
     if len(client_eph_pub) != 32:
         raise TransportError("malformed transport client key")
 
@@ -314,9 +309,8 @@ def server_handshake(conn, first_packet):
     return TransportSession(server_to_client, client_to_server)
 
 
+# Send one encrypted IND node request and return its encrypted response.
 def request(addr, indicator, data, peer_ip=None, timeout=4):
-    """Send one encrypted IND node request and return its encrypted response."""
-
     if len(data.encode("utf-8")) > ind_token.MAX_WIRE_DECOMPRESSED_BYTES:
         raise TransportError("request payload is too large")
     client = socket.create_connection(addr, timeout=timeout)

@@ -1,14 +1,12 @@
 from . import runtime as runtime_json
 from . import wallet_crypto
 
-
 WALLET_V2_FORMAT = wallet_crypto.FORMAT
 PasswordPolicyError = wallet_crypto.PasswordPolicyError
 
 
+# Create a new INDW2 wallet: payload encrypted by MWK, MWK wrapped by password.
 def wallet_encrypt(wallet_password=None, recovery_phrase=None):
-    """Create a new INDW2 wallet: payload encrypted by MWK, MWK wrapped by password."""
-
     wallet = runtime_json.read_wallet_generation()
     password = wallet_password
     if password is None:
@@ -25,9 +23,8 @@ def wallet_encrypt(wallet_password=None, recovery_phrase=None):
     return record
 
 
+# Persist changes to an already unlocked INDW2 wallet without storing the password.
 def wallet_reencrypt_unlocked(address, payload):
-    """Persist changes to an already unlocked INDW2 wallet without storing the password."""
-
     address = str(address).strip()
     mwk = wallet_crypto.get_session_mwk(address)
     if mwk is None:

@@ -1,4 +1,4 @@
-"""Security, network, transparency, and update settings for IND clients."""
+# Security, network, transparency, and update settings for IND clients.
 
 import copy
 import ipaddress
@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 from urllib.parse import unquote, urlparse
-
 
 SETTINGS_PATH = Path("files/security_settings.json")
 MAINNET_NETWORK = "mainnet"
@@ -140,10 +139,7 @@ def _normalize_server(value):
         return ipaddress.ip_address(value).compressed
     except ValueError:
         pass
-    if "://" in value:
-        parsed = urlparse(value)
-    else:
-        parsed = urlparse("ind://" + value)
+    parsed = urlparse(value) if "://" in value else urlparse("ind://" + value)
     host = parsed.hostname or value.split("/")[0].split(":")[0]
     host = host.strip().lower()
     try:
@@ -204,7 +200,9 @@ def _safe_http_base_url(value):
         if next_path == decoded_path:
             break
         decoded_path = next_path
-    return "\\" not in decoded_path and not any(segment == ".." for segment in decoded_path.split("/"))
+    return "\\" not in decoded_path and not any(
+        segment == ".." for segment in decoded_path.split("/")
+    )
 
 
 def _normalize_update_source(value):
@@ -235,7 +233,9 @@ def normalize_security_settings(settings):
     normalized = default_settings()
     # Core network identity and runtime role.
     normalized["network"] = _normalize_network(merged.get("network", MAINNET_NETWORK))
-    security_profile = str(merged.get("security_profile", "development")).strip().lower() or "development"
+    security_profile = (
+        str(merged.get("security_profile", "development")).strip().lower() or "development"
+    )
     if security_profile not in {"development", "production"}:
         security_profile = "development"
     normalized["security_profile"] = security_profile
@@ -261,15 +261,21 @@ def normalize_security_settings(settings):
     normalized["transparency_proof_archives"] = _dedupe(
         _normalize_mirror(item) for item in _as_lines(merged.get("transparency_proof_archives"))
     )
-    normalized["transparency_operator_url"] = _normalize_mirror(merged.get("transparency_operator_url"))
+    normalized["transparency_operator_url"] = _normalize_mirror(
+        merged.get("transparency_operator_url")
+    )
     normalized["transparency_operator_public_key"] = str(
         merged.get("transparency_operator_public_key", "")
     ).strip()
 
     # Transparency knobs are bounded here so production checks can reason over one shape.
     normalized["require_transparency_log"] = _as_bool(merged.get("require_transparency_log"))
-    normalized["submit_to_transparency_log"] = _as_bool(merged.get("submit_to_transparency_log"), True)
-    normalized["min_root_mirrors"] = _as_int(merged.get("min_root_mirrors"), 2, minimum=0, maximum=10)
+    normalized["submit_to_transparency_log"] = _as_bool(
+        merged.get("submit_to_transparency_log"), True
+    )
+    normalized["min_root_mirrors"] = _as_int(
+        merged.get("min_root_mirrors"), 2, minimum=0, maximum=10
+    )
     normalized["max_root_lag_seconds"] = _as_int(
         merged.get("max_root_lag_seconds"), 120, minimum=0, maximum=86400
     )
@@ -279,9 +285,12 @@ def normalize_security_settings(settings):
     normalized["current_root_future_skew_seconds"] = _as_int(
         merged.get("current_root_future_skew_seconds"), 120, minimum=0, maximum=86400
     )
-    normalized["transparency_observed_roots_db"] = str(
-        merged.get("transparency_observed_roots_db", "files/transparency_observed_roots.db")
-    ).strip() or "files/transparency_observed_roots.db"
+    normalized["transparency_observed_roots_db"] = (
+        str(
+            merged.get("transparency_observed_roots_db", "files/transparency_observed_roots.db")
+        ).strip()
+        or "files/transparency_observed_roots.db"
+    )
     normalized["transparency_consistency_anchor_path"] = str(
         merged.get("transparency_consistency_anchor_path", "")
     ).strip()
@@ -311,11 +320,16 @@ def normalize_security_settings(settings):
         str(item).strip() for item in _as_lines(merged.get("trusted_genesis_issuer_keys"))
     )
     normalized["trusted_genesis_manifest_hashes"] = _dedupe(
-        str(item).strip().lower() for item in _as_lines(merged.get("trusted_genesis_manifest_hashes"))
+        str(item).strip().lower()
+        for item in _as_lines(merged.get("trusted_genesis_manifest_hashes"))
     )
     normalized["allow_untrusted_genesis"] = _as_bool(merged.get("allow_untrusted_genesis"))
-    normalized["update_source"] = _normalize_update_source(merged.get("update_source", DEFAULT_UPDATE_SOURCE))
-    normalized["update_channel"] = _normalize_update_channel(merged.get("update_channel", DEFAULT_UPDATE_CHANNEL))
+    normalized["update_source"] = _normalize_update_source(
+        merged.get("update_source", DEFAULT_UPDATE_SOURCE)
+    )
+    normalized["update_channel"] = _normalize_update_channel(
+        merged.get("update_channel", DEFAULT_UPDATE_CHANNEL)
+    )
     normalized["trusted_update_signing_keys"] = _dedupe(
         str(item).strip() for item in _as_lines(merged.get("trusted_update_signing_keys"))
     )
@@ -324,7 +338,10 @@ def normalize_security_settings(settings):
 
 
 def production_mode(settings=None):
-    if _env_true("IND_PRODUCTION") or os.environ.get("IND_SECURITY_PROFILE", "").strip().lower() == "production":
+    if (
+        _env_true("IND_PRODUCTION")
+        or os.environ.get("IND_SECURITY_PROFILE", "").strip().lower() == "production"
+    ):
         return True
     settings = settings or {}
     return str(settings.get("security_profile", "")).strip().lower() == "production"
@@ -360,7 +377,9 @@ def production_security_issues(settings, role=None):
     if max_current_root_age_seconds(settings) > 600:
         issues.append("max_current_root_age_seconds must be 600 or less")
     if current_root_future_skew_seconds(settings) >= max_current_root_age_seconds(settings):
-        issues.append("current_root_future_skew_seconds must be smaller than max_current_root_age_seconds")
+        issues.append(
+            "current_root_future_skew_seconds must be smaller than max_current_root_age_seconds"
+        )
     if not transparency_proof_archives(settings):
         issues.append("at least one transparency proof archive mirror should be configured")
     return issues
@@ -431,7 +450,9 @@ def node_port(settings=None):
     settings = settings or load_security_settings()
     env_value = os.environ.get("IND_NODE_PORT", "").strip()
     if env_value:
-        return _as_int(env_value, DEFAULT_NODE_PORTS[network_name(settings)], minimum=1, maximum=65535)
+        return _as_int(
+            env_value, DEFAULT_NODE_PORTS[network_name(settings)], minimum=1, maximum=65535
+        )
     configured = _as_int(settings.get("node_port"), 0, minimum=0, maximum=65535)
     if configured:
         return configured
@@ -477,7 +498,10 @@ def dns_seed_hosts(settings=None):
             for item in env_raw.replace("\n", ",").split(",")
             if item.strip()
         )
-    if network_name(settings) == TESTNET_NETWORK and list(settings["dns_seed_hosts"]) == DEFAULT_DNS_SEED_HOSTS:
+    if (
+        network_name(settings) == TESTNET_NETWORK
+        and list(settings["dns_seed_hosts"]) == DEFAULT_DNS_SEED_HOSTS
+    ):
         return list(DEFAULT_TESTNET_DNS_SEED_HOSTS)
     return list(settings["dns_seed_hosts"])
 
@@ -502,7 +526,9 @@ def submit_to_transparency_log(settings=None):
 
 def transparency_operator_url(settings=None):
     settings = settings or load_security_settings()
-    return os.environ.get("IND_LOG_OPERATOR_URL", "").strip() or settings["transparency_operator_url"]
+    return (
+        os.environ.get("IND_LOG_OPERATOR_URL", "").strip() or settings["transparency_operator_url"]
+    )
 
 
 def transparency_operator_public_key(settings=None):
@@ -524,7 +550,9 @@ def max_root_lag_seconds(settings=None):
 def max_current_root_age_seconds(settings=None):
     settings = settings or load_security_settings()
     return _as_int(
-        os.environ.get("IND_LOG_MAX_CURRENT_ROOT_AGE_SECONDS", settings["max_current_root_age_seconds"]),
+        os.environ.get(
+            "IND_LOG_MAX_CURRENT_ROOT_AGE_SECONDS", settings["max_current_root_age_seconds"]
+        ),
         settings["max_current_root_age_seconds"],
         minimum=1,
         maximum=86400,
@@ -534,7 +562,9 @@ def max_current_root_age_seconds(settings=None):
 def current_root_future_skew_seconds(settings=None):
     settings = settings or load_security_settings()
     return _as_int(
-        os.environ.get("IND_LOG_CURRENT_ROOT_FUTURE_SKEW_SECONDS", settings["current_root_future_skew_seconds"]),
+        os.environ.get(
+            "IND_LOG_CURRENT_ROOT_FUTURE_SKEW_SECONDS", settings["current_root_future_skew_seconds"]
+        ),
         settings["current_root_future_skew_seconds"],
         minimum=0,
         maximum=86400,
@@ -636,7 +666,11 @@ def transparency_proof_archives(settings=None):
     settings = settings or load_security_settings()
     env_raw = os.environ.get("IND_LOG_PROOF_ARCHIVES", "").strip()
     if env_raw:
-        return [_normalize_mirror(item) for item in env_raw.replace("\n", ",").split(",") if item.strip()]
+        return [
+            _normalize_mirror(item)
+            for item in env_raw.replace("\n", ",").split(",")
+            if item.strip()
+        ]
     return list(settings["transparency_proof_archives"])
 
 
@@ -671,7 +705,9 @@ def update_source(settings=None):
 def update_channel(settings=None):
     settings = settings or load_security_settings()
     env_value = os.environ.get("IND_UPDATE_CHANNEL", "").strip()
-    return _normalize_update_channel(env_value or settings.get("update_channel", DEFAULT_UPDATE_CHANNEL))
+    return _normalize_update_channel(
+        env_value or settings.get("update_channel", DEFAULT_UPDATE_CHANNEL)
+    )
 
 
 def trusted_update_signing_keys(settings=None):

@@ -23,7 +23,6 @@ extend-exclude = [
 select = [
     "E",
     "F",
-    "I",
     "B",
     "SIM",
     "UP",
@@ -40,3 +39,6 @@ ignore = [
 "sender_node.py" = ["F403", "F405"]
 "confirm_validity.py" = ["F403", "F405"]
 "portforwardlib.py" = ["F403", "F405"]
+"operator_tools/gossip_archive.py" = ["E402"]
+"tests/*.py" = ["SIM117"]
+"tools/*.py" = ["E402"]

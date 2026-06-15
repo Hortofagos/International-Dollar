@@ -1,10 +1,9 @@
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 from PIL import Image, ImageChops
 
 from ind import print_tools
-
 
 ARTWORK_DIR = Path("img/bills_to_print")
 

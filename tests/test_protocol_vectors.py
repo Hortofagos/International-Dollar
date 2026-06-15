@@ -84,7 +84,9 @@ class ProtocolVectorTests(unittest.TestCase):
                 metadata={"memo": "conflict"},
                 timestamp=1_700_000_011,
             )
-            proof = ind_token.create_conflict_proof(transferred, conflict, detected_at=1_700_000_012)
+            proof = ind_token.create_conflict_proof(
+                transferred, conflict, detected_at=1_700_000_012
+            )
             announcement = ind_token.create_transfer_announcement(transferred, now=1_700_000_011)
 
             self.assertEqual(

@@ -1,12 +1,13 @@
-import os
+import contextlib
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tarfile
-import threading
 import tempfile
+import threading
 import urllib.parse
 import urllib.request
 import zipfile
@@ -15,7 +16,6 @@ from pathlib import Path
 
 from . import settings as ind_settings
 from . import update_manifest
-
 
 AUTO_UPDATE_ENV = "IND_AUTO_UPDATE"
 UPDATE_SOURCE_ENV = "IND_UPDATE_SOURCE"
@@ -195,9 +195,14 @@ def _ahead_behind(repo_path, local_ref, upstream_ref):
 
 
 def _verify_update_signatures(repo_path, old_rev, upstream_ref):
-    process = _run_git(repo_path, ["rev-list", "--reverse", f"{old_rev}..{upstream_ref}"], timeout=20)
+    process = _run_git(
+        repo_path, ["rev-list", "--reverse", f"{old_rev}..{upstream_ref}"], timeout=20
+    )
     if process.returncode != 0:
-        return False, _process_error(process) or "Unable to list update commits for signature verification."
+        return (
+            False,
+            _process_error(process) or "Unable to list update commits for signature verification.",
+        )
     commits = _clean_output(process).splitlines()
     if not commits:
         return True, ""
@@ -260,7 +265,10 @@ def _dev_git_update_mode(source, repo_path):
         return True
     if mode in {"manifest", "signed-manifest"}:
         return False
-    if os.environ.get(UPDATE_REMOTE_ENV, "").strip() and not os.environ.get(UPDATE_SOURCE_ENV, "").strip():
+    if (
+        os.environ.get(UPDATE_REMOTE_ENV, "").strip()
+        and not os.environ.get(UPDATE_SOURCE_ENV, "").strip()
+    ):
         return True
     source = str(source or "").strip()
     if source in {"origin", "upstream"}:
@@ -341,9 +349,8 @@ def _check_manifest_updates(repo_path, settings):
         )
 
 
+# Fetch the configured remote and compare the local checkout with its upstream.
 def _check_for_git_updates(repo_path, manual=False):
-    """Fetch the configured remote and compare the local checkout with its upstream."""
-
     repo_path = Path(repo_path)
     if not manual and not _auto_update_enabled():
         return UpdateInfo(available=False)
@@ -388,9 +395,8 @@ def _check_for_git_updates(repo_path, manual=False):
         return UpdateInfo(available=False, source=source, error=str(exc))
 
 
+# Check for a signed manifest update, or the dev/test git fallback.
 def check_for_updates(repo_path, manual=False):
-    """Check for a signed manifest update, or the dev/test git fallback."""
-
     repo_path = Path(repo_path)
     if not manual and not _auto_update_enabled():
         return UpdateInfo(available=False)
@@ -410,9 +416,8 @@ def _pull_args(upstream_ref):
     return ["pull", "--ff-only", remote, branch]
 
 
+# Install an already detected update with a fast-forward git pull.
 def _install_git_update(repo_path, update_info):
-    """Install an already detected update with a fast-forward git pull."""
-
     repo_path = Path(repo_path)
     if update_info.dirty or _worktree_dirty(repo_path):
         return InstallResult(
@@ -428,7 +433,9 @@ def _install_git_update(repo_path, update_info):
     try:
         old_rev = _current_head(repo_path)
         if not _env_true(ALLOW_UNSIGNED_ENV):
-            signatures_ok, signature_error = _verify_update_signatures(repo_path, old_rev, update_info.upstream_ref)
+            signatures_ok, signature_error = _verify_update_signatures(
+                repo_path, old_rev, update_info.upstream_ref
+            )
             if not signatures_ok:
                 return InstallResult(success=False, old_rev=old_rev, error=signature_error)
         if update_info.upstream_ref == "FETCH_HEAD":
@@ -440,7 +447,11 @@ def _install_git_update(repo_path, update_info):
 
         new_rev = _current_head(repo_path)
         changed_process = _run_git(repo_path, ["diff", "--name-only", old_rev, new_rev], timeout=20)
-        changed_files = tuple(_clean_output(changed_process).splitlines()) if changed_process.returncode == 0 else ()
+        changed_files = (
+            tuple(_clean_output(changed_process).splitlines())
+            if changed_process.returncode == 0
+            else ()
+        )
 
         dependencies_updated = False
         dependencies_skipped = False
@@ -570,7 +581,9 @@ def _install_manifest_update(repo_path, update_info):
     manifest = update_info.manifest
     artifact = update_info.artifact
     if not manifest or not artifact:
-        return InstallResult(success=False, update_type="manifest", error="No verified update manifest is attached.")
+        return InstallResult(
+            success=False, update_type="manifest", error="No verified update manifest is attached."
+        )
     if update_info.dirty or (_git_available(repo_path) and _worktree_dirty(repo_path)):
         return InstallResult(
             success=False,
@@ -585,11 +598,19 @@ def _install_manifest_update(repo_path, update_info):
             manifest,
             ind_settings.trusted_update_signing_keys(settings),
             expected_channel=ind_settings.update_channel(settings),
-            min_sequence=update_manifest.read_update_state(_state_path(repo_path)).get("last_accepted_sequence", 0),
+            min_sequence=update_manifest.read_update_state(_state_path(repo_path)).get(
+                "last_accepted_sequence", 0
+            ),
             allow_rollback=_env_true(ALLOW_ROLLBACK_ENV),
         )
-        old_rev = _current_head(repo_path) if _git_available(repo_path) else str(
-            update_manifest.read_update_state(_state_path(repo_path)).get("last_accepted_sequence", 0)
+        old_rev = (
+            _current_head(repo_path)
+            if _git_available(repo_path)
+            else str(
+                update_manifest.read_update_state(_state_path(repo_path)).get(
+                    "last_accepted_sequence", 0
+                )
+            )
         )
         with tempfile.TemporaryDirectory(prefix="ind-update-") as temp_dir:
             artifact_path = _download_artifact(artifact, update_info.source, temp_dir)
@@ -622,7 +643,9 @@ def _install_manifest_update(repo_path, update_info):
             dependencies_skipped = True
 
         update_manifest.record_accepted_update(manifest, _state_path(repo_path))
-        new_rev = _current_head(repo_path) if _git_available(repo_path) else str(update_info.sequence)
+        new_rev = (
+            _current_head(repo_path) if _git_available(repo_path) else str(update_info.sequence)
+        )
         return InstallResult(
             success=True,
             old_rev=old_rev,
@@ -650,15 +673,12 @@ def install_update(repo_path, update_info):
     return _install_git_update(repo_path, update_info)
 
 
+# Check for updates in the background and ask the user before installing.
 def start_startup_update_check(root, repo_path, restart_callback=None):
-    """Check for updates in the background and ask the user before installing."""
-
     def worker():
         info = check_for_updates(repo_path)
-        try:
+        with contextlib.suppress(RuntimeError):
             root.after(0, lambda: _handle_update_result(root, repo_path, info, restart_callback))
-        except RuntimeError:
-            pass
 
     threading.Thread(target=worker, name="INDUpdateCheck", daemon=True).start()
 
@@ -676,7 +696,12 @@ def _short_rev(rev):
 def _handle_update_result(root, repo_path, info, restart_callback):
     box = _messagebox()
     if not info.available:
-        if info.error and os.environ.get(UPDATE_VERBOSE_ENV, "0").lower() in {"1", "true", "yes", "on"}:
+        if info.error and os.environ.get(UPDATE_VERBOSE_ENV, "0").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
             box.showwarning("Update check failed", info.error)
         return
 
@@ -706,8 +731,7 @@ def _handle_update_result(root, repo_path, info, restart_callback):
     if info.ahead:
         box.showwarning(
             title,
-            details
-            + "\n\nThis checkout has local commits that are not on the update branch. "
+            details + "\n\nThis checkout has local commits that are not on the update branch. "
             "Please update manually.",
         )
         return
@@ -717,10 +741,8 @@ def _handle_update_result(root, repo_path, info, restart_callback):
 
     def install_worker():
         result = install_update(repo_path, info)
-        try:
+        with contextlib.suppress(RuntimeError):
             root.after(0, lambda: _handle_install_result(result, restart_callback))
-        except RuntimeError:
-            pass
 
     threading.Thread(target=install_worker, name="INDUpdateInstall", daemon=True).start()
 
@@ -739,7 +761,9 @@ def _handle_install_result(result, restart_callback):
         summary += "\nPython dependencies were also refreshed."
     if result.dependencies_skipped:
         summary += f"\nrequirements.txt changed; dependencies were not installed automatically. Set {INSTALL_DEPS_ENV}=1 to opt in."
-    if restart_callback and box.askyesno("Update installed", summary + "\n\nRestart now to use the new version?"):
+    if restart_callback and box.askyesno(
+        "Update installed", summary + "\n\nRestart now to use the new version?"
+    ):
         restart_callback()
     else:
         box.showinfo("Update installed", summary + "\nRestart the app when you are ready.")

@@ -1,13 +1,13 @@
+import contextlib
+import ipaddress
 import json
 import os
-import time
-import ipaddress
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from . import settings as ind_settings
-
 
 RUNTIME_DIRS = (
     "files",
@@ -74,7 +74,14 @@ def _network_path(path):
     if not namespace or path.is_absolute():
         return path
     parts = path.parts
-    if parts and parts[0] in {"files", "wallet_folder", "transaction_folder", "print_folder", "ip_folder", "full_activation"}:
+    if parts and parts[0] in {
+        "files",
+        "wallet_folder",
+        "transaction_folder",
+        "print_folder",
+        "ip_folder",
+        "full_activation",
+    }:
         return Path(parts[0]) / namespace / Path(*parts[1:])
     return path
 
@@ -143,10 +150,8 @@ def _write_json(path, data):
                     time.sleep(0.05 * (attempt + 1))
         finally:
             if tmp_path is not None:
-                try:
+                with contextlib.suppress(OSError):
                     tmp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
 
 
 def _read_json(path, default=None):
@@ -176,7 +181,9 @@ def _parse_bool(value, default=False):
 
 def _merge_state(data):
     merged = _clone(DEFAULT_STATE)
-    legacy_node = data.get("node") if isinstance(data, dict) and isinstance(data.get("node"), dict) else {}
+    legacy_node = (
+        data.get("node") if isinstance(data, dict) and isinstance(data.get("node"), dict) else {}
+    )
     if isinstance(data, dict):
         for key, value in data.items():
             if key == "node" and isinstance(value, dict):
@@ -188,7 +195,9 @@ def _merge_state(data):
         node["transparency_operator"] = legacy_node["full_operator"]
     if str(node.get("class", "")).strip() == "FULL NODE":
         node["class"] = "NODE"
-    node["transparency_operator"] = "YES" if _parse_bool(node.get("transparency_operator", "NO"), default=False) else "NO"
+    node["transparency_operator"] = (
+        "YES" if _parse_bool(node.get("transparency_operator", "NO"), default=False) else "NO"
+    )
     node.pop("full_operator", None)
     merged["kill_node"] = _parse_bool(merged["kill_node"], default=True)
     merged["check_signed_in"] = False
@@ -256,7 +265,9 @@ def read_node_operator_enabled():
     return "YES" if _parse_bool(node.get("transparency_operator", "NO"), default=False) else "NO"
 
 
-def write_node_config(node_class, run_on_startup, run_in_background, transparency_operator=None, **legacy_options):
+def write_node_config(
+    node_class, run_on_startup, run_in_background, transparency_operator=None, **legacy_options
+):
     state = read_state()
     node = state["node"]
     if transparency_operator is None:
@@ -270,7 +281,9 @@ def write_node_config(node_class, run_on_startup, run_in_background, transparenc
         "class": str(node_class),
         "run_on_startup": str(run_on_startup),
         "run_in_background": str(run_in_background),
-        "transparency_operator": "YES" if _parse_bool(transparency_operator, default=False) else "NO",
+        "transparency_operator": (
+            "YES" if _parse_bool(transparency_operator, default=False) else "NO"
+        ),
     }
     write_state(state)
 
@@ -348,7 +361,7 @@ def wallet_bill_start_index(lines):
 
 def wallet_bill_lines(lines):
     lines = list(lines or [])
-    return lines[wallet_bill_start_index(lines):]
+    return lines[wallet_bill_start_index(lines) :]
 
 
 is_wallet_token_line = is_wallet_bill_line
@@ -356,9 +369,10 @@ wallet_token_start_index = wallet_bill_start_index
 wallet_token_lines = wallet_bill_lines
 
 
-def write_wallet_generation(address, private_key, public_key, passphrase="", bills=None, tokens=None):
-    """Keep generated wallet secrets in memory until encryption consumes them."""
-
+# Keep generated wallet secrets in memory until encryption consumes them.
+def write_wallet_generation(
+    address, private_key, public_key, passphrase="", bills=None, tokens=None
+):
     global _WALLET_GENERATION
     if bills is None and tokens is not None:
         bills = tokens
@@ -373,9 +387,8 @@ def write_wallet_generation(address, private_key, public_key, passphrase="", bil
     _write_json(wallet_generation_path(), DEFAULT_WALLET_GENERATION)
 
 
+# Load generated wallet material into memory without persisting plaintext secrets.
 def write_wallet_generation_from_payload(payload):
-    """Load generated wallet material into memory without persisting plaintext secrets."""
-
     global _WALLET_GENERATION
     _WALLET_GENERATION = wallet_generation_from_payload(payload)
     _write_json(wallet_generation_path(), DEFAULT_WALLET_GENERATION)
@@ -468,7 +481,9 @@ def read_passphrase_request():
         return _clone(_PASSPHRASE_REQUEST)
     path = passphrase_request_path()
     if not path.exists():
-        legacy = [] if _network_namespace() else _read_legacy_text("files/passphrase.txt").splitlines()
+        legacy = (
+            [] if _network_namespace() else _read_legacy_text("files/passphrase.txt").splitlines()
+        )
         if legacy:
             return {
                 "schema": 1,
@@ -498,9 +513,9 @@ def consume_passphrase_request():
 def wallet_address_from_name(name):
     value = Path(name).name
     if value.startswith(WALLET_ENCRYPTED_PREFIX):
-        value = value[len(WALLET_ENCRYPTED_PREFIX):]
+        value = value[len(WALLET_ENCRYPTED_PREFIX) :]
     elif value.startswith(WALLET_DECRYPTED_PREFIX):
-        value = value[len(WALLET_DECRYPTED_PREFIX):]
+        value = value[len(WALLET_DECRYPTED_PREFIX) :]
     for suffix in (".json", ".txt"):
         if value.endswith(suffix):
             value = value[: -len(suffix)]
@@ -522,7 +537,11 @@ def _iter_wallet_files(prefix):
         return []
     files = []
     for path in current_wallet_dir.iterdir():
-        if path.is_file() and path.name.startswith(prefix) and path.suffix.lower() in {".json", ".txt"}:
+        if (
+            path.is_file()
+            and path.name.startswith(prefix)
+            and path.suffix.lower() in {".json", ".txt"}
+        ):
             files.append(path)
     return sorted(files)
 
@@ -605,10 +624,8 @@ def write_decrypted_wallet_lines(path, lines):
     payload = "".join(line if str(line).endswith("\n") else str(line) + "\n" for line in lines)
     write_decrypted_wallet(address, payload)
     if path.suffix.lower() == ".txt":
-        try:
+        with contextlib.suppress(FileNotFoundError):
             path.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def clear_decrypted_wallet(address):
@@ -657,7 +674,12 @@ def read_encrypted_wallet_bytes(path, prefix=b"INDW1:"):
     if path.suffix.lower() == ".json":
         data = _read_json(path, {})
         if isinstance(data, dict) and data.get("format") == "INDW1":
-            return prefix + str(data.get("salt", "")).encode("ascii") + b":" + str(data.get("ciphertext", "")).encode("ascii")
+            return (
+                prefix
+                + str(data.get("salt", "")).encode("ascii")
+                + b":"
+                + str(data.get("ciphertext", "")).encode("ascii")
+            )
         return b""
     try:
         return path.read_bytes()
@@ -670,10 +692,8 @@ def remove_encrypted_wallet(address):
         encrypted_wallet_path(address),
         wallet_dir() / f"{WALLET_ENCRYPTED_PREFIX}{address}.txt",
     ):
-        try:
+        with contextlib.suppress(FileNotFoundError):
             path.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def transaction_files():
@@ -683,7 +703,9 @@ def transaction_files():
     return sorted(
         path
         for path in current_transaction_dir.iterdir()
-        if path.is_file() and path.name.startswith("transaction_") and path.suffix.lower() in {".json", ".txt"}
+        if path.is_file()
+        and path.name.startswith("transaction_")
+        and path.suffix.lower() in {".json", ".txt"}
     )
 
 
@@ -706,10 +728,7 @@ def next_transaction_path():
 
 def write_transaction_message(message):
     path = next_transaction_path()
-    if isinstance(message, str):
-        data = json.loads(message)
-    else:
-        data = message
+    data = json.loads(message) if isinstance(message, str) else message
     _write_json(path, data)
     return path
 
@@ -721,9 +740,8 @@ def read_transaction_message(path):
     return _read_legacy_text(path)
 
 
+# Return a Windows-safe peer-cache filename stem for an IP literal.
 def peer_file_stem(peer):
-    """Return a Windows-safe peer-cache filename stem for an IP literal."""
-
     peer = str(peer).strip()
     try:
         ip = ipaddress.ip_address(peer)

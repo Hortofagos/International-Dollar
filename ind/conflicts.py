@@ -1,4 +1,4 @@
-"""IND double-spend conflict-proof helpers."""
+# IND double-spend conflict-proof helpers.
 
 from .protocol import (
     CONFLICT_PROOF_TYPE,
@@ -11,4 +11,3 @@ __all__ = [
     "create_conflict_proof",
     "verify_conflict_proof",
 ]
-

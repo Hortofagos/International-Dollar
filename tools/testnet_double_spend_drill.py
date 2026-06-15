@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deliberately attempt a testnet double spend to test conflict rejection."""
+# Deliberately attempt a testnet double spend to test conflict rejection.
 
 import argparse
 import json
@@ -13,12 +13,8 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 import ind_token
-from ind import address_generation
-from ind import sender_node
-from tools import testnet_faucet
-from tools import testnet_peers
-from tools import testnet_report
-
+from ind import address_generation, protocol_policy, sender_node
+from tools import testnet_faucet, testnet_peers, testnet_report
 
 DEFAULT_FAUCET_PRIVATE_KEY = ROOT_DIR / "files" / "testnet" / "faucet_private_key.local.json"
 DEFAULT_FAUCET_PUBLIC_KEY = ROOT_DIR / "files" / "testnet" / "faucet_public_key.local.json"
@@ -28,12 +24,12 @@ def _last_transfer_hash(token):
     return ind_token.transfer_hash(token["history"][-1])
 
 
+# Create two valid same-state spends plus the portable conflict proof.
 def build_double_spend_messages(manifest, index, faucet_private, faucet_public, *, now=None):
-    """Create two valid same-state spends plus the portable conflict proof."""
-
+    raise RuntimeError(protocol_policy.legacy_disabled_message("legacy double-spend drill"))
     now = int(time.time() if now is None else now)
-    recipient_a, _private_a, _public_a = address_generation.generate_keypair()
-    recipient_b, _private_b, _public_b = address_generation.generate_keypair()
+    recipient_a, _private_a, _public_a = address_generation.generate_legacy_keypair()
+    recipient_b, _private_b, _public_b = address_generation.generate_legacy_keypair()
     bill = ind_token.make_lazy_genesis_token(
         int(index),
         manifest,
@@ -102,6 +98,7 @@ def evaluate_heal_result(post_heal_statuses, heal_broadcasts):
     }
 
 
+# Execute the live public-testnet double-spend drill.
 def run_drill(
     peers,
     *,
@@ -114,8 +111,6 @@ def run_drill(
     heal_wait_seconds=8,
     reserve_index=True,
 ):
-    """Execute the live public-testnet double-spend drill."""
-
     peers = testnet_peers.parse_peer_args(peers)
     if len(peers) < 2:
         raise SystemExit("double-spend drill requires at least two distinct peers")
@@ -126,9 +121,13 @@ def run_drill(
         faucet_private = testnet_faucet.read_key(faucet_private_key_file, "private_key")
         faucet_public = testnet_faucet.read_key(faucet_public_key_file, "public_key")
         faucet_address = ind_token.address_from_public_key(faucet_public)
-        owner_addresses = {item["owner_address"] for item in testnet_faucet.manifest_ranges(manifest)}
+        owner_addresses = {
+            item["owner_address"] for item in testnet_faucet.manifest_ranges(manifest)
+        }
         if owner_addresses != {faucet_address}:
-            raise SystemExit("faucet public key does not match the owner address in every manifest range")
+            raise SystemExit(
+                "faucet public key does not match the owner address in every manifest range"
+            )
 
         state = testnet_faucet.read_json(
             state_file,
@@ -166,11 +165,11 @@ def run_drill(
             testnet_faucet.write_json(state_file, state)
 
     post_heal_statuses = [
-        records[0].get("status") if records else "missing"
-        for records in heal_statuses.values()
+        records[0].get("status") if records else "missing" for records in heal_statuses.values()
     ]
     rejected_heal_branches = [
-        item for item in heal_broadcasts
+        item
+        for item in heal_broadcasts
         if item["label"] in {"heal_branch_a", "heal_branch_b"} and item["response"] == "invalid"
     ]
     heal_result = evaluate_heal_result(post_heal_statuses, heal_broadcasts)
@@ -203,9 +202,15 @@ def run_drill(
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Attempt one testnet double spend to verify conflict rejection.")
-    parser.add_argument("--peer", action="append", help="seed/node to use; repeatable and comma-separated")
-    parser.add_argument("--manifest", default=str(testnet_faucet.DEFAULT_MANIFEST), help="public testnet manifest")
+    parser = argparse.ArgumentParser(
+        description="Attempt one testnet double spend to verify conflict rejection."
+    )
+    parser.add_argument(
+        "--peer", action="append", help="seed/node to use; repeatable and comma-separated"
+    )
+    parser.add_argument(
+        "--manifest", default=str(testnet_faucet.DEFAULT_MANIFEST), help="public testnet manifest"
+    )
     parser.add_argument(
         "--faucet-private-key-file",
         default=str(DEFAULT_FAUCET_PRIVATE_KEY),
@@ -216,13 +221,21 @@ def parse_args(argv=None):
         default=str(DEFAULT_FAUCET_PUBLIC_KEY),
         help="JSON/text file with the faucet public key",
     )
-    parser.add_argument("--state-file", default=str(testnet_faucet.DEFAULT_STATE_PATH), help="faucet next-index state")
+    parser.add_argument(
+        "--state-file",
+        default=str(testnet_faucet.DEFAULT_STATE_PATH),
+        help="faucet next-index state",
+    )
     parser.add_argument("--index", type=int, help="specific manifest index to test")
     parser.add_argument("--partition-wait-seconds", type=int, default=3)
     parser.add_argument("--heal-wait-seconds", type=int, default=8)
-    parser.add_argument("--no-reserve-index", action="store_true", help="do not advance faucet next-index state")
+    parser.add_argument(
+        "--no-reserve-index", action="store_true", help="do not advance faucet next-index state"
+    )
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
-    parser.add_argument("--strict", action="store_true", help="return nonzero when convergence is not ok")
+    parser.add_argument(
+        "--strict", action="store_true", help="return nonzero when convergence is not ok"
+    )
     return parser.parse_args(argv)
 
 

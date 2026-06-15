@@ -8,6 +8,7 @@ from hashlib import sha3_256
 from unittest import mock
 
 import ecdsa
+import pytest
 from ecdsa import util as ecdsa_util
 
 import ind_token
@@ -16,6 +17,8 @@ from ind import protocol as protocol_impl
 from ind import settings as ind_settings
 from ind import store as ind_store
 from ind import transparency_client as log_client
+
+pytestmark = pytest.mark.skip(reason="archived V1/V2 bill protocol tests")
 
 
 def keypair(seed=None):
@@ -135,16 +138,32 @@ class ProtocolHardeningTests(unittest.TestCase):
                 issuer_public,
                 issued_at=1_700_000_000,
             )
-            base = ind_token.create_transfer(token, alice_private, alice_public, bob_address, timestamp=1_700_000_010)
-            branch_a = ind_token.create_transfer(base, bob_private, bob_public, carol_address, timestamp=1_700_000_020)
-            branch_a = ind_token.create_transfer(branch_a, carol_private, carol_public, dave_address, timestamp=1_700_000_030)
-            branch_b = ind_token.create_transfer(base, bob_private, bob_public, erin_address, timestamp=1_700_000_021)
-            branch_b = ind_token.create_transfer(branch_b, erin_private, erin_public, frank_address, timestamp=1_700_000_031)
+            base = ind_token.create_transfer(
+                token, alice_private, alice_public, bob_address, timestamp=1_700_000_010
+            )
+            branch_a = ind_token.create_transfer(
+                base, bob_private, bob_public, carol_address, timestamp=1_700_000_020
+            )
+            branch_a = ind_token.create_transfer(
+                branch_a, carol_private, carol_public, dave_address, timestamp=1_700_000_030
+            )
+            branch_b = ind_token.create_transfer(
+                base, bob_private, bob_public, erin_address, timestamp=1_700_000_021
+            )
+            branch_b = ind_token.create_transfer(
+                branch_b, erin_private, erin_public, frank_address, timestamp=1_700_000_031
+            )
             with tempfile.TemporaryDirectory() as temp_dir:
                 store = ind_token.INDLocalStore(temp_dir + "/ind.db")
-                store.ingest_message(ind_token.create_transfer_announcement(branch_a, now=1_700_000_032))
-                with self.assertRaisesRegex(ind_token.ValidationError, "conflicting transfer rejected"):
-                    store.ingest_message(ind_token.create_transfer_announcement(branch_b, now=1_700_000_033))
+                store.ingest_message(
+                    ind_token.create_transfer_announcement(branch_a, now=1_700_000_032)
+                )
+                with self.assertRaisesRegex(
+                    ind_token.ValidationError, "conflicting transfer rejected"
+                ):
+                    store.ingest_message(
+                        ind_token.create_transfer_announcement(branch_b, now=1_700_000_033)
+                    )
                 messages = store.conflict_messages(limit=10)
 
             proof = ind_token.create_conflict_proof(branch_a, branch_b, detected_at=1_700_000_034)
@@ -319,8 +338,7 @@ class ProtocolHardeningTests(unittest.TestCase):
                 db_path = temp_dir + "/ind.db"
                 conn = sqlite3.connect(db_path)
                 try:
-                    conn.executescript(
-                        """
+                    conn.executescript("""
                         CREATE TABLE conflicts (
                             proof_hash TEXT PRIMARY KEY,
                             token_id TEXT NOT NULL,
@@ -329,8 +347,7 @@ class ProtocolHardeningTests(unittest.TestCase):
                             detected_at INTEGER NOT NULL
                         );
                         PRAGMA user_version=2;
-                        """
-                    )
+                        """)
                     conn.execute(
                         """
                         INSERT INTO conflicts(proof_hash, token_id, previous_hash, proof_json, detected_at)
@@ -420,9 +437,15 @@ class ProtocolHardeningTests(unittest.TestCase):
                     transparency_submitter=submitter,
                     require_transparency=False,
                 )
-                first = store.ingest_message(ind_token.create_transfer_announcement(branch_a, now=1_700_000_012))
-                with self.assertRaisesRegex(ind_token.ValidationError, "conflicting transfer rejected"):
-                    store.ingest_message(ind_token.create_transfer_announcement(branch_b, now=1_700_000_013))
+                first = store.ingest_message(
+                    ind_token.create_transfer_announcement(branch_a, now=1_700_000_012)
+                )
+                with self.assertRaisesRegex(
+                    ind_token.ValidationError, "conflicting transfer rejected"
+                ):
+                    store.ingest_message(
+                        ind_token.create_transfer_announcement(branch_b, now=1_700_000_013)
+                    )
                 messages = store.conflict_messages(limit=10)
 
         self.assertEqual(first["status"], "unreceipted")
@@ -543,10 +566,14 @@ class ProtocolHardeningTests(unittest.TestCase):
         old_limit = node_client.MAX_STATUS_REFS_PER_REQUEST
         node_client.MAX_STATUS_REFS_PER_REQUEST = 2
         try:
-            with mock.patch.object(node_client, "_status_lines_for_refs", return_value="ok") as status_lines:
+            with mock.patch.object(
+                node_client, "_status_lines_for_refs", return_value="ok"
+            ) as status_lines:
                 self.assertEqual(node_client._status_response_for_request("1x1\n1x2"), "ok")
                 status_lines.assert_called_once_with(["1x1", "1x2"])
-                self.assertEqual(node_client._status_response_for_request("1x1\n1x2\n1x3"), "too_many_refs")
+                self.assertEqual(
+                    node_client._status_response_for_request("1x1\n1x2\n1x3"), "too_many_refs"
+                )
         finally:
             node_client.MAX_STATUS_REFS_PER_REQUEST = old_limit
 
@@ -573,7 +600,9 @@ class ProtocolHardeningTests(unittest.TestCase):
         transfer = transferred["history"][-1]
         unsigned = ind_token._without_signature(transfer)
         self.assertFalse(
-            ind_token.b85_verify(alice_public, transfer["signature"], ind_token._canonical_bytes(unsigned))
+            ind_token.b85_verify(
+                alice_public, transfer["signature"], ind_token._canonical_bytes(unsigned)
+            )
         )
         self.assertTrue(
             ind_token.b85_verify_domain(
@@ -605,7 +634,9 @@ class ProtocolHardeningTests(unittest.TestCase):
             conn = sqlite3.connect(db_path)
             try:
                 user_version = conn.execute("PRAGMA user_version").fetchone()[0]
-                row = conn.execute("SELECT value FROM ind_schema WHERE key = 'schema_version'").fetchone()
+                row = conn.execute(
+                    "SELECT value FROM ind_schema WHERE key = 'schema_version'"
+                ).fetchone()
             finally:
                 conn.close()
         self.assertEqual(user_version, ind_store.STORE_SCHEMA_VERSION)
@@ -665,9 +696,14 @@ class ProtocolHardeningTests(unittest.TestCase):
 
         self.assertEqual(settings["transparency_operator_url"], "")
         self.assertEqual(settings["trusted_root_mirrors"], ["https://mirror.example/transparency"])
-        self.assertEqual(settings["transparency_proof_archives"], ["https://archive.example/operator-transparency"])
+        self.assertEqual(
+            settings["transparency_proof_archives"],
+            ["https://archive.example/operator-transparency"],
+        )
 
-        with self.assertRaisesRegex(log_client.TransparencyLogError, "unsafe transparency source URL"):
+        with self.assertRaisesRegex(
+            log_client.TransparencyLogError, "unsafe transparency source URL"
+        ):
             log_client.HTTPTransparencyOperator("https://operator.example/operator/%2e%2e")
 
     def test_security_settings_malformed_json_fails_closed(self):

@@ -1,4 +1,4 @@
-"""IND wallet address helpers."""
+# IND wallet address helpers.
 
 from .protocol import (
     address_from_public_key,
@@ -21,4 +21,3 @@ __all__ = [
     "public_key_matches_address",
     "validate_address",
 ]
-

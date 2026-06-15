@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Export, audit, and replay full public IND gossip messages."""
+# Export, audit, and replay full public IND gossip messages.
 
 import argparse
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -16,7 +15,6 @@ from ind import settings as ind_settings
 from ind import token as ind_token
 from tools import testnet_peers
 
-
 GOSSIP_ARCHIVE_MANIFEST_TYPE = "ind.public_gossip_archive_manifest.v1"
 GOSSIP_ARCHIVE_SIGNATURE_DOMAIN = "IND_PUBLIC_GOSSIP_ARCHIVE_MANIFEST_V1"
 SEGMENT_HASH_ALGORITHM = "sha3_256"
@@ -25,8 +23,9 @@ DEFAULT_ARCHIVE_DIR = "operator_tools/gossip-archive"
 DEFAULT_SEGMENT_SIZE = 1000
 
 
+# Raised when gossip archive export or audit fails.
 class GossipArchiveError(RuntimeError):
-    """Raised when gossip archive export or audit fails."""
+    pass
 
 
 def canonical_json(data):
@@ -131,21 +130,25 @@ def archive_id_for(network, message_count, segments):
 
 
 def _message_bill(message):
-    if message.get("type") in {ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE, ind_token.RECEIPT_ANNOUNCEMENT_V2_TYPE}:
+    if message.get("type") in {
+        ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE,
+        ind_token.RECEIPT_ANNOUNCEMENT_V2_TYPE,
+    }:
         return message.get("bill")
-    if message.get("type") in {ind_token.TRANSFER_ANNOUNCEMENT_TYPE, ind_token.RECEIPT_ANNOUNCEMENT_TYPE}:
+    if message.get("type") in {
+        ind_token.TRANSFER_ANNOUNCEMENT_TYPE,
+        ind_token.RECEIPT_ANNOUNCEMENT_TYPE,
+    }:
         return message.get("token")
     return None
 
 
 def _expanded_store_messages(store, conn):
-    rows = conn.execute(
-        """
+    rows = conn.execute("""
         SELECT message_hash, message_type, message_json, first_seen
         FROM messages
         ORDER BY first_seen ASC, message_hash ASC
-        """
-    ).fetchall()
+        """).fetchall()
     for row in rows:
         message = store._expand_stored_message(conn, row["message_json"])
         if not message:
@@ -159,13 +162,11 @@ def _expanded_store_messages(store, conn):
 
 
 def _conflict_messages(conn):
-    rows = conn.execute(
-        """
+    rows = conn.execute("""
         SELECT proof_hash, proof_json, detected_at
         FROM conflicts
         ORDER BY detected_at ASC, proof_hash ASC
-        """
-    ).fetchall()
+        """).fetchall()
     for row in rows:
         message = json.loads(row["proof_json"])
         yield {
@@ -299,16 +300,25 @@ def audit_archive(archive_dir, *, manifest_path=None, expected_public_key=None):
             last = int(entries[-1]["message_index"])
             if first != expected:
                 raise GossipArchiveError("gossip archive segments are not contiguous")
-            if first != int(segment["first_message_index"]) or last != int(segment["last_message_index"]):
+            if first != int(segment["first_message_index"]) or last != int(
+                segment["last_message_index"]
+            ):
                 raise GossipArchiveError(f"segment index range mismatch: {segment['path']}")
             expected = last + 1
             total += len(entries)
     if total != int(manifest["message_count"]):
         raise GossipArchiveError("gossip archive manifest message_count does not match segments")
-    expected_archive_id = archive_id_for(manifest["network"], manifest["message_count"], manifest["segments"])
+    expected_archive_id = archive_id_for(
+        manifest["network"], manifest["message_count"], manifest["segments"]
+    )
     if manifest["archive_id"] != expected_archive_id:
         raise GossipArchiveError("gossip archive_id does not match segments")
-    return {"ok": True, "message_count": total, "segment_count": len(manifest["segments"]), "archive_id": manifest["archive_id"]}
+    return {
+        "ok": True,
+        "message_count": total,
+        "segment_count": len(manifest["segments"]),
+        "archive_id": manifest["archive_id"],
+    }
 
 
 def _entry_refs(entry):
@@ -338,7 +348,11 @@ def replay_archive(
 ):
     audit_archive(archive_dir, manifest_path=manifest_path, expected_public_key=expected_public_key)
     archive_dir = Path(archive_dir)
-    manifest = json.loads((Path(manifest_path) if manifest_path else archive_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (Path(manifest_path) if manifest_path else archive_dir / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
     refs = {str(ref).strip() for ref in refs or [] if str(ref).strip()}
     results = []
     for segment in manifest["segments"]:
@@ -352,12 +366,20 @@ def replay_archive(
             if refs and not (_entry_refs(entry) & refs):
                 continue
             peer_results = testnet_peers.broadcast_message_to_peers(entry["message"], peers)
-            results.append({"message_index": index, "message_hash": entry["message_hash"], "peers": peer_results})
+            results.append(
+                {
+                    "message_index": index,
+                    "message_hash": entry["message_hash"],
+                    "peers": peer_results,
+                }
+            )
     return {"ok": True, "replayed_count": len(results), "results": results}
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Export, audit, and replay public IND gossip archives")
+    parser = argparse.ArgumentParser(
+        description="Export, audit, and replay public IND gossip archives"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     export = sub.add_parser("export")
@@ -377,7 +399,9 @@ def parse_args(argv=None):
     replay.add_argument("--archive-dir", default=DEFAULT_ARCHIVE_DIR)
     replay.add_argument("--manifest-path", default="")
     replay.add_argument("--expected-public-key-file", default="")
-    replay.add_argument("--peer", action="append", help="seed/node to replay to; repeatable and comma-separated")
+    replay.add_argument(
+        "--peer", action="append", help="seed/node to replay to; repeatable and comma-separated"
+    )
     replay.add_argument("--start-index", type=int)
     replay.add_argument("--end-index", type=int)
     replay.add_argument("--ref", action="append", default=[])
@@ -399,11 +423,27 @@ def main(argv=None):
             print(canonical_json({"ok": True, "manifest": manifest}))
             return 0
         if args.command == "audit":
-            expected = read_key_file(args.expected_public_key_file, "public_key") if args.expected_public_key_file else None
-            print(canonical_json(audit_archive(args.archive_dir, manifest_path=args.manifest_path or None, expected_public_key=expected)))
+            expected = (
+                read_key_file(args.expected_public_key_file, "public_key")
+                if args.expected_public_key_file
+                else None
+            )
+            print(
+                canonical_json(
+                    audit_archive(
+                        args.archive_dir,
+                        manifest_path=args.manifest_path or None,
+                        expected_public_key=expected,
+                    )
+                )
+            )
             return 0
         if args.command == "replay":
-            expected = read_key_file(args.expected_public_key_file, "public_key") if args.expected_public_key_file else None
+            expected = (
+                read_key_file(args.expected_public_key_file, "public_key")
+                if args.expected_public_key_file
+                else None
+            )
             print(
                 canonical_json(
                     replay_archive(

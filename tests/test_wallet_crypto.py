@@ -10,7 +10,6 @@ import wallet_crypto
 import wallet_decryption
 import wallet_encryption
 
-
 STRONG_PASSWORD = "correct horse battery staple 42!"
 
 
@@ -83,7 +82,7 @@ class WalletCryptoTests(unittest.TestCase):
             wallet_encryption.wallet_encrypt(STRONG_PASSWORD)
 
             encrypted_path = "wallet_folder/wallet_encrypted_addr123.json"
-            with open(encrypted_path, "r", encoding="utf-8") as handle:
+            with open(encrypted_path, encoding="utf-8") as handle:
                 encrypted = json.load(handle)
             self.assertEqual(encrypted["format"], wallet_crypto.FORMAT)
             self.assertEqual(encrypted["payload"]["cipher"], "AES-256-GCM")
@@ -132,7 +131,9 @@ class WalletCryptoTests(unittest.TestCase):
 
             self.assertTrue(wallet_decryption.wallet_decrypt("legacy-password", "legacyaddr"))
             self.assertEqual(
-                runtime_json.read_decrypted_wallet_payload("wallet_folder/wallet_decrypted_legacyaddr.json"),
+                runtime_json.read_decrypted_wallet_payload(
+                    "wallet_folder/wallet_decrypted_legacyaddr.json"
+                ),
                 wallet_plaintext,
             )
 

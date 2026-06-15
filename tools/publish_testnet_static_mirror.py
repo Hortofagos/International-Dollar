@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish the public testnet transparency mirror to a git-hosted static branch."""
+# Publish the public testnet transparency mirror to a git-hosted static branch.
 
 import argparse
 import json
@@ -10,15 +10,15 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-
 DEFAULT_SOURCE = "https://international-dollar.com/transparency"
 DEFAULT_BRANCH = "testnet-transparency-mirror"
 DEFAULT_REMOTE = os.environ.get("IND_STATIC_MIRROR_REMOTE", "")
 USER_AGENT = "International-Dollar-static-mirror-publisher/1"
 
 
+# Raised when a static mirror cannot be published.
 class MirrorPublishError(RuntimeError):
-    """Raised when a static mirror cannot be published."""
+    pass
 
 
 def fetch_bytes(url):
@@ -62,7 +62,9 @@ def copy_public_transparency(source_url, target_dir, include_archive=True):
         archive_dir = transparency_dir / "archive"
         write_bytes(
             archive_dir / "manifest.json",
-            (json.dumps(archive_manifest, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"),
+            (json.dumps(archive_manifest, sort_keys=True, separators=(",", ":")) + "\n").encode(
+                "utf-8"
+            ),
         )
         for segment in archive_manifest.get("segments", []):
             relative = str(segment.get("path", "")).strip()
@@ -74,7 +76,9 @@ def copy_public_transparency(source_url, target_dir, include_archive=True):
 
 def publish_git_branch(workdir, remote, branch, message):
     if not remote:
-        raise MirrorPublishError("--git-remote or IND_STATIC_MIRROR_REMOTE is required for publishing")
+        raise MirrorPublishError(
+            "--git-remote or IND_STATIC_MIRROR_REMOTE is required for publishing"
+        )
     run_git(workdir, ["init"])
     run_git(workdir, ["checkout", "-B", branch])
     run_git(workdir, ["config", "user.name", "IND Transparency Mirror Publisher"])
@@ -90,13 +94,19 @@ def publish_git_branch(workdir, remote, branch, message):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Publish an off-VPS static transparency mirror branch")
+    parser = argparse.ArgumentParser(
+        description="Publish an off-VPS static transparency mirror branch"
+    )
     parser.add_argument("--source-url", default=DEFAULT_SOURCE)
     parser.add_argument("--git-remote", default=DEFAULT_REMOTE)
     parser.add_argument("--branch", default=DEFAULT_BRANCH)
     parser.add_argument("--no-archive", action="store_true")
     parser.add_argument("--keep-workdir", default="")
-    parser.add_argument("--local-only", action="store_true", help="stage the mirror files without committing or pushing")
+    parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="stage the mirror files without committing or pushing",
+    )
     return parser.parse_args()
 
 

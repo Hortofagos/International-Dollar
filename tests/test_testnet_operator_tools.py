@@ -2,10 +2,16 @@ import os
 import unittest
 from unittest import mock
 
-from tools import testnet_report
-from tools import testnet_adversarial_probe
-from tools import testnet_double_spend_drill
-from tools import testnet_smoke
+from ind import protocol_v3
+from ind.store import INDLocalStore
+from tools import (
+    testnet_adversarial_probe,
+    testnet_report,
+    testnet_smoke,
+    v3_double_spend_drill,
+)
+
+from .test_archive_segment_v3 import native_v3_archive_fixture
 
 
 class TestnetReportTests(unittest.TestCase):
@@ -48,7 +54,9 @@ class TestnetReportTests(unittest.TestCase):
         self.assertEqual([item["status"] for item in records], ["n", "n"])
 
     def test_query_peer_status_uses_settlement_window_timeout(self):
-        with mock.patch.object(testnet_report.sender_node, "connect", return_value="1x2\nowner\n2\nstrong_local") as connect:
+        with mock.patch.object(
+            testnet_report.sender_node, "connect", return_value="1x2\nowner\n2\nstrong_local"
+        ) as connect:
             records = testnet_report.query_peer_status(["1x2"], peer="example.invalid")
 
         self.assertEqual(records[0]["status"], "strong_local")
@@ -64,7 +72,9 @@ class TestnetReportTests(unittest.TestCase):
 class TestnetSmokeTests(unittest.TestCase):
     def test_temporary_env_restores_previous_values(self):
         with mock.patch.dict(os.environ, {"IND_NETWORK": "mainnet"}, clear=False):
-            with testnet_smoke.temporary_env({"IND_NETWORK": "testnet", "IND_STORE_PATH": "test.db"}):
+            with testnet_smoke.temporary_env(
+                {"IND_NETWORK": "testnet", "IND_STORE_PATH": "test.db"}
+            ):
                 self.assertEqual(os.environ["IND_NETWORK"], "testnet")
                 self.assertEqual(os.environ["IND_STORE_PATH"], "test.db")
 
@@ -73,7 +83,9 @@ class TestnetSmokeTests(unittest.TestCase):
 
     def test_validate_wallet_lines_rejects_wrong_public_key(self):
         address, _private_key, _public_key = testnet_smoke.address_generation.generate_keypair()
-        _other_address, other_private_key, other_public_key = testnet_smoke.address_generation.generate_keypair()
+        _other_address, other_private_key, other_public_key = (
+            testnet_smoke.address_generation.generate_keypair()
+        )
 
         with self.assertRaisesRegex(testnet_smoke.SmokeError, "public key"):
             testnet_smoke.validate_wallet_lines(
@@ -88,12 +100,15 @@ class TestnetAdversarialProbeTests(unittest.TestCase):
 
         probes = testnet_adversarial_probe.invalid_probe_payloads(valid, nonce=123)
 
-        self.assertEqual([item["name"] for item in probes], [
-            "duplicate_json_key",
-            "floating_point_json",
-            "fresh_unknown_field",
-            "fresh_bad_signature",
-        ])
+        self.assertEqual(
+            [item["name"] for item in probes],
+            [
+                "duplicate_json_key",
+                "floating_point_json",
+                "fresh_unknown_field",
+                "fresh_bad_signature",
+            ],
+        )
         self.assertIn("indz1:", probes[-1]["raw"])
 
     def test_build_report_uses_invalid_rejections_and_valid_replays(self):
@@ -105,7 +120,9 @@ class TestnetAdversarialProbeTests(unittest.TestCase):
 
         with (
             mock.patch.object(testnet_adversarial_probe, "read_valid_message", return_value=valid),
-            mock.patch.object(testnet_adversarial_probe.sender_node, "connect", side_effect=fake_connect),
+            mock.patch.object(
+                testnet_adversarial_probe.sender_node, "connect", side_effect=fake_connect
+            ),
             mock.patch.object(
                 testnet_adversarial_probe.testnet_report,
                 "query_peer_status",
@@ -133,58 +150,40 @@ class TestnetAdversarialProbeTests(unittest.TestCase):
         self.assertEqual(report["valid_replay_count_per_peer"], 2)
 
 
-class TestnetDoubleSpendDrillTests(unittest.TestCase):
-    def test_build_double_spend_messages_creates_verifiable_conflict(self):
-        _issuer_address, issuer_private, issuer_public = (
-            testnet_double_spend_drill.address_generation.generate_keypair()
-        )
-        faucet_address, faucet_private, faucet_public = (
-            testnet_double_spend_drill.address_generation.generate_keypair()
-        )
-        manifest = testnet_double_spend_drill.ind_token.make_genesis_manifest(
-            testnet_double_spend_drill.ind_token.make_denomination_ranges([(1, 1)], faucet_address, start_index=40),
-            issuer_private,
-            issuer_public,
-            issued_at=1_700_000_000,
-        )
+def test_v3_double_spend_drill_builds_native_conflict(tmp_path):
+    fixture = native_v3_archive_fixture(tmp_path)
+    store = INDLocalStore(db_path=tmp_path / "v3-drill.db", require_transparency=False)
+    store.store_archive_segment_v3(fixture["archive_segment"])
+    store.store_proof_bundle_v3(
+        fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+    )
+    bill = protocol_v3.create_bill_from_checkpoint_core(
+        fixture["genesis_ref"],
+        fixture["checkpoint_core"],
+        fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=store.archive_segment_resolver_v3,
+    )
+    store.store_bill_v3(
+        bill,
+        status="settled",
+        trusted_operator_public_key=fixture["log_public"],
+    )
 
-        with mock.patch.dict(os.environ, {"IND_ALLOW_UNTRUSTED_GENESIS": "1"}, clear=False):
-            messages = testnet_double_spend_drill.build_double_spend_messages(
-                manifest,
-                40,
-                faucet_private,
-                faucet_public,
-                now=1_700_000_010,
-            )
+    messages = v3_double_spend_drill.build_double_spend_messages(
+        store,
+        bill,
+        [fixture["bob_address"], fixture["bob_private"], fixture["bob_public"]],
+        trusted_operator_public_key=fixture["log_public"],
+        now=1_700_000_050,
+    )
 
-            self.assertEqual(messages["display_id"], "1x40")
-            self.assertTrue(testnet_double_spend_drill.ind_token.verify_conflict_proof(messages["proof"]))
-            self.assertNotEqual(messages["branch_a_hash"], messages["branch_b_hash"])
-
-    def test_heal_success_predicate_expects_conflict_everywhere(self):
-        broadcasts = [
-            {"label": "heal_branch_a", "response": "invalid"},
-            {"label": "heal_branch_b", "response": "invalid"},
-            {"label": "heal_conflict_proof", "response": "ok"},
-            {"label": "heal_conflict_proof", "response": "ok"},
-        ]
-
-        result = testnet_double_spend_drill.evaluate_heal_result(["conflict", "conflict"], broadcasts)
-
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["conflict_everywhere"])
-        self.assertTrue(result["proofs_accepted"])
-        self.assertEqual(result["expected_result"], "conflict")
-
-        clean_result = testnet_double_spend_drill.evaluate_heal_result(["strong_local", "conflict"], broadcasts)
-        self.assertFalse(clean_result["ok"])
-        self.assertFalse(clean_result["conflict_everywhere"])
-
-        rejected_proof = list(broadcasts)
-        rejected_proof[-1] = {"label": "heal_conflict_proof", "response": "invalid"}
-        proof_result = testnet_double_spend_drill.evaluate_heal_result(["conflict", "conflict"], rejected_proof)
-        self.assertFalse(proof_result["ok"])
-        self.assertFalse(proof_result["proofs_accepted"])
+    assert messages["type"] == "ind.testnet_double_spend_drill.v3"
+    assert messages["announcement_a"]["type"] == protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE
+    assert messages["announcement_b"]["type"] == protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE
+    assert protocol_v3.verify_conflict_proof(messages["proof"])
+    assert messages["branch_a_hash"] != messages["branch_b_hash"]
 
 
 if __name__ == "__main__":

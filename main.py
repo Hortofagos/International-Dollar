@@ -1,4 +1,5 @@
-"""Compatibility launcher for the IND desktop wallet."""
+# Compatibility launcher for the IND desktop wallet.
+
 
 def main():
     from ind import desktop

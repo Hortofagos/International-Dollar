@@ -1,4 +1,4 @@
-"""IND gossip wire-format helpers."""
+# IND gossip wire-format helpers.
 
 from .protocol import (
     WIRE_PACKED_PREFIX,
@@ -13,4 +13,3 @@ __all__ = [
     "pack_wire_message",
     "unpack_wire_message",
 ]
-

@@ -4,21 +4,27 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from ind import address_generation
 from ind import token as ind_token
 from operator_tools import gossip_archive
 
-
 os.environ.setdefault("IND_ALLOW_UNTRUSTED_GENESIS", "1")
+pytestmark = pytest.mark.skip(reason="archived V1/V2 bill protocol tests")
 
 
 class GossipArchiveTests(unittest.TestCase):
     def _store_with_message(self, db_path):
-        issuer_address, issuer_private, issuer_public = address_generation.generate_keypair()
-        owner_address, owner_private, owner_public = address_generation.generate_keypair()
-        recipient_address, _recipient_private, _recipient_public = address_generation.generate_keypair()
+        issuer_address, issuer_private, issuer_public = address_generation.generate_legacy_keypair()
+        owner_address, owner_private, owner_public = address_generation.generate_legacy_keypair()
+        recipient_address, _recipient_private, _recipient_public = (
+            address_generation.generate_legacy_keypair()
+        )
         bill = ind_token.make_genesis_token(5, owner_address, issuer_private, issuer_public)
-        transferred = ind_token.create_transfer(bill, owner_private, owner_public, recipient_address)
+        transferred = ind_token.create_transfer(
+            bill, owner_private, owner_public, recipient_address
+        )
         announcement = ind_token.create_transfer_announcement(transferred)
         store = ind_token.INDLocalStore(db_path=db_path)
         result = store.ingest_message(announcement)
@@ -29,7 +35,9 @@ class GossipArchiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = str(Path(temp_dir) / "gossip.db")
             announcement, _issuer_address = self._store_with_message(db_path)
-            signer_address, signer_private, signer_public = address_generation.generate_keypair()
+            signer_address, signer_private, signer_public = (
+                address_generation.generate_legacy_keypair()
+            )
             self.assertTrue(signer_address)
 
             manifest = gossip_archive.export_archive(

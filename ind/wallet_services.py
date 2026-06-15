@@ -1,5 +1,6 @@
-"""Testable wallet actions shared by the desktop UI and scripts."""
+# Testable wallet actions shared by the desktop UI and scripts.
 
+from . import keys_v3, protocol_policy, protocol_v3
 from . import runtime as runtime_json
 from . import token as ind_token
 
@@ -21,160 +22,192 @@ def _display_id_from_wallet_line(wallet_bill_line):
     return parts[0]
 
 
+# Return True only when the local store considers a bill spendable.
 def bill_is_spendable(store, bill, wallet_address, min_settled_seconds=0):
-    """Return True only when the local store considers a bill spendable."""
-
-    state = ind_token.verify_token(bill)
-    if wallet_address and state.owner_address != wallet_address:
-        return False
-    confidence = store.token_confidence(
-        state.token_id,
-        expected_owner=state.owner_address,
-        min_settled_seconds=min_settled_seconds,
+    if isinstance(bill, dict) and bill.get("type") == protocol_v3.BILL_TYPE:
+        return bill_is_spendable_v3(store, bill, wallet_address)
+    raise ind_token.ValidationError(
+        protocol_policy.legacy_disabled_message("legacy wallet spendability")
     )
-    return bool(confidence.get("accepted"))
 
 
 token_is_spendable = bill_is_spendable
 
 
+# List locally settled spendable bill records for one wallet address.
 def spendable_wallet_records(wallet_address, store=None, limit=1000):
-    """List locally settled spendable bill records for one wallet address."""
-
     store = store or ind_token.INDLocalStore()
-    records = []
-    for record in store.token_records_for_owner(wallet_address, settled_only=True, limit=limit):
-        confidence = store.token_confidence(
-            record["token_id"],
-            expected_owner=wallet_address,
-            min_settled_seconds=0,
+    if keys_v3.is_address(wallet_address):
+        return store.bill_v3_records_for_owner(
+            wallet_address,
+            statuses=("settled", "verified"),
+            limit=limit,
         )
-        if confidence.get("accepted"):
-            records.append(record)
-    return records
+    return []
 
 
+# List locally known incoming bills that are visible but not spendable yet.
 def pending_wallet_records(wallet_address, store=None, limit=1000):
-    """List locally known incoming bills that are visible but not spendable yet."""
-
     store = store or ind_token.INDLocalStore()
-    records = []
-    for record in store.token_records_for_owner(wallet_address, settled_only=False, limit=limit):
-        if record.get("status") not in {"unreceipted", "pending"}:
-            continue
-        confidence = store.token_confidence(
-            record["token_id"],
-            expected_owner=wallet_address,
-            min_settled_seconds=0,
+    if keys_v3.is_address(wallet_address):
+        return store.bill_v3_records_for_owner(
+            wallet_address,
+            statuses=("unreceipted", "pending"),
+            limit=limit,
         )
-        if confidence.get("level") in {"unreceipted", "pending"}:
-            records.append(record)
-    return records
+    return []
 
 
+# Spend one locally stored wallet bill and queue its transfer announcement.
 def spend_wallet_bill(wallet_lines, wallet_bill_line, recipient_address, store=None):
-    """Spend one locally stored wallet bill and queue its transfer announcement."""
-
     store = store or ind_token.INDLocalStore()
     wallet_address = _wallet_address(wallet_lines)
     display_id = _display_id_from_wallet_line(wallet_bill_line)
     if not display_id:
         return None
-    bill = store.get_compact_bill_by_display_id(display_id) or store.get_token_by_display_id(display_id)
+    bill_v3 = store.get_bill_v3_by_display_id(display_id)
+    if bill_v3:
+        return spend_wallet_bill_v3(
+            wallet_lines,
+            bill_v3,
+            recipient_address,
+            store=store,
+        )
+    raise ind_token.ValidationError(protocol_policy.legacy_disabled_message("legacy wallet spend"))
+
+
+# Return a V3 wallet tuple: address, private key, public key.
+def generate_wallet_v3(seed=None):
+    return keys_v3.generate_keypair(seed)
+
+
+# Return True when a BillV3 verifies and is owned by the wallet address.
+def bill_is_spendable_v3(
+    store,
+    bill,
+    wallet_address,
+    proof_bundle=None,
+    trusted_operator_public_key=None,
+):
+    state = protocol_v3.verify_bill(
+        bill,
+        proof_bundle=proof_bundle,
+        proof_bundle_resolver=getattr(store, "proof_bundle_resolver_v3", None),
+        transparency_verifier=getattr(store, "transparency_verifier", None),
+        trusted_operator_public_key=trusted_operator_public_key,
+        archive_segment_resolver=getattr(store, "archive_segment_resolver_v3", None),
+    )
+    if wallet_address and state.owner_address != wallet_address:
+        return False
+    confidence = store.bill_v3_confidence(
+        state.token_id,
+        expected_owner=state.owner_address,
+        min_settled_seconds=0,
+    )
+    return bool(confidence.get("accepted"))
+
+
+# Spend one stored BillV3 and persist the new BillV3 tip.
+def spend_wallet_bill_v3(
+    wallet_lines,
+    wallet_bill_line,
+    recipient_address,
+    store=None,
+    proof_bundle=None,
+    trusted_operator_public_key=None,
+    timestamp=None,
+):
+    store = store or ind_token.INDLocalStore()
+    wallet_address = _wallet_address(wallet_lines)
+    if wallet_address:
+        keys_v3.validate_address(wallet_address, "wallet V3 address")
+    if isinstance(wallet_bill_line, dict):
+        bill = wallet_bill_line
+    else:
+        display_id = _display_id_from_wallet_line(wallet_bill_line)
+        if not display_id:
+            return None
+        bill = store.get_bill_v3_by_display_id(display_id)
     if not bill:
         return None
-    if not bill_is_spendable(store, bill, wallet_address):
+    if not bill_is_spendable_v3(
+        store,
+        bill,
+        wallet_address,
+        proof_bundle=proof_bundle,
+        trusted_operator_public_key=trusted_operator_public_key,
+    ):
         return None
     private_key, public_key = _wallet_keys(wallet_lines)
-    transferred_bill = ind_token.create_transfer(
+    transferred_bill = protocol_v3.create_transfer(
         bill,
         private_key,
         public_key,
         recipient_address,
+        proof_bundle=proof_bundle,
+        proof_bundle_resolver=store.proof_bundle_resolver_v3,
+        trusted_operator_public_key=trusted_operator_public_key,
+        archive_segment_resolver=store.archive_segment_resolver_v3,
+        timestamp=timestamp,
     )
-    announcement = ind_token.create_transfer_announcement(transferred_bill)
-    store.ingest_message(announcement)
+    if proof_bundle is None:
+        proof_bundle = store.get_proof_bundle_v3(
+            transferred_bill["proof_bundle_ref"]["proof_bundle_hash"]
+        )
+    announcement = protocol_v3.create_transfer_announcement(
+        transferred_bill,
+        proof_bundle=proof_bundle,
+    )
+    store.store_bill_v3(
+        transferred_bill,
+        proof_bundle=proof_bundle,
+        status="unreceipted",
+        trusted_operator_public_key=trusted_operator_public_key,
+    )
     runtime_json.write_transaction_message(announcement)
-    return ind_token.verify_token(transferred_bill)
+    return protocol_v3.verify_bill(
+        transferred_bill,
+        proof_bundle=proof_bundle,
+        proof_bundle_resolver=store.proof_bundle_resolver_v3,
+        trusted_operator_public_key=trusted_operator_public_key,
+        archive_segment_resolver=store.archive_segment_resolver_v3,
+    )
 
 
+# Force a compact checkpoint for one locally settled wallet bill.
 def compact_wallet_bill(wallet_lines, wallet_bill_line, store=None):
-    """Force a compact checkpoint for one locally settled wallet bill."""
-
-    store = store or ind_token.INDLocalStore()
-    wallet_address = _wallet_address(wallet_lines)
-    display_id = _display_id_from_wallet_line(wallet_bill_line)
-    if not display_id:
-        return None
-    bill = store.get_compact_bill_by_display_id(display_id) or store.get_token_by_display_id(display_id)
-    if not bill:
-        return None
-    if not bill_is_spendable(store, bill, wallet_address):
-        return None
-    compact_bill = store.compact_bill_now(display_id=display_id)
-    return ind_token.verify_bill(compact_bill)
+    raise ind_token.ValidationError(
+        protocol_policy.legacy_disabled_message("legacy compact checkpoint")
+    )
 
 
 def _claim_wire_message(message, wallet_lines):
     private_key, public_key = _wallet_keys(wallet_lines)
-    if message.get("type") == ind_token.TOKEN_TYPE:
-        bill = message
-    elif message.get("type") == ind_token.TRANSFER_ANNOUNCEMENT_TYPE:
-        bill = message.get("token")
-    elif message.get("type") == ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE:
-        bill = message.get("bill")
-    else:
-        return False
-
-    try:
-        receipt = ind_token.create_receipt_announcement(bill, private_key, public_key)
-    except (KeyError, TypeError, ind_token.ValidationError):
-        return False
-    runtime_json.write_transaction_message(receipt)
-    return True
+    if message.get("type") == protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE:
+        store = ind_token.INDLocalStore()
+        try:
+            bill, _proof_bundle, _segments = protocol_v3.decode_transfer_announcement(message)
+            receipt = protocol_v3.create_receipt_announcement(
+                bill,
+                private_key,
+                public_key,
+                proof_bundle_resolver=store.proof_bundle_resolver_v3,
+                transparency_verifier=getattr(store, "transparency_verifier", None),
+                archive_segment_resolver=store.archive_segment_resolver_v3,
+            )
+        except (KeyError, TypeError, ind_token.ValidationError, protocol_v3.ProtocolV3Error):
+            return False
+        runtime_json.write_transaction_message(receipt)
+        return True
+    return False
 
 
 def _claim_paper_wallet_payload(bill_payload, wallet_address):
-    split = str(bill_payload).splitlines()
-    if len(split) < 3:
-        return False
-
-    display_id = split[0]
-    private_key = split[1]
-    public_key = split[2]
-    store = ind_token.INDLocalStore()
-    bill = store.get_compact_bill_by_display_id(display_id) or store.get_token_by_display_id(display_id)
-    if not bill:
-        return False
-
-    try:
-        state = ind_token.verify_token(bill)
-        if public_key and not ind_token.public_key_matches_address(public_key, state.owner_address):
-            return False
-        confidence = store.token_confidence(
-            state.token_id,
-            expected_owner=state.owner_address,
-            min_settled_seconds=0,
-        )
-        if not confidence.get("accepted"):
-            return False
-        transferred_bill = ind_token.create_transfer(
-            bill,
-            private_key,
-            public_key,
-            wallet_address,
-        )
-        announcement = ind_token.create_transfer_announcement(transferred_bill)
-    except (KeyError, TypeError, ind_token.ValidationError):
-        return False
-
-    runtime_json.write_transaction_message(announcement)
-    return True
+    return False
 
 
+# Convert a scanned bill, announcement, or paper-wallet payload into a queued claim message.
 def claim_bill_payload(bill_payload, wallet_lines, wallet_address):
-    """Convert a scanned bill, announcement, or paper-wallet payload into a queued claim message."""
-
     try:
         message = ind_token.unpack_wire_message(bill_payload)
     except ind_token.ValidationError:

@@ -15,7 +15,6 @@ if str(ROOT_DIR) not in sys.path:
 
 import ind_token
 
-
 NODE_PREFIX = b"IND-MERKLE-NODE-v1"
 PEAK_PREFIX = b"IND-MERKLE-PEAK-v1"
 DEFAULT_OUTPUT_DIR = ROOT_DIR / "genesis"
@@ -67,7 +66,9 @@ def read_text(path):
 
 def write_json(path, data):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    Path(path).write_text(
+        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
 
 
 def write_text(path, text):
@@ -84,18 +85,30 @@ def read_key_file(path, field):
 
 
 def load_issuer_keys(args):
-    private_key = args.issuer_private_key or (read_key_file(args.issuer_private_key_file, "private_key") if args.issuer_private_key_file else "")
-    public_key = args.issuer_public_key or (read_key_file(args.issuer_public_key_file, "public_key") if args.issuer_public_key_file else "")
+    private_key = args.issuer_private_key or (
+        read_key_file(args.issuer_private_key_file, "private_key")
+        if args.issuer_private_key_file
+        else ""
+    )
+    public_key = args.issuer_public_key or (
+        read_key_file(args.issuer_public_key_file, "public_key")
+        if args.issuer_public_key_file
+        else ""
+    )
     if private_key and public_key:
         return private_key, public_key
     if not args.generate_local_issuer_keypair:
-        raise SystemExit("issuer keys required: pass --issuer-private-key-file and --issuer-public-key-file, or use --generate-local-issuer-keypair for test data")
+        raise SystemExit(
+            "issuer keys required: pass --issuer-private-key-file and --issuer-public-key-file, or use --generate-local-issuer-keypair for test data"
+        )
 
     signing_key = ecdsa.SigningKey.generate(curve=ecdsa.SECP256k1, hashfunc=sha3_256)
     verify_key = signing_key.get_verifying_key()
     private_key = base64.b85encode(signing_key.to_string()).decode("utf-8")
     public_key = base64.b85encode(verify_key.to_string()).decode("utf-8")
-    write_json(Path(args.output_dir) / "issuer_private_key.local.json", {"private_key": private_key})
+    write_json(
+        Path(args.output_dir) / "issuer_private_key.local.json", {"private_key": private_key}
+    )
     write_json(Path(args.output_dir) / "issuer_public_key.local.json", {"public_key": public_key})
     return private_key, public_key
 
@@ -137,12 +150,17 @@ def parse_denomination_plan(raw):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Generate IND genesis bill shards or a lazy signed supply manifest.")
+    parser = argparse.ArgumentParser(
+        description="Generate IND genesis bill shards or a lazy signed supply manifest."
+    )
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--count", type=int)
     parser.add_argument("--value", type=int, default=1)
-    parser.add_argument("--denominations", help="comma-separated lazy supply plan, for example 1:11000000000,2:11000000000,8:11000000000")
+    parser.add_argument(
+        "--denominations",
+        help="comma-separated lazy supply plan, for example 1:11000000000,2:11000000000,8:11000000000",
+    )
     parser.add_argument("--owner-address", required=True)
     parser.add_argument("--issuer-private-key")
     parser.add_argument("--issuer-public-key")
@@ -150,11 +168,27 @@ def parse_args():
     parser.add_argument("--issuer-public-key-file")
     parser.add_argument("--generate-local-issuer-keypair", action="store_true")
     parser.add_argument("--shard-size", type=int, default=DEFAULT_SHARD_SIZE)
-    parser.add_argument("--write", action="store_true", help="write shards and manifest; default is a dry-run estimate")
-    parser.add_argument("--allow-huge", action="store_true", help="allow writing more than one million genesis records")
-    parser.add_argument("--lazy-manifest", action="store_true", help="write only a signed supply manifest; bills are minted on demand")
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="write shards and manifest; default is a dry-run estimate",
+    )
+    parser.add_argument(
+        "--allow-huge",
+        action="store_true",
+        help="allow writing more than one million genesis records",
+    )
+    parser.add_argument(
+        "--lazy-manifest",
+        action="store_true",
+        help="write only a signed supply manifest; bills are minted on demand",
+    )
     parser.add_argument("--metadata-project", default="IND")
-    parser.add_argument("--created-at", type=int, help="fixed manifest/bill metadata timestamp for reproducible generation")
+    parser.add_argument(
+        "--created-at",
+        type=int,
+        help="fixed manifest/bill metadata timestamp for reproducible generation",
+    )
     return parser.parse_args()
 
 
@@ -178,11 +212,15 @@ def validate_args(args):
         raise SystemExit("--shard-size must be positive")
     end_index = args.start_index + count
     if end_index > ind_token.TOTAL_SUPPLY:
-        raise SystemExit(f"requested range ends at {end_index}, above TOTAL_SUPPLY={ind_token.TOTAL_SUPPLY}")
+        raise SystemExit(
+            f"requested range ends at {end_index}, above TOTAL_SUPPLY={ind_token.TOTAL_SUPPLY}"
+        )
     if args.denominations and not args.lazy_manifest:
         raise SystemExit("--denominations currently requires --lazy-manifest")
     if args.write and not args.lazy_manifest and count > HUGE_COUNT and not args.allow_huge:
-        raise SystemExit("refusing huge write; pass --allow-huge if you really intend to generate this many records")
+        raise SystemExit(
+            "refusing huge write; pass --allow-huge if you really intend to generate this many records"
+        )
 
 
 def supply_ranges(args):
@@ -190,7 +228,9 @@ def supply_ranges(args):
         plan = parse_denomination_plan(args.denominations)
     else:
         plan = [(args.value, args.count)]
-    return ind_token.make_denomination_ranges(plan, args.owner_address, start_index=args.start_index)
+    return ind_token.make_denomination_ranges(
+        plan, args.owner_address, start_index=args.start_index
+    )
 
 
 def dry_run(args):
@@ -200,7 +240,10 @@ def dry_run(args):
     print(f"range: [{args.start_index}, {end_index})")
     print(f"count: {count:,}")
     if args.denominations:
-        total_value = sum(value * range_count for value, range_count in parse_denomination_plan(args.denominations))
+        total_value = sum(
+            value * range_count
+            for value, range_count in parse_denomination_plan(args.denominations)
+        )
         print(f"denomination plan: {args.denominations}")
         print(f"total face value: {total_value:,}")
     else:
@@ -214,7 +257,9 @@ def dry_run(args):
             "version": ind_token.TOKEN_VERSION,
             "ranges": ranges,
         }
-        print(f"lazy manifest rough estimate: {format_bytes(len(ind_token.canonical_json(manifest_unsigned).encode('utf-8')) + 1000)}")
+        print(
+            f"lazy manifest rough estimate: {format_bytes(len(ind_token.canonical_json(manifest_unsigned).encode('utf-8')) + 1000)}"
+        )
     print("no files written; pass --write to generate the manifest or shards")
 
 
@@ -237,15 +282,23 @@ def generate_lazy_manifest(args):
     )
     compact_size = len(ind_token.canonical_json(manifest).encode("utf-8"))
     write_text(output_dir / "manifest.json", canonical_manifest(manifest) + "\n")
-    print(canonical_manifest({
-        "manifest_path": "manifest.json",
-        "manifest_hash": ind_token.genesis_manifest_hash(manifest),
-        "manifest_bytes": compact_size,
-        "total_token_count": manifest["total_token_count"],
-        "total_value": manifest["total_value"],
-        "materialized_payload_estimate": format_bytes(estimate_bytes(manifest["total_token_count"])),
-        "lazy_savings_estimate": format_bytes(max(0, estimate_bytes(manifest["total_token_count"]) - compact_size)),
-    }))
+    print(
+        canonical_manifest(
+            {
+                "manifest_path": "manifest.json",
+                "manifest_hash": ind_token.genesis_manifest_hash(manifest),
+                "manifest_bytes": compact_size,
+                "total_token_count": manifest["total_token_count"],
+                "total_value": manifest["total_value"],
+                "materialized_payload_estimate": format_bytes(
+                    estimate_bytes(manifest["total_token_count"])
+                ),
+                "lazy_savings_estimate": format_bytes(
+                    max(0, estimate_bytes(manifest["total_token_count"]) - compact_size)
+                ),
+            }
+        )
+    )
 
 
 def generate(args):
@@ -285,20 +338,24 @@ def generate(args):
 
             if shard_count == args.shard_size and offset != args.count - 1:
                 current_shard.close()
-                shards.append({
-                    "path": str(current_path.relative_to(output_dir)),
-                    "records": shard_count,
-                })
+                shards.append(
+                    {
+                        "path": str(current_path.relative_to(output_dir)),
+                        "records": shard_count,
+                    }
+                )
                 shard_index += 1
                 shard_count = 0
                 current_shard, current_path = open_shard(output_dir, shard_index)
     finally:
         current_shard.close()
 
-    shards.append({
-        "path": str(current_path.relative_to(output_dir)),
-        "records": shard_count,
-    })
+    shards.append(
+        {
+            "path": str(current_path.relative_to(output_dir)),
+            "records": shard_count,
+        }
+    )
     manifest = {
         "type": "ind.genesis_manifest.v1",
         "version": ind_token.TOKEN_VERSION,

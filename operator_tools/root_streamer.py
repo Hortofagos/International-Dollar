@@ -10,7 +10,6 @@ from pathlib import Path
 
 import log_client
 
-
 DEFAULT_OPERATOR_URL = "http://127.0.0.1:8890"
 DEFAULT_GIT_MIRROR_DIR = "operator_tools/git-root-mirror"
 DEFAULT_WEBSITE_MIRROR_DIR = "operator_tools/website-root-mirror"
@@ -18,8 +17,9 @@ DEFAULT_STATE_FILE = "operator_tools/root_streamer_state.json"
 DEFAULT_POLL_SECONDS = 60
 
 
+# Raised when signed roots cannot be streamed to a mirror.
 class RootStreamError(Exception):
-    """Raised when signed roots cannot be streamed to a mirror."""
+    pass
 
 
 def _canonical_line(data):
@@ -53,9 +53,8 @@ def save_state(path, state):
     atomic_write_text(path, log_client.canonical_json(state) + "\n")
 
 
+# Fetch signed roots from a running log operator.
 class OperatorRootSource:
-    """Fetch signed roots from a running log operator."""
-
     def __init__(self, operator_url=DEFAULT_OPERATOR_URL, timeout=10):
         self.operator_url = operator_url.rstrip("/")
         self.timeout = int(timeout)
@@ -68,20 +67,20 @@ class OperatorRootSource:
         return payload.get("roots", [])
 
 
+# Fetch signed roots from a local root staging directory.
 class DirectoryRootSource:
-    """Fetch signed roots from a local root staging directory."""
-
     def __init__(self, source_dir):
         self.source_dir = Path(source_dir)
 
     def roots(self, limit=1000):
         roots = log_client.DirectoryRootMirror(self.source_dir).roots()
-        return sorted(roots, key=lambda item: (int(item["timestamp"]), int(item["tree_size"])))[-int(limit):]
+        return sorted(roots, key=lambda item: (int(item["timestamp"]), int(item["tree_size"])))[
+            -int(limit) :
+        ]
 
 
+# Write signed roots in the static mirror format clients can read.
 class StaticRootMirrorWriter:
-    """Write signed roots in the static mirror format clients can read."""
-
     def __init__(self, mirror_dir):
         self.mirror_dir = Path(mirror_dir)
 
@@ -104,13 +103,19 @@ class StaticRootMirrorWriter:
         if latest_path.exists():
             try:
                 current_latest = json.loads(latest_path.read_text(encoding="utf-8"))
-                current_latest_key = (int(current_latest["timestamp"]), int(current_latest["tree_size"]))
+                current_latest_key = (
+                    int(current_latest["timestamp"]),
+                    int(current_latest["tree_size"]),
+                )
             except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                 current_latest = None
                 current_latest_key = None
         else:
             current_latest_key = None
-        if not current_latest or (int(root["timestamp"]), int(root["tree_size"])) >= current_latest_key:
+        if (
+            not current_latest
+            or (int(root["timestamp"]), int(root["tree_size"])) >= current_latest_key
+        ):
             atomic_write_text(latest_path, line)
             changed = True
 
@@ -126,7 +131,9 @@ class StaticRootMirrorWriter:
             changed = True
 
         manifest = self._manifest()
-        atomic_write_text(self.mirror_dir / "manifest.json", log_client.canonical_json(manifest) + "\n")
+        atomic_write_text(
+            self.mirror_dir / "manifest.json", log_client.canonical_json(manifest) + "\n"
+        )
         return changed
 
     def _manifest(self):
@@ -143,9 +150,8 @@ class StaticRootMirrorWriter:
         }
 
 
+# Write roots to a git mirror and optionally commit/push changes.
 class GitRootMirrorWriter(StaticRootMirrorWriter):
-    """Write roots to a git mirror and optionally commit/push changes."""
-
     def __init__(self, mirror_dir, remote_url=None, branch="main", push=False, commit=True):
         super().__init__(mirror_dir)
         self.remote_url = remote_url
@@ -181,7 +187,9 @@ class GitRootMirrorWriter(StaticRootMirrorWriter):
             check=False,
         )
         if check and result.returncode != 0:
-            raise RootStreamError(result.stderr.strip() or result.stdout.strip() or "git command failed")
+            raise RootStreamError(
+                result.stderr.strip() or result.stdout.strip() or "git command failed"
+            )
         return result
 
     def _remote_exists(self, name):
@@ -192,16 +200,20 @@ class GitRootMirrorWriter(StaticRootMirrorWriter):
         status = self._git(["status", "--porcelain"], check=False).stdout.strip()
         if not status:
             return
-        message = f"Publish IND transparency root {int(root['tree_size'])} at {int(root['timestamp'])}"
-        self._git([
-            "-c",
-            "user.name=IND Transparency Operator",
-            "-c",
-            "user.email=ind-transparency@example.invalid",
-            "commit",
-            "-m",
-            message,
-        ])
+        message = (
+            f"Publish IND transparency root {int(root['tree_size'])} at {int(root['timestamp'])}"
+        )
+        self._git(
+            [
+                "-c",
+                "user.name=IND Transparency Operator",
+                "-c",
+                "user.email=ind-transparency@example.invalid",
+                "commit",
+                "-m",
+                message,
+            ]
+        )
         if self.push:
             push_args = ["push"]
             if self.branch:
@@ -244,7 +256,14 @@ def publish_once(source, writers, state_path, operator_public_key=None, limit=10
     return changed
 
 
-def stream_roots(source, writers, state_path, operator_public_key=None, poll_seconds=DEFAULT_POLL_SECONDS, limit=1000):
+def stream_roots(
+    source,
+    writers,
+    state_path,
+    operator_public_key=None,
+    poll_seconds=DEFAULT_POLL_SECONDS,
+    limit=1000,
+):
     while True:
         changed = publish_once(
             source,
@@ -283,19 +302,43 @@ def build_writers(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Stream IND signed transparency roots to git and website mirrors")
-    parser.add_argument("--operator-url", default=os.environ.get("IND_LOG_OPERATOR_URL", DEFAULT_OPERATOR_URL))
+    parser = argparse.ArgumentParser(
+        description="Stream IND signed transparency roots to git and website mirrors"
+    )
+    parser.add_argument(
+        "--operator-url", default=os.environ.get("IND_LOG_OPERATOR_URL", DEFAULT_OPERATOR_URL)
+    )
     parser.add_argument("--source-dir", default=os.environ.get("IND_ROOT_SOURCE_DIR", ""))
-    parser.add_argument("--operator-public-key", default=os.environ.get("IND_LOG_OPERATOR_PUBLIC_KEY", ""))
-    parser.add_argument("--git-mirror-dir", default=os.environ.get("IND_ROOT_GIT_MIRROR_DIR", DEFAULT_GIT_MIRROR_DIR))
+    parser.add_argument(
+        "--operator-public-key", default=os.environ.get("IND_LOG_OPERATOR_PUBLIC_KEY", "")
+    )
+    parser.add_argument(
+        "--git-mirror-dir",
+        default=os.environ.get("IND_ROOT_GIT_MIRROR_DIR", DEFAULT_GIT_MIRROR_DIR),
+    )
     parser.add_argument("--git-remote-url", default=os.environ.get("IND_ROOT_GIT_REMOTE_URL", ""))
     parser.add_argument("--git-branch", default=os.environ.get("IND_ROOT_GIT_BRANCH", "main"))
-    parser.add_argument("--git-push", action="store_true", default=os.environ.get("IND_ROOT_GIT_PUSH", "").lower() in {"1", "true", "yes"})
+    parser.add_argument(
+        "--git-push",
+        action="store_true",
+        default=os.environ.get("IND_ROOT_GIT_PUSH", "").lower() in {"1", "true", "yes"},
+    )
     parser.add_argument("--no-git-commit", action="store_true")
-    parser.add_argument("--website-mirror-dir", default=os.environ.get("IND_ROOT_WEBSITE_DIR", DEFAULT_WEBSITE_MIRROR_DIR))
-    parser.add_argument("--state-file", default=os.environ.get("IND_ROOT_STREAM_STATE", DEFAULT_STATE_FILE))
-    parser.add_argument("--poll-seconds", type=int, default=int(os.environ.get("IND_ROOT_STREAM_POLL_SECONDS", DEFAULT_POLL_SECONDS)))
-    parser.add_argument("--limit", type=int, default=int(os.environ.get("IND_ROOT_STREAM_FETCH_LIMIT", "1000")))
+    parser.add_argument(
+        "--website-mirror-dir",
+        default=os.environ.get("IND_ROOT_WEBSITE_DIR", DEFAULT_WEBSITE_MIRROR_DIR),
+    )
+    parser.add_argument(
+        "--state-file", default=os.environ.get("IND_ROOT_STREAM_STATE", DEFAULT_STATE_FILE)
+    )
+    parser.add_argument(
+        "--poll-seconds",
+        type=int,
+        default=int(os.environ.get("IND_ROOT_STREAM_POLL_SECONDS", DEFAULT_POLL_SECONDS)),
+    )
+    parser.add_argument(
+        "--limit", type=int, default=int(os.environ.get("IND_ROOT_STREAM_FETCH_LIMIT", "1000"))
+    )
     parser.add_argument("--timeout", type=int, default=10)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
@@ -304,7 +347,13 @@ def main():
     writers = build_writers(args)
     operator_public_key = args.operator_public_key.strip() or None
     if args.once:
-        changed = publish_once(source, writers, args.state_file, operator_public_key=operator_public_key, limit=args.limit)
+        changed = publish_once(
+            source,
+            writers,
+            args.state_file,
+            operator_public_key=operator_public_key,
+            limit=args.limit,
+        )
         print(f"published {changed} new signed root(s)")
         return
     stream_roots(

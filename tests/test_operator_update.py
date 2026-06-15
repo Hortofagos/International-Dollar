@@ -1,11 +1,10 @@
 import unittest
 
-from ind import address_generation
-from ind import update_manifest
+from ind import address_generation, update_manifest
 
 
 def signed_manifest(sequence=1, channel="operator-canary"):
-    _address, private_key, public_key = address_generation.generate_keypair()
+    _address, private_key, public_key = address_generation.generate_legacy_keypair()
     manifest = {
         "type": update_manifest.UPDATE_MANIFEST_TYPE,
         "version": 1,
@@ -24,7 +23,11 @@ def signed_manifest(sequence=1, channel="operator-canary"):
             }
         ],
     }
-    return update_manifest.sign_update_manifest(manifest, private_key, public_key), private_key, public_key
+    return (
+        update_manifest.sign_update_manifest(manifest, private_key, public_key),
+        private_key,
+        public_key,
+    )
 
 
 class OperatorUpdateTests(unittest.TestCase):

@@ -1,1 +1,1 @@
-"""Operator-side helpers for IND transparency root mirroring."""
+# Operator-side helpers for IND transparency root mirroring.

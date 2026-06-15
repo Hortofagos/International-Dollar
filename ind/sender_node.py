@@ -1,14 +1,16 @@
+import ipaddress
+import json
+import logging
 import os
 import random
 import socket
-import time
 import threading
-import ipaddress
-import requests
-import json
-import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
+
+import requests
+
 from . import runtime as runtime_json
 from . import settings as ind_settings
 from . import token as ind_token
@@ -59,10 +61,9 @@ _queued_gossip_retries = set()
 _queued_gossip_retry_lock = threading.Lock()
 
 
+# Structured result for one logical node request across all tried routes.
 @dataclass(frozen=True)
 class PeerRequestResult:
-    """Structured result for one logical node request across all tried routes."""
-
     status: str
     response: str = ""
     peer: str = ""
@@ -90,7 +91,7 @@ def _runtime_path(path):
 
 def _read_text(path):
     try:
-        with open(_runtime_path(path), 'r') as handle:
+        with open(_runtime_path(path)) as handle:
             return handle.read()
     except FileNotFoundError:
         return ''
@@ -108,16 +109,15 @@ def _list_dir(path):
 def _strip_peer_brackets(value):
     value = str(value).strip()
     if value.startswith("[") and "]" in value:
-        return value[1:value.index("]")]
+        return value[1 : value.index("]")]
     return value
 
 
+# Return a canonical IP literal, or an empty string.
 def _normalize_peer_address(value):
-    """Return a canonical IP literal, or an empty string."""
-
     value = _strip_peer_brackets(value)
     if value.startswith("::ffff:"):
-        value = value[len("::ffff:"):]
+        value = value[len("::ffff:") :]
     try:
         ip = ipaddress.ip_address(value)
         if getattr(ip, "ipv4_mapped", None) is not None:
@@ -127,9 +127,8 @@ def _normalize_peer_address(value):
         return ""
 
 
+# Return whether a peer address is a globally-routable IPv4 or IPv6 literal.
 def _valid_peer_address(value):
-    """Return whether a peer address is a globally-routable IPv4 or IPv6 literal."""
-
     normalized = _normalize_peer_address(value)
     if not normalized:
         return False
@@ -240,9 +239,8 @@ def _ordered_peer_candidates(peers):
     return result
 
 
+# Return routes for one peer as hostname, then resolved IPv6, then resolved IPv4.
 def _resolved_peer_routes(peer):
-    """Return routes for one peer as hostname, then resolved IPv6, then resolved IPv4."""
-
     host = _peer_ip(peer)
     normalized = _normalize_peer_address(host)
     if normalized:
@@ -253,7 +251,9 @@ def _resolved_peer_routes(peer):
     ipv6_routes = []
     ipv4_routes = []
     try:
-        records = socket.getaddrinfo(host, node_port(), family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+        records = socket.getaddrinfo(
+            host, node_port(), family=socket.AF_UNSPEC, type=socket.SOCK_STREAM
+        )
     except OSError as exc:
         logger.debug("peer host %s could not be resolved for route fallback: %s", host, exc)
         records = []
@@ -274,9 +274,8 @@ def _resolved_peer_routes(peer):
     return _dedupe_preserving_order([host] + ipv6_routes + ipv4_routes)
 
 
+# Expand peers into attempted routes while preserving DNS seed order.
 def expanded_peer_routes(peers):
-    """Expand peers into attempted routes while preserving DNS seed order."""
-
     routes = []
     for peer in _ordered_peer_candidates(peers):
         for route in _resolved_peer_routes(peer):
@@ -299,7 +298,7 @@ def _peer_group(value):
 def _peer_from_cache_file(path, item):
     try:
         if str(item).endswith(".json"):
-            with open(path, "r", encoding="utf-8") as handle:
+            with open(path, encoding="utf-8") as handle:
                 data = json.load(handle)
             ip = _normalize_peer_address(data.get("ip", ""))
             if ip:
@@ -316,7 +315,7 @@ def _peer_ip(item):
     elif item.endswith('.txt'):
         item = item[:-4]
     if item.startswith("ipv6_"):
-        maybe = item[len("ipv6_"):].replace("-", ":")
+        maybe = item[len("ipv6_") :].replace("-", ":")
         normalized = _normalize_peer_address(maybe)
         if normalized:
             return normalized
@@ -339,9 +338,8 @@ def _configured_dns_seed_hosts():
         return []
 
 
+# Resolve DNS seed hostnames into globally-routable IPv4/IPv6 node hints.
 def resolve_dns_seed_hosts(seed_hosts=None, limit=MAX_DNS_SEED_RESULTS):
-    """Resolve DNS seed hostnames into globally-routable IPv4/IPv6 node hints."""
-
     seed_hosts = _configured_dns_seed_hosts() if seed_hosts is None else list(seed_hosts)
     peers = []
     seen = set()
@@ -350,7 +348,9 @@ def resolve_dns_seed_hosts(seed_hosts=None, limit=MAX_DNS_SEED_RESULTS):
         if not seed_host:
             continue
         try:
-            records = socket.getaddrinfo(seed_host, node_port(), family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
+            records = socket.getaddrinfo(
+                seed_host, node_port(), family=socket.AF_UNSPEC, type=socket.SOCK_STREAM
+            )
         except OSError as exc:
             logger.debug("DNS seed %s could not be resolved: %s", seed_host, exc)
             continue
@@ -364,9 +364,8 @@ def resolve_dns_seed_hosts(seed_hosts=None, limit=MAX_DNS_SEED_RESULTS):
     return peers
 
 
+# Resolve configured DNS seeds and store their IPs as ordinary peer hints.
 def refresh_dns_seed_peers(seed_hosts=None, version='2'):
-    """Resolve configured DNS seeds and store their IPs as ordinary peer hints."""
-
     ensure_runtime_files()
     added = []
     for ip in resolve_dns_seed_hosts(seed_hosts=seed_hosts):
@@ -375,9 +374,8 @@ def refresh_dns_seed_peers(seed_hosts=None, version='2'):
     return added
 
 
+# Refresh DNS seeds at most hourly unless explicitly forced.
 def maybe_refresh_dns_seed_peers(now=None, force=False):
-    """Refresh DNS seeds at most hourly unless explicitly forced."""
-
     global _last_dns_seed_refresh
     now = int(time.time() if now is None else now)
     if not force and now - _last_dns_seed_refresh < DNS_SEED_REFRESH_SECONDS:
@@ -413,23 +411,24 @@ def _existing_peer_block_count(block):
     return count
 
 
+# Add a routable IPv4/IPv6 peer while limiting concentration per network block.
 def add_peer(ip, version='2'):
-    """Add a routable IPv4/IPv6 peer while limiting concentration per network block."""
-
     ip = _normalize_peer_address(ip)
     if version not in ('1', '2') or not _valid_peer_address(ip):
         return False
     block = _peer_diversity_block(ip)
     target = runtime_json.peer_path(ip, version)
-    if not os.path.exists(target) and _existing_peer_block_count(block) >= MAX_PEERS_PER_ADDRESS_BLOCK:
+    if (
+        not os.path.exists(target)
+        and _existing_peer_block_count(block) >= MAX_PEERS_PER_ADDRESS_BLOCK
+    ):
         return False
     runtime_json.write_peer(ip, version)
     return True
 
 
+# Sample peers across IPv4 /24, IPv6 /48, and configured-host buckets.
 def diverse_peer_sample(peers, limit=DEFAULT_DIVERSE_PEER_SAMPLE):
-    """Sample peers across IPv4 /24, IPv6 /48, and configured-host buckets."""
-
     by_block = {}
     for item in peers:
         peer, block = _peer_group(item)
@@ -454,7 +453,9 @@ def diverse_peer_sample(peers, limit=DEFAULT_DIVERSE_PEER_SAMPLE):
 
 
 def _rate_limit_backoff_seconds():
-    return random.uniform(REQUEST_RATE_LIMIT_MIN_BACKOFF_SECONDS, REQUEST_RATE_LIMIT_MAX_BACKOFF_SECONDS)
+    return random.uniform(
+        REQUEST_RATE_LIMIT_MIN_BACKOFF_SECONDS, REQUEST_RATE_LIMIT_MAX_BACKOFF_SECONDS
+    )
 
 
 def _set_peer_backoff(peer, seconds, now=None):
@@ -505,7 +506,9 @@ def _classify_request_exception(exc):
         return REQUEST_PEER_KEY_MISMATCH
     if isinstance(exc, (socket.timeout, TimeoutError)):
         return REQUEST_TIMEOUT
-    if isinstance(exc, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, ConnectionRefusedError)):
+    if isinstance(
+        exc, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, ConnectionRefusedError)
+    ):
         return REQUEST_CONNECTION_CLOSED
     if isinstance(exc, ind_transport.TransportError):
         text = str(exc).lower()
@@ -521,7 +524,9 @@ def _classify_request_exception(exc):
     return REQUEST_INVALID
 
 
-def _attempt_dict(peer, route, status, response="", error="", elapsed_seconds=0.0, retry_after_seconds=0.0):
+def _attempt_dict(
+    peer, route, status, response="", error="", elapsed_seconds=0.0, retry_after_seconds=0.0
+):
     return {
         "peer": str(peer or ""),
         "route": str(route or ""),
@@ -546,7 +551,9 @@ def _final_failure_result(attempts):
     ):
         matching = [attempt for attempt in attempts if attempt.get("status") == status]
         if matching:
-            retry_after = max(float(attempt.get("retry_after_seconds") or 0) for attempt in matching)
+            retry_after = max(
+                float(attempt.get("retry_after_seconds") or 0) for attempt in matching
+            )
             return PeerRequestResult(
                 status=status,
                 response=matching[-1].get("response", ""),
@@ -575,13 +582,13 @@ def _compat_response_from_result(result):
     return result.status
 
 
+# Create runtime folders, state files, and local transport keypairs.
 def ensure_runtime_files():
-    """Create runtime folders, state files, and local transport keypairs."""
-
     runtime_json.ensure_runtime_files()
     ind_transport.ensure_transport_keypair()
 
 
+# Send one logical encrypted request and return a structured route result.
 def connect_result(
     indicator,
     data,
@@ -590,8 +597,6 @@ def connect_result(
     timeout=None,
     max_duration_seconds=DEFAULT_CONNECT_ATTEMPT_BUDGET_SECONDS,
 ):
-    """Send one logical encrypted request and return a structured route result."""
-
     ensure_runtime_files()
     data = str(data)
     if len(data.encode('utf-8')) > ind_token.MAX_WIRE_DECOMPRESSED_BYTES:
@@ -615,7 +620,9 @@ def connect_result(
             continue
         remaining_budget = deadline - time.monotonic()
         if remaining_budget <= 0:
-            attempts.append(_attempt_dict(peer, route, REQUEST_TIMEOUT, error="request route budget exhausted"))
+            attempts.append(
+                _attempt_dict(peer, route, REQUEST_TIMEOUT, error="request route budget exhausted")
+            )
             break
         backoff_remaining = max(_peer_backoff_remaining(peer), _peer_backoff_remaining(route))
         if backoff_remaining > 0:
@@ -630,7 +637,11 @@ def connect_result(
             )
             continue
         if route in already_tried:
-            attempts.append(_attempt_dict(peer, route, REQUEST_PEER_KEY_MISMATCH, error="peer key previously changed"))
+            attempts.append(
+                _attempt_dict(
+                    peer, route, REQUEST_PEER_KEY_MISMATCH, error="peer key previously changed"
+                )
+            )
             continue
 
         started = time.monotonic()
@@ -658,10 +669,14 @@ def connect_result(
             )
             if status == REQUEST_INVALID:
                 invalid_peers.add(peer)
-                logger.debug("peer %s returned invalid; skipping alternate routes for same peer", peer)
+                logger.debug(
+                    "peer %s returned invalid; skipping alternate routes for same peer", peer
+                )
                 continue
             if status == REQUEST_OK:
-                retry_after = max(float(attempt.get("retry_after_seconds") or 0) for attempt in attempts)
+                retry_after = max(
+                    float(attempt.get("retry_after_seconds") or 0) for attempt in attempts
+                )
                 return PeerRequestResult(
                     status=REQUEST_OK,
                     response=response,
@@ -688,9 +703,15 @@ def connect_result(
     return _final_failure_result(attempts)
 
 
-def connect(indicator, data, ipnl, *, timeout=None, max_duration_seconds=DEFAULT_CONNECT_ATTEMPT_BUDGET_SECONDS):
-    """Send one encrypted request to a peer and return its plaintext reply or failure status."""
-
+# Send one encrypted request to a peer and return its plaintext reply or failure status.
+def connect(
+    indicator,
+    data,
+    ipnl,
+    *,
+    timeout=None,
+    max_duration_seconds=DEFAULT_CONNECT_ATTEMPT_BUDGET_SECONDS,
+):
     return _compat_response_from_result(
         connect_result(
             indicator,
@@ -733,7 +754,11 @@ def _parse_status_response(raw):
     index = 0
     while index < len(lines):
         ref = lines[index]
-        if index + 2 < len(lines) and lines[index + 1] == "x" and lines[index + 2] == REQUEST_INVALID:
+        if (
+            index + 2 < len(lines)
+            and lines[index + 1] == "x"
+            and lines[index + 2] == REQUEST_INVALID
+        ):
             records.append(
                 {
                     "ref": ref,
@@ -778,28 +803,39 @@ def _parse_status_response(raw):
 
 
 def _gossip_bill(message):
+    from . import protocol_v3
+
     if not isinstance(message, dict):
         return None
     message_type = message.get("type")
-    if message_type in {ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE, ind_token.RECEIPT_ANNOUNCEMENT_V2_TYPE}:
+    if message_type == protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE:
+        try:
+            bill, _proof_bundle, _segments = protocol_v3.decode_transfer_announcement(message)
+            return bill
+        except Exception:
+            return None
+    if message_type == protocol_v3.RECEIPT_ANNOUNCEMENT_TYPE:
         return message.get("bill")
-    if message_type in {ind_token.TRANSFER_ANNOUNCEMENT_TYPE, ind_token.RECEIPT_ANNOUNCEMENT_TYPE}:
-        return message.get("token")
-    if message_type == ind_token.TOKEN_TYPE:
-        return message
     return None
 
 
 def _broadcast_status_expectation(message):
+    from . import protocol_v3
+
     bill = _gossip_bill(message)
     if not bill:
         return None
     try:
-        state = ind_token.verify_token(
-            bill,
-            require_checkpoint_transparency=False,
-            require_recent_transparency=False,
-        )
+        if isinstance(bill, dict) and bill.get("type") == protocol_v3.BILL_TYPE:
+            store = ind_token.INDLocalStore()
+            state = protocol_v3.verify_bill(
+                bill,
+                proof_bundle_resolver=store.proof_bundle_resolver_v3,
+                transparency_verifier=getattr(store, "transparency_verifier", None),
+                archive_segment_resolver=store.archive_segment_resolver_v3,
+            )
+        else:
+            return None
     except Exception as exc:
         logger.debug("could not derive broadcast status expectation: %s", exc)
         return None
@@ -876,7 +912,9 @@ def _schedule_raw_gossip_retry(raw, peers, *, delay_seconds=None):
             time.sleep(delay)
         result = connect_result("b", raw, peers)
         if result.status != REQUEST_OK:
-            logger.info("background gossip retry kept failing with %s for peers %s", result.status, peers)
+            logger.info(
+                "background gossip retry kept failing with %s for peers %s", result.status, peers
+            )
 
     threading.Thread(target=retry, daemon=True).start()
     return True
@@ -902,7 +940,9 @@ def _schedule_queued_gossip_retry(transaction_path, raw, peers, *, delay_seconds
             if result.status == REQUEST_OK:
                 try:
                     os.remove(transaction_path)
-                    logger.info("queued gossip %s accepted after background retry", transaction_path)
+                    logger.info(
+                        "queued gossip %s accepted after background retry", transaction_path
+                    )
                 except FileNotFoundError:
                     pass
             else:
@@ -912,11 +952,18 @@ def _schedule_queued_gossip_retry(transaction_path, raw, peers, *, delay_seconds
                     return
                 except Exception as exc:
                     queued_message = None
-                    logger.debug("could not read queued gossip %s for reconciliation: %s", transaction_path, exc)
+                    logger.debug(
+                        "could not read queued gossip %s for reconciliation: %s",
+                        transaction_path,
+                        exc,
+                    )
                 if queued_message and _remote_status_confirms_gossip(queued_message, peers):
                     try:
                         os.remove(transaction_path)
-                        logger.info("queued gossip %s confirmed by status after background retry", transaction_path)
+                        logger.info(
+                            "queued gossip %s confirmed by status after background retry",
+                            transaction_path,
+                        )
                     except FileNotFoundError:
                         pass
                     return
@@ -933,9 +980,8 @@ def _schedule_queued_gossip_retry(transaction_path, raw, peers, *, delay_seconds
     return True
 
 
+# Discover the public IPv4 or IPv6 address without making peer gossip the first dependency.
 def public_ip():
-    """Discover the public IPv4 or IPv6 address without making peer gossip the first dependency."""
-
     for discover in (
         lambda: requests.get('https://api64.ipify.org', timeout=4).text.strip(),
         lambda: requests.get('https://www.wikipedia.org', timeout=4).headers['X-Client-IP'],
@@ -955,11 +1001,10 @@ def public_ip():
     except Exception as exc:
         logger.debug("peer-assisted public IP discovery failed: %s", exc)
     return None
-    
 
+
+# Validate queued wallet gossip locally, then broadcast it to sampled peers.
 def send_bills():
-    """Validate queued wallet gossip locally, then broadcast it to sampled peers."""
-
     ensure_runtime_files()
     ipnl1 = diverse_peer_sample(_peer_files('ip_folder/1'), limit=6)
     ipnl2 = _with_configured_peers(diverse_peer_sample(_peer_files('ip_folder/2'), limit=12))
@@ -1000,9 +1045,13 @@ def send_bills():
             logger.warning("dropping remotely invalid queued transaction %s", transaction_path)
             os.remove(transaction_path)
             continue
-        if result.status in REQUEST_RETRYABLE_STATUSES and _remote_status_confirms_gossip(tm, peers):
+        if result.status in REQUEST_RETRYABLE_STATUSES and _remote_status_confirms_gossip(
+            tm, peers
+        ):
             os.remove(transaction_path)
-            logger.info("removed queued transaction %s after status reconciliation", transaction_path)
+            logger.info(
+                "removed queued transaction %s after status reconciliation", transaction_path
+            )
             continue
         _schedule_queued_gossip_retry(
             transaction_path,
@@ -1010,12 +1059,13 @@ def send_bills():
             peers,
             delay_seconds=_retry_delay_for_result(result),
         )
-        logger.info("kept queued transaction %s after %s network result", transaction_path, result.status)
+        logger.info(
+            "kept queued transaction %s after %s network result", transaction_path, result.status
+        )
 
 
+# Broadcast a protocol message after converting it to the current wire format.
 def broadcast_message(message):
-    """Broadcast a protocol message after converting it to the current wire format."""
-
     ensure_runtime_files()
     raw = ind_token.pack_wire_message(message)
     ipnl1 = diverse_peer_sample(_peer_files('ip_folder/1'), limit=6)
@@ -1049,38 +1099,47 @@ def _parse_peer_messages(raw):
     return []
 
 
+# Return locally settled bill records for wallet display ids or protocol bill ids.
 def check_validity(serial_num_list):
-    """Return locally settled bill records for wallet display ids or protocol bill ids."""
+    from . import protocol_v3
 
     store = ind_token.INDLocalStore()
     store.finalize_pending(buffer_seconds=ind_settings.finality_buffer_seconds())
     verified = []
     for item in serial_num_list:
-        bill = store.get_compact_bill(item) or store.get_token(item) or store.get_compact_bill_by_display_id(item) or store.get_token_by_display_id(item)
-        if not bill:
+        bill_v3 = store.get_bill_v3_by_token_id(item) or store.get_bill_v3_by_display_id(item)
+        if bill_v3:
+            try:
+                state = protocol_v3.verify_bill(
+                    bill_v3,
+                    proof_bundle_resolver=store.proof_bundle_resolver_v3,
+                    transparency_verifier=getattr(store, "transparency_verifier", None),
+                    archive_segment_resolver=store.archive_segment_resolver_v3,
+                )
+                confidence = store.bill_v3_confidence(
+                    state.token_id, expected_owner=state.owner_address, min_settled_seconds=0
+                )
+                if confidence["accepted"]:
+                    verified.append((state.display_id, state.owner_address, str(state.sequence)))
+            except Exception as exc:
+                logger.debug("V3 bill validity check failed for %s: %s", item, exc)
             continue
-        try:
-            state = ind_token.verify_token(bill)
-            confidence = store.token_confidence(state.token_id, expected_owner=state.owner_address, min_settled_seconds=0)
-            if confidence["accepted"]:
-                verified.append((state.display_id, state.owner_address, str(state.sequence)))
-        except Exception as exc:
-            logger.debug("bill validity check failed for %s: %s", item, exc)
-            continue
+        continue
     return verified
 
 
+# Refresh the local peer cache from bootstrap and ordinary nodes.
 def update_ip_list():
-    """Refresh the local peer cache from bootstrap and ordinary nodes."""
-
     maybe_refresh_dns_seed_peers(force=True)
 
     def new_main_ip():
         comparison_ip = []
         main_ips = _peer_files('ip_folder/1')
+
         def thrd():
             new_main = connect('u', 'main ip', main_ips)
             comparison_ip.append(new_main)
+
         for _ in range(len(main_ips)):
             threading.Thread(target=thrd).start()
         time.sleep(10)
@@ -1100,8 +1159,9 @@ def update_ip_list():
         add_peer(str(ip), '2')
 
 
+# Pull wallet-addressed gossip, sign receipts, and import settled bills.
 def receive_bills():
-    """Pull wallet-addressed gossip, sign receipts, and import settled bills."""
+    from . import keys_v3, protocol_v3
 
     ensure_runtime_files()
     ipnl = _with_configured_peers(_peer_files('ip_folder/1') + _peer_files('ip_folder/2'))
@@ -1114,10 +1174,11 @@ def receive_bills():
             public_key = wallet[2].strip()
             full_messages = store.messages_for_recipient(address)
 
-            def thrd_recv():
+            def thrd_recv(address=address, full_messages=full_messages):
                 msg = connect('r', address, ipnl)
                 full_messages.extend(_parse_peer_messages(msg))
-            for iteration in range(5):
+
+            for _iteration in range(5):
                 threading.Thread(target=thrd_recv).start()
             time.sleep(5)
 
@@ -1127,22 +1188,51 @@ def receive_bills():
                     proof = result.get("conflict_proof")
                     if proof:
                         broadcast_message(proof)
-                    if message.get("type") in {ind_token.TRANSFER_ANNOUNCEMENT_TYPE, ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE}:
-                        bill = message["bill"] if message.get("type") == ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE else message["token"]
-                        state = ind_token.verify_token(bill)
-                        if state.owner_address == address:
-                            receipt = ind_token.create_receipt_announcement(bill, private_key, public_key)
+                    if message.get("type") == protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE:
+                        decoded = protocol_v3.decode_transfer_announcement(message)
+                        bill = decoded[0]
+                        state = protocol_v3.verify_bill(
+                            bill,
+                            proof_bundle_resolver=store.proof_bundle_resolver_v3,
+                            transparency_verifier=getattr(store, "transparency_verifier", None),
+                            archive_segment_resolver=store.archive_segment_resolver_v3,
+                        )
+                        if state.owner_address == address and keys_v3.is_address(address):
+                            receipt = protocol_v3.create_receipt_announcement(
+                                bill,
+                                private_key,
+                                public_key,
+                                proof_bundle_resolver=store.proof_bundle_resolver_v3,
+                                transparency_verifier=getattr(store, "transparency_verifier", None),
+                                archive_segment_resolver=store.archive_segment_resolver_v3,
+                            )
                             store.ingest_message(receipt)
                             broadcast_message(receipt)
                 except Exception as exc:
                     logger.debug("could not create or broadcast receipt for %s: %s", address, exc)
 
             store.finalize_pending(buffer_seconds=ind_settings.finality_buffer_seconds())
-            wallet_ids = {line.split()[0].lstrip('-') for line in runtime_json.wallet_bill_lines(wallet) if line.split()}
+            wallet_ids = {
+                line.split()[0].lstrip('-')
+                for line in runtime_json.wallet_bill_lines(wallet)
+                if line.split()
+            }
             settled = store.token_records_for_owner(address, settled_only=True)
+            if keys_v3.is_address(address):
+                settled = store.bill_v3_records_for_owner(
+                    address,
+                    statuses=("settled", "verified"),
+                )
             updated_wallet = list(wallet)
             for record in settled:
                 if record["display_id"] not in wallet_ids:
-                    updated_wallet.append(record["display_id"] + ' ' + str(record["sequence"]) + ' ' + str(int(time.time())) + '\n')
+                    updated_wallet.append(
+                        record["display_id"]
+                        + ' '
+                        + str(record["sequence"])
+                        + ' '
+                        + str(int(time.time()))
+                        + '\n'
+                    )
                     wallet_ids.add(record["display_id"])
             runtime_json.write_decrypted_wallet_lines(wallet_path, updated_wallet)

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Run multi-wallet public-testnet transfer smoke checks for existing bills."""
+# Run multi-wallet public-testnet transfer smoke checks for existing bills.
 
 import argparse
 import base64
-import contextlib
 import json
 import os
 import shlex
@@ -17,28 +16,27 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from ind import protocol_policy
 from ind import runtime as runtime_json
-from ind import sender_node
 from ind import settings as ind_settings
 from ind import token as ind_token
-from ind import wallet_decryption
-from ind import wallet_services
-from tools import testnet_report
-from tools import testnet_peers
+from ind import wallet_decryption, wallet_services
+from tools import testnet_peers, testnet_report
+from tools.testnet_faucet import DEFAULT_MANIFEST
 from tools.testnet_smoke import (
+    DEFAULT_BOOTSTRAP_SECRETS,
     DEFAULT_PEER,
     DEFAULT_REMOTE_LOG_MIRROR,
     DEFAULT_REMOTE_LOG_OBSERVED_ROOTS,
     DEFAULT_REMOTE_LOG_OPERATOR_URL,
+    DEFAULT_REMOTE_METADATA,
+    DEFAULT_REMOTE_PASSPHRASE,
     DEFAULT_REMOTE_PATH,
     DEFAULT_REMOTE_PYTHON,
     DEFAULT_REMOTE_RUN_AS_USER,
     DEFAULT_REMOTE_RUNTIME_CWD,
     DEFAULT_REMOTE_STORE,
-    DEFAULT_REMOTE_METADATA,
-    DEFAULT_REMOTE_PASSPHRASE,
     DEFAULT_SSH_KEY,
-    DEFAULT_BOOTSTRAP_SECRETS,
     DEFAULT_VPS_HOST,
     DEFAULT_VPS_USER,
     SmokeError,
@@ -52,13 +50,15 @@ from tools.testnet_smoke import (
     testnet_env,
     unlock_local_wallet,
 )
-from tools.testnet_faucet import DEFAULT_MANIFEST
-
 
 DEFAULT_LOCAL_CLEAN_METADATA = ROOT_DIR / "files" / "testnet" / "local_clean_wallet.local.json"
-DEFAULT_LOCAL_CLEAN_PASSPHRASE = ROOT_DIR / "files" / "testnet" / "local_clean_wallet_passphrase.local.txt"
+DEFAULT_LOCAL_CLEAN_PASSPHRASE = (
+    ROOT_DIR / "files" / "testnet" / "local_clean_wallet_passphrase.local.txt"
+)
 DEFAULT_LOCAL_SECOND_METADATA = ROOT_DIR / "files" / "testnet" / "local_second_wallet.local.json"
-DEFAULT_LOCAL_SECOND_PASSPHRASE = ROOT_DIR / "files" / "testnet" / "local_second_wallet_passphrase.local.txt"
+DEFAULT_LOCAL_SECOND_PASSPHRASE = (
+    ROOT_DIR / "files" / "testnet" / "local_second_wallet_passphrase.local.txt"
+)
 DEFAULT_SUMMARY = ROOT_DIR / "files" / "testnet" / "multihop_1x5_1x6_1x7_summary.local.json"
 
 
@@ -296,12 +296,16 @@ def write_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
     os.replace(tmp, path)
 
 
 def fetch_json(url, timeout=30):
-    request = urllib.request.Request(url, headers={"User-Agent": "International-Dollar-testnet-multihop/1"})
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "International-Dollar-testnet-multihop/1"}
+    )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
@@ -322,7 +326,9 @@ def run_ssh_python(args, payload):
         "IND_LOG_MIN_MIRRORS": "1",
         "IND_LOG_CONSISTENCY_CHECK_INTERVAL_SECONDS": "0",
         "IND_LOG_OBSERVED_ROOTS_DB": args.remote_log_observed_roots_db,
-        "IND_LOG_SUBMISSION_VERIFY_TIMEOUT_SECONDS": str(args.remote_log_submission_verify_timeout_seconds),
+        "IND_LOG_SUBMISSION_VERIFY_TIMEOUT_SECONDS": str(
+            args.remote_log_submission_verify_timeout_seconds
+        ),
     }
     if args.remote_log_operator_public_key:
         remote_env["IND_LOG_OPERATOR_PUBLIC_KEY"] = args.remote_log_operator_public_key
@@ -378,7 +384,9 @@ def run_ssh_python(args, payload):
     except (IndexError, json.JSONDecodeError) as exc:
         raise SmokeError(f"remote action {payload.get('action')} returned non-JSON output") from exc
     if not result.get("ok"):
-        raise SmokeError(f"remote action {payload.get('action')} refused: {result.get('error', 'unknown error')}")
+        raise SmokeError(
+            f"remote action {payload.get('action')} refused: {result.get('error', 'unknown error')}"
+        )
     return result
 
 
@@ -457,8 +465,14 @@ def wallet_status(address, finality_buffer_seconds):
     finalized = store.finalize_pending(buffer_seconds=int(finality_buffer_seconds))
     return {
         "finalized": finalized,
-        "spendable": [record_summary(item) for item in wallet_services.spendable_wallet_records(address, store=store)],
-        "pending": [record_summary(item) for item in wallet_services.pending_wallet_records(address, store=store)],
+        "spendable": [
+            record_summary(item)
+            for item in wallet_services.spendable_wallet_records(address, store=store)
+        ],
+        "pending": [
+            record_summary(item)
+            for item in wallet_services.pending_wallet_records(address, store=store)
+        ],
     }
 
 
@@ -508,7 +522,9 @@ def spendable_possible(address, display_id):
 def local_spend(args, display_id, sender, recipient, hop, hop_label, artifacts):
     store = ind_token.INDLocalStore()
     store.finalize_pending(buffer_seconds=args.finality_buffer_seconds)
-    bill = store.get_compact_bill_by_display_id(display_id) or store.get_token_by_display_id(display_id)
+    bill = store.get_compact_bill_by_display_id(display_id) or store.get_token_by_display_id(
+        display_id
+    )
     if not bill:
         raise SmokeError(f"local store does not know {display_id}")
     if not wallet_services.bill_is_spendable(store, bill, sender["address"]):
@@ -522,17 +538,25 @@ def local_spend(args, display_id, sender, recipient, hop, hop_label, artifacts):
     )
     announcement = ind_token.create_transfer_announcement(transferred)
     ingest = store.ingest_message(announcement)
-    announcement_path = artifact_path(display_id, hop, f"{sender['label']}_to_{recipient['label']}_transfer")
+    announcement_path = artifact_path(
+        display_id, hop, f"{sender['label']}_to_{recipient['label']}_transfer"
+    )
     save_artifact(announcement_path, announcement, artifacts)
     broadcast_result = broadcast_message(announcement, args.peers)
-    remote_ingest = run_ssh_python(args, remote_payload(args, "ingest_message", message=announcement))
+    remote_ingest = run_ssh_python(
+        args, remote_payload(args, "ingest_message", message=announcement)
+    )
 
-    receipt = ind_token.create_receipt_announcement(transferred, recipient["private_key"], recipient["public_key"])
+    receipt = ind_token.create_receipt_announcement(
+        transferred, recipient["private_key"], recipient["public_key"]
+    )
     receipt_ingest = store.ingest_message(receipt)
     receipt_path = artifact_path(display_id, hop, f"{recipient['label']}_receipt")
     save_artifact(receipt_path, receipt, artifacts)
     receipt_broadcast_result = broadcast_message(receipt, args.peers)
-    remote_receipt_ingest = run_ssh_python(args, remote_payload(args, "ingest_message", message=receipt))
+    remote_receipt_ingest = run_ssh_python(
+        args, remote_payload(args, "ingest_message", message=receipt)
+    )
 
     return {
         "display_id": display_id,
@@ -545,13 +569,19 @@ def local_spend(args, display_id, sender, recipient, hop, hop_label, artifacts):
         "receipt_artifact": str(receipt_path.relative_to(ROOT_DIR)),
         "transfer_hash": transfer_hash_from_message(announcement),
         "state": state_summary_from_bill(transferred),
-        "local_ingest": {"accepted": bool(ingest.get("accepted")), "status": ingest.get("status", "")},
+        "local_ingest": {
+            "accepted": bool(ingest.get("accepted")),
+            "status": ingest.get("status", ""),
+        },
         "remote_ingest": {
             "accepted": bool(remote_ingest.get("accepted")),
             "status": remote_ingest.get("status", ""),
             "transfer_hash": remote_ingest.get("transfer_hash", ""),
         },
-        "local_receipt_ingest": {"accepted": bool(receipt_ingest.get("accepted")), "status": receipt_ingest.get("status", "")},
+        "local_receipt_ingest": {
+            "accepted": bool(receipt_ingest.get("accepted")),
+            "status": receipt_ingest.get("status", ""),
+        },
         "remote_receipt_ingest": {
             "accepted": bool(remote_receipt_ingest.get("accepted")),
             "status": remote_receipt_ingest.get("status", ""),
@@ -568,7 +598,9 @@ def local_to_remote_spend(args, display_id, sender, hop, artifacts):
     remote_recipient = {"label": "vps", "address": args.remote_wallet_address}
     store = ind_token.INDLocalStore()
     store.finalize_pending(buffer_seconds=args.finality_buffer_seconds)
-    bill = store.get_compact_bill_by_display_id(display_id) or store.get_token_by_display_id(display_id)
+    bill = store.get_compact_bill_by_display_id(display_id) or store.get_token_by_display_id(
+        display_id
+    )
     if not bill:
         raise SmokeError(f"local store does not know {display_id}")
     if not wallet_services.bill_is_spendable(store, bill, sender["address"]):
@@ -578,14 +610,20 @@ def local_to_remote_spend(args, display_id, sender, hop, artifacts):
         sender["private_key"],
         sender["public_key"],
         args.remote_wallet_address,
-        metadata={"network": "testnet", "source": "testnet-multihop-smoke", "hop": "local_second_to_vps"},
+        metadata={
+            "network": "testnet",
+            "source": "testnet-multihop-smoke",
+            "hop": "local_second_to_vps",
+        },
     )
     announcement = ind_token.create_transfer_announcement(transferred)
     ingest = store.ingest_message(announcement)
     announcement_path = artifact_path(display_id, hop, f"{sender['label']}_to_vps_transfer")
     save_artifact(announcement_path, announcement, artifacts)
     broadcast_result = broadcast_message(announcement, args.peers)
-    remote_ingest = run_ssh_python(args, remote_payload(args, "ingest_message", message=announcement))
+    remote_ingest = run_ssh_python(
+        args, remote_payload(args, "ingest_message", message=announcement)
+    )
     receipt = remote_ingest.get("receipt")
     receipt_ingest = None
     receipt_path = None
@@ -605,7 +643,10 @@ def local_to_remote_spend(args, display_id, sender, hop, artifacts):
         "receipt_artifact": str(receipt_path.relative_to(ROOT_DIR)) if receipt_path else "",
         "transfer_hash": transfer_hash_from_message(announcement),
         "state": state_summary_from_bill(transferred),
-        "local_ingest": {"accepted": bool(ingest.get("accepted")), "status": ingest.get("status", "")},
+        "local_ingest": {
+            "accepted": bool(ingest.get("accepted")),
+            "status": ingest.get("status", ""),
+        },
         "remote_ingest": {
             "accepted": bool(remote_ingest.get("accepted")),
             "status": remote_ingest.get("status", ""),
@@ -613,7 +654,9 @@ def local_to_remote_spend(args, display_id, sender, hop, artifacts):
             "receipt_status": remote_ingest.get("receipt_status", ""),
         },
         "local_receipt_ingest": {
-            "accepted": bool(receipt_ingest.get("accepted")) if isinstance(receipt_ingest, dict) else False,
+            "accepted": (
+                bool(receipt_ingest.get("accepted")) if isinstance(receipt_ingest, dict) else False
+            ),
             "status": receipt_ingest.get("status", "") if isinstance(receipt_ingest, dict) else "",
         },
         "broadcast_result": broadcast_result,
@@ -626,7 +669,9 @@ def local_to_remote_spend(args, display_id, sender, hop, artifacts):
 def remote_to_local_spend(args, display_id, recipient, hop, artifacts):
     remote_spend = run_ssh_python(
         args,
-        remote_payload(args, "spend", display_id=display_id, recipient_address=recipient["address"]),
+        remote_payload(
+            args, "spend", display_id=display_id, recipient_address=recipient["address"]
+        ),
     )
     announcement = remote_spend["announcement"]
     announcement_path = artifact_path(display_id, hop, f"vps_to_{recipient['label']}_transfer")
@@ -634,13 +679,19 @@ def remote_to_local_spend(args, display_id, recipient, hop, artifacts):
     store = ind_token.INDLocalStore()
     ingest = store.ingest_message(announcement)
     bill = message_bill(announcement)
-    receipt = ind_token.create_receipt_announcement(bill, recipient["private_key"], recipient["public_key"])
+    receipt = ind_token.create_receipt_announcement(
+        bill, recipient["private_key"], recipient["public_key"]
+    )
     receipt_ingest = store.ingest_message(receipt)
     receipt_path = artifact_path(display_id, hop, f"{recipient['label']}_receipt")
     save_artifact(receipt_path, receipt, artifacts)
     receipt_broadcast_result = broadcast_message(receipt, args.peers)
-    remote_receipt_ingest = run_ssh_python(args, remote_payload(args, "ingest_message", message=receipt))
-    duplicate_remote = run_ssh_python(args, remote_payload(args, "duplicate_spend_possible", display_id=display_id))
+    remote_receipt_ingest = run_ssh_python(
+        args, remote_payload(args, "ingest_message", message=receipt)
+    )
+    duplicate_remote = run_ssh_python(
+        args, remote_payload(args, "duplicate_spend_possible", display_id=display_id)
+    )
     return {
         "display_id": display_id,
         "hop": "vps_to_local_clean",
@@ -657,8 +708,14 @@ def remote_to_local_spend(args, display_id, recipient, hop, artifacts):
             "status": remote_spend.get("status", ""),
             "broadcast_result": remote_spend.get("broadcast_result", ""),
         },
-        "local_ingest": {"accepted": bool(ingest.get("accepted")), "status": ingest.get("status", "")},
-        "local_receipt_ingest": {"accepted": bool(receipt_ingest.get("accepted")), "status": receipt_ingest.get("status", "")},
+        "local_ingest": {
+            "accepted": bool(ingest.get("accepted")),
+            "status": ingest.get("status", ""),
+        },
+        "local_receipt_ingest": {
+            "accepted": bool(receipt_ingest.get("accepted")),
+            "status": receipt_ingest.get("status", ""),
+        },
         "remote_receipt_ingest": {
             "accepted": bool(remote_receipt_ingest.get("accepted")),
             "status": remote_receipt_ingest.get("status", ""),
@@ -730,7 +787,9 @@ def verify_operator_proofs(args, transfer_hashes, tree_size):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Move existing public-testnet bills through local and VPS wallets.")
+    parser = argparse.ArgumentParser(
+        description="Move existing public-testnet bills through local and VPS wallets."
+    )
     parser.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
     parser.add_argument(
         "--peer",
@@ -738,10 +797,18 @@ def parse_args():
         help="seed/node to use; repeatable and comma-separated; default uses testnet/testnet.json",
     )
     parser.add_argument("--bill", dest="bills", action="append", default=["1x5", "1x6", "1x7"])
-    parser.add_argument("--local-clean-wallet-metadata-file", default=str(DEFAULT_LOCAL_CLEAN_METADATA))
-    parser.add_argument("--local-clean-wallet-passphrase-file", default=str(DEFAULT_LOCAL_CLEAN_PASSPHRASE))
-    parser.add_argument("--local-second-wallet-metadata-file", default=str(DEFAULT_LOCAL_SECOND_METADATA))
-    parser.add_argument("--local-second-wallet-passphrase-file", default=str(DEFAULT_LOCAL_SECOND_PASSPHRASE))
+    parser.add_argument(
+        "--local-clean-wallet-metadata-file", default=str(DEFAULT_LOCAL_CLEAN_METADATA)
+    )
+    parser.add_argument(
+        "--local-clean-wallet-passphrase-file", default=str(DEFAULT_LOCAL_CLEAN_PASSPHRASE)
+    )
+    parser.add_argument(
+        "--local-second-wallet-metadata-file", default=str(DEFAULT_LOCAL_SECOND_METADATA)
+    )
+    parser.add_argument(
+        "--local-second-wallet-passphrase-file", default=str(DEFAULT_LOCAL_SECOND_PASSPHRASE)
+    )
     parser.add_argument("--remote-wallet-address")
     parser.add_argument("--remote-wallet-metadata-file", default=str(DEFAULT_REMOTE_METADATA))
     parser.add_argument("--remote-wallet-passphrase-file", default=str(DEFAULT_REMOTE_PASSPHRASE))
@@ -762,17 +829,26 @@ def parse_args():
     parser.add_argument("--remote-log-operator-public-key", default="")
     parser.add_argument("--remote-log-observed-roots-db", default=DEFAULT_REMOTE_LOG_OBSERVED_ROOTS)
     parser.add_argument("--remote-log-submission-verify-timeout-seconds", type=int, default=5)
-    parser.add_argument("--finality-buffer-seconds", type=int, default=ind_settings.finality_buffer_seconds())
+    parser.add_argument(
+        "--finality-buffer-seconds", type=int, default=ind_settings.finality_buffer_seconds()
+    )
     parser.add_argument("--finality-slack-seconds", type=int, default=2)
     parser.add_argument("--mirror-wait-seconds", type=int, default=240)
     parser.add_argument("--mirror-poll-seconds", type=int, default=10)
-    parser.add_argument("--main-latest-url", default="https://international-dollar.com/transparency/latest.json")
-    parser.add_argument("--second-latest-url", default="https://seed.internetofthebots.com/transparency/latest.json")
+    parser.add_argument(
+        "--main-latest-url", default="https://international-dollar.com/transparency/latest.json"
+    )
+    parser.add_argument(
+        "--second-latest-url", default="https://seed.internetofthebots.com/transparency/latest.json"
+    )
     parser.add_argument("--summary-file", default=str(DEFAULT_SUMMARY))
     return parser.parse_args()
 
 
 def main():
+    raise SystemExit(
+        protocol_policy.legacy_disabled_message("legacy multi-hop smoke; use V3 testnet tooling")
+    )
     os.environ.setdefault("IND_NETWORK", "testnet")
     args = parse_args()
     args.peers = testnet_peers.parse_peer_args(args.peer)
@@ -793,10 +869,14 @@ def main():
         "sudo password",
     )
     remote_metadata = read_json(args.remote_wallet_metadata_file)
-    args.remote_wallet_address = args.remote_wallet_address or str(remote_metadata.get("address", "")).strip()
+    args.remote_wallet_address = (
+        args.remote_wallet_address or str(remote_metadata.get("address", "")).strip()
+    )
     if not args.remote_wallet_address:
         raise SmokeError("remote wallet address is required")
-    args.remote_wallet_passphrase = read_secret_text(args.remote_wallet_passphrase_file, "remote wallet passphrase")
+    args.remote_wallet_passphrase = read_secret_text(
+        args.remote_wallet_passphrase_file, "remote wallet passphrase"
+    )
 
     artifacts = []
     transfer_hashes = []

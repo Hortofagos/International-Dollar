@@ -1,2 +1,1 @@
-"""Test package for IND."""
-
+# Test package for IND.

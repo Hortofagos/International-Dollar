@@ -1,4 +1,4 @@
-"""IND receipt helpers."""
+# IND receipt helpers.
 
 from .protocol import (
     RECEIPT_ANNOUNCEMENT_TYPE,
@@ -17,4 +17,3 @@ __all__ = [
     "create_receipt_announcement",
     "verify_receipt_announcement",
 ]
-

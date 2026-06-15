@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create an encrypted off-server backup of public testnet operator state."""
+# Create an encrypted off-server backup of public testnet operator state.
 
 import argparse
 import base64
@@ -15,7 +15,6 @@ import tempfile
 from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_VPS_HOST = os.environ.get("IND_TESTNET_VPS_HOST", "")
@@ -33,8 +32,9 @@ def env_list(name):
 DEFAULT_REMOTE_PATHS = env_list("IND_TESTNET_BACKUP_REMOTE_PATHS")
 
 
+# Raised when the encrypted backup cannot be completed.
 class BackupError(RuntimeError):
-    """Raised when the encrypted backup cannot be completed."""
+    pass
 
 
 def read_bootstrap_secrets(path):
@@ -103,7 +103,9 @@ def atomic_write_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
     os.replace(tmp, path)
 
 
@@ -122,7 +124,7 @@ def load_or_create_backup_key(path):
             "type": "ind.testnet_offsite_backup_key.v1",
             "version": 1,
             "algorithm": "AES-256-GCM",
-            "created_at": int(dt.datetime.now(dt.timezone.utc).timestamp()),
+            "created_at": int(dt.datetime.now(dt.UTC).timestamp()),
             "key_b64": b64encode(key),
         },
     )
@@ -174,8 +176,7 @@ def fetch_remote_tar(args, sudo_password, key_passphrase):
         process = subprocess.run(
             command,
             input=(sudo_password + "\n").encode("utf-8"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=int(args.remote_timeout_seconds),
             env=ssh_env,
             check=False,
@@ -190,7 +191,9 @@ def fetch_remote_tar(args, sudo_password, key_passphrase):
 
 def encrypt_backup(tar_bytes, key, metadata):
     nonce = secrets.token_bytes(12)
-    aad = json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    aad = json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
     ciphertext = AESGCM(key).encrypt(nonce, tar_bytes, aad)
     verified = AESGCM(key).decrypt(nonce, ciphertext, aad)
     if verified != tar_bytes:
@@ -213,13 +216,15 @@ def create_backup(args):
         )
     values = read_bootstrap_secrets(args.ssh_bootstrap_secrets_file)
     key_passphrase = bootstrap_secret(values, "private key passphrase")
-    sudo_password = bootstrap_secret(values, f"temporary sudo password for {args.vps_user}", "sudo password")
+    sudo_password = bootstrap_secret(
+        values, f"temporary sudo password for {args.vps_user}", "sudo password"
+    )
     if not sudo_password:
         raise BackupError("sudo password is required to read protected operator files")
 
     tar_bytes, included_paths, remote_stderr = fetch_remote_tar(args, sudo_password, key_passphrase)
     key = load_or_create_backup_key(args.key_file)
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     stamp = now.strftime("%Y%m%d-%H%M%S")
     backup_dir = Path(args.backup_dir)
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -265,11 +270,15 @@ def create_backup(args):
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Create an encrypted off-server backup of the public testnet operator state")
+    parser = argparse.ArgumentParser(
+        description="Create an encrypted off-server backup of the public testnet operator state"
+    )
     parser.add_argument("--vps-host", default=DEFAULT_VPS_HOST)
     parser.add_argument("--vps-user", default=DEFAULT_VPS_USER)
     parser.add_argument("--ssh-key", type=Path, default=DEFAULT_SSH_KEY)
-    parser.add_argument("--ssh-bootstrap-secrets-file", type=Path, default=DEFAULT_BOOTSTRAP_SECRETS)
+    parser.add_argument(
+        "--ssh-bootstrap-secrets-file", type=Path, default=DEFAULT_BOOTSTRAP_SECRETS
+    )
     parser.add_argument("--ssh-timeout-seconds", type=int, default=10)
     parser.add_argument("--remote-timeout-seconds", type=int, default=180)
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
@@ -283,7 +292,9 @@ def main(argv=None):
     try:
         result = create_backup(args)
     except BackupError as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True, indent=2), file=sys.stderr)
+        print(
+            json.dumps({"ok": False, "error": str(exc)}, sort_keys=True, indent=2), file=sys.stderr
+        )
         return 1
     print(json.dumps(result, sort_keys=True, indent=2))
     return 0

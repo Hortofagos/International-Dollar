@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run bounded adversarial gossip probes against public-testnet seed nodes."""
+# Run bounded adversarial gossip probes against public-testnet seed nodes.
 
 import argparse
 import copy
@@ -15,9 +15,7 @@ if str(ROOT_DIR) not in sys.path:
 
 import ind_token
 from ind import sender_node
-from tools import testnet_peers
-from tools import testnet_report
-
+from tools import testnet_peers, testnet_report
 
 DEFAULT_VALID_MESSAGE = ROOT_DIR / "files" / "testnet" / "local_clean_receipt_1x2.local.json"
 DEFAULT_REFS = ("1x0", "1x1", "1x2")
@@ -30,9 +28,8 @@ STALE_STATUSES = {
 } | sender_node.REQUEST_FAILURE_STATUSES
 
 
+# Read and validate one known-good gossip message for replay/idempotence tests.
 def read_valid_message(path):
-    """Read and validate one known-good gossip message for replay/idempotence tests."""
-
     text = Path(path).read_text(encoding="utf-8")
     return ind_token.unpack_wire_message(text)
 
@@ -52,9 +49,8 @@ def _mutate_first_signature(value):
     return False
 
 
+# Build invalid payloads that exercise decode, strict JSON, schema, and signature paths.
 def invalid_probe_payloads(valid_message=None, *, nonce=None):
-    """Build invalid payloads that exercise decode, strict JSON, schema, and signature paths."""
-
     nonce = int(time.time() if nonce is None else nonce)
     probes = [
         {
@@ -96,9 +92,10 @@ def _send_gossip(peer, raw):
     }
 
 
-def build_report(peers, refs, *, valid_message_path=DEFAULT_VALID_MESSAGE, valid_replays=6, nonce=None):
-    """Run the adversarial probe and return a machine-readable report."""
-
+# Run the adversarial probe and return a machine-readable report.
+def build_report(
+    peers, refs, *, valid_message_path=DEFAULT_VALID_MESSAGE, valid_replays=6, nonce=None
+):
     peers = testnet_peers.parse_peer_args(peers)
     refs = [str(ref).strip() for ref in refs if str(ref).strip()]
     with testnet_report.testnet_network():
@@ -130,7 +127,9 @@ def build_report(peers, refs, *, valid_message_path=DEFAULT_VALID_MESSAGE, valid
                     replay_results.append(sent)
 
             status_records = testnet_report.query_peer_status(refs, peer=peer) if refs else []
-            status_ok = all(str(record.get("status", "")) not in STALE_STATUSES for record in status_records)
+            status_ok = all(
+                str(record.get("status", "")) not in STALE_STATUSES for record in status_records
+            )
             peer_ok = (
                 bool(invalid_results)
                 and all(item["ok"] for item in invalid_results)
@@ -164,13 +163,27 @@ def build_report(peers, refs, *, valid_message_path=DEFAULT_VALID_MESSAGE, valid
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Run bounded IND public-testnet adversarial probes.")
-    parser.add_argument("--peer", action="append", help="seed/node to probe; repeatable and comma-separated")
-    parser.add_argument("--ref", action="append", dest="refs", help="display ID or bill ID to check afterward")
-    parser.add_argument("--valid-message", default=str(DEFAULT_VALID_MESSAGE), help="known-good gossip JSON to replay")
-    parser.add_argument("--valid-replays", type=int, default=6, help="valid replay attempts per peer")
+    parser = argparse.ArgumentParser(
+        description="Run bounded IND public-testnet adversarial probes."
+    )
+    parser.add_argument(
+        "--peer", action="append", help="seed/node to probe; repeatable and comma-separated"
+    )
+    parser.add_argument(
+        "--ref", action="append", dest="refs", help="display ID or bill ID to check afterward"
+    )
+    parser.add_argument(
+        "--valid-message",
+        default=str(DEFAULT_VALID_MESSAGE),
+        help="known-good gossip JSON to replay",
+    )
+    parser.add_argument(
+        "--valid-replays", type=int, default=6, help="valid replay attempts per peer"
+    )
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
-    parser.add_argument("--strict", action="store_true", help="return nonzero when the probe is not ok")
+    parser.add_argument(
+        "--strict", action="store_true", help="return nonzero when the probe is not ok"
+    )
     return parser.parse_args(argv)
 
 

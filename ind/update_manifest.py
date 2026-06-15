@@ -1,4 +1,4 @@
-"""Signed update and operator-promotion manifests for IND releases."""
+# Signed update and operator-promotion manifests for IND releases.
 
 import json
 import os
@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 
 from . import protocol as ind_token
-
 
 UPDATE_MANIFEST_TYPE = "ind.update_manifest.v1"
 UPDATE_STATUS_TYPE = "ind.update_status.v1"
@@ -29,8 +28,9 @@ RUNTIME_EXCLUDE_DIRS = {
 }
 
 
+# Raised when a signed update manifest is malformed or untrusted.
 class UpdateManifestError(ValueError):
-    """Raised when a signed update manifest is malformed or untrusted."""
+    pass
 
 
 def canonical_json(data):
@@ -49,7 +49,9 @@ def atomic_write_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
     os.replace(tmp, path)
 
 
@@ -65,19 +67,19 @@ def _signature_payload(record, domain):
     return ind_token.signature_payload(domain, _unsigned(record))
 
 
+# Return a signed copy of an update manifest.
 def sign_update_manifest(manifest, private_key, public_key):
-    """Return a signed copy of an update manifest."""
-
     signed = dict(manifest)
     signed["signing_public_key"] = str(public_key).strip()
     signed["signature_algorithm"] = UPDATE_SIGNATURE_ALGORITHM
-    signed["signature"] = ind_token.b85_sign(private_key, _signature_payload(signed, UPDATE_SIGNATURE_DOMAIN))
+    signed["signature"] = ind_token.b85_sign(
+        private_key, _signature_payload(signed, UPDATE_SIGNATURE_DOMAIN)
+    )
     return signed
 
 
+# Return a signed copy of an operator promotion manifest.
 def sign_operator_promotion(promotion, private_key, public_key):
-    """Return a signed copy of an operator promotion manifest."""
-
     signed = dict(promotion)
     signed["signing_public_key"] = str(public_key).strip()
     signed["signature_algorithm"] = UPDATE_SIGNATURE_ALGORITHM
@@ -95,10 +97,7 @@ def _require_fields(record, fields, label):
 
 
 def _trusted_keys(keys):
-    if isinstance(keys, str):
-        raw = keys.replace("\n", ",").split(",")
-    else:
-        raw = list(keys or [])
+    raw = keys.replace("\n", ",").split(",") if isinstance(keys, str) else list(keys or [])
     return {str(item).strip() for item in raw if str(item).strip()}
 
 
@@ -140,6 +139,7 @@ def normalize_artifact(artifact):
     }
 
 
+# Validate a signed update manifest and return its normalized copy.
 def verify_update_manifest(
     manifest,
     trusted_keys,
@@ -148,8 +148,6 @@ def verify_update_manifest(
     min_sequence=None,
     allow_rollback=False,
 ):
-    """Validate a signed update manifest and return its normalized copy."""
-
     if not isinstance(manifest, dict):
         raise UpdateManifestError("manifest must be a JSON object")
     _require_fields(
@@ -174,7 +172,9 @@ def verify_update_manifest(
         raise UpdateManifestError("unsupported update manifest version")
     channel = str(manifest["channel"]).strip()
     if expected_channel and channel != str(expected_channel).strip():
-        raise UpdateManifestError(f"manifest channel {channel!r} does not match expected channel {expected_channel!r}")
+        raise UpdateManifestError(
+            f"manifest channel {channel!r} does not match expected channel {expected_channel!r}"
+        )
     artifacts = [normalize_artifact(item) for item in manifest.get("artifacts", [])]
     if not artifacts:
         raise UpdateManifestError("update manifest does not contain any artifacts")
@@ -246,10 +246,13 @@ def record_accepted_update(manifest, path=UPDATE_STATE_PATH):
     return write_update_state(state, path)
 
 
-def make_operator_promotion(canary_manifest, canary_report_hash, *, channel="operator-stable", promoted_at=None):
-    """Build the unsigned promotion record for an already-tested canary release."""
-
-    artifact_hashes = [str(item.get("sha3_256", "")).lower() for item in canary_manifest.get("artifacts", [])]
+# Build the unsigned promotion record for an already-tested canary release.
+def make_operator_promotion(
+    canary_manifest, canary_report_hash, *, channel="operator-stable", promoted_at=None
+):
+    artifact_hashes = [
+        str(item.get("sha3_256", "")).lower() for item in canary_manifest.get("artifacts", [])
+    ]
     return {
         "type": UPDATE_PROMOTION_TYPE,
         "version": 1,
@@ -263,9 +266,8 @@ def make_operator_promotion(canary_manifest, canary_report_hash, *, channel="ope
     }
 
 
+# Verify that a promotion exactly names the canary release it promotes.
 def verify_operator_promotion(promotion, trusted_keys, canary_manifest):
-    """Verify that a promotion exactly names the canary release it promotes."""
-
     if not isinstance(promotion, dict):
         raise UpdateManifestError("operator promotion must be a JSON object")
     _require_fields(
@@ -294,8 +296,12 @@ def verify_operator_promotion(promotion, trusted_keys, canary_manifest):
         raise UpdateManifestError("promotion sequence does not match canary manifest")
     if str(promotion["canary_channel"]) != str(canary_manifest.get("channel", "")):
         raise UpdateManifestError("promotion canary channel does not match canary manifest")
-    expected_hashes = [str(item.get("sha3_256", "")).lower() for item in canary_manifest.get("artifacts", [])]
+    expected_hashes = [
+        str(item.get("sha3_256", "")).lower() for item in canary_manifest.get("artifacts", [])
+    ]
     if list(promotion.get("artifact_hashes", [])) != expected_hashes:
         raise UpdateManifestError("promotion artifact hashes do not match canary manifest")
-    _verify_signature(promotion, trusted_keys, UPDATE_PROMOTION_SIGNATURE_DOMAIN, "operator promotion")
+    _verify_signature(
+        promotion, trusted_keys, UPDATE_PROMOTION_SIGNATURE_DOMAIN, "operator promotion"
+    )
     return True

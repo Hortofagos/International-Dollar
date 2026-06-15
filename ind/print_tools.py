@@ -1,21 +1,21 @@
 import os
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+import platform
 import re
-import qrcode
 import subprocess
+import sys
 import threading
 import time
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+
+import qrcode
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from pyautogui import hotkey
 from PyPDF2 import PdfMerger
-import platform
-import sys
-from pathlib import Path
-from functools import lru_cache
-from dataclasses import dataclass
 
 from . import address_generation as generate_address
 from . import runtime as runtime_json
-
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FONT_PATH = BASE_DIR / 'Teko-Light.ttf'
@@ -137,32 +137,36 @@ def full_bill(list_bills):
     def bill_gen_back(bill):
         sm = bill.splitlines()[0]
         img = Image.open('img/bills_to_print/' + sm.split('x')[0] + '_back.png')
-        address_qr = qrcode.QRCode(version=1, box_size=6, border=2, error_correction=qrcode.constants.ERROR_CORRECT_L)
+        address_qr = qrcode.QRCode(
+            version=1, box_size=6, border=2, error_correction=qrcode.constants.ERROR_CORRECT_L
+        )
         address_qr.add_data(bill)
         qr_make = address_qr.make_image(fill_color='black', back_color='white')
         qr_resize = qr_make.resize((240, 240), Image.Resampling.LANCZOS)
 
         f = bill_font(27)
         f2 = bill_font(48)
-        txt = Image.new('L', (770,310))
+        txt = Image.new('L', (770, 310))
         d = ImageDraw.Draw(txt)
 
         def format_key(s):
-            return re.sub("(.{20})", "\\1\n", s, 0, re.DOTALL)
+            return re.sub("(.{20})", "\\1\n", s, count=0, flags=re.DOTALL)
 
-        d.text((5, 120), "Private Key :\n" + format_key(bill.splitlines()[1]),  font=f, fill=255)
-        d.text((510, 70), "Public Key :\n" + format_key(bill.splitlines()[2]),  font=f, fill=255)
+        d.text((5, 120), "Private Key :\n" + format_key(bill.splitlines()[1]), font=f, fill=255)
+        d.text((510, 70), "Public Key :\n" + format_key(bill.splitlines()[2]), font=f, fill=255)
         d.text((330, 278), "Number : " + bill.splitlines()[3], font=f, fill=255)
         d.text((5, 252), sm, font=f2, fill=255)
         d.text((760 - len(sm) * 20, 2), sm, font=f2, fill=255)
-        rot = txt.rotate(90,  expand=1)
+        rot = txt.rotate(90, expand=1)
 
-        img.paste(ImageOps.colorize(rot, (255,255,255), (255,255,255)), (20,10),  rot)
+        img.paste(ImageOps.colorize(rot, (255, 255, 255), (255, 255, 255)), (20, 10), rot)
         img.paste(qr_resize.rotate(90, expand=1), (55, 290))
         img.paste(qr_resize.rotate(90, expand=1), (55, 290))
         a4_png.paste(img, _bill_position(state.back_slot, a4_png, img.size))
         if state.back_slot == BILLS_PER_PRINT_PAGE - 1 or state.back_index == len(list_bills) - 1:
-            _save_print_page(a4_png, 'print_folder/' + str(float(state.back_index / 5) * 2 + 0.5) + '.pdf')
+            _save_print_page(
+                a4_png, 'print_folder/' + str(float(state.back_index / 5) * 2 + 0.5) + '.pdf'
+            )
             _clear_print_page(a4_png)
             state.back_slot = -1
         state.back_slot += 1
@@ -178,13 +182,16 @@ def full_bill(list_bills):
     threading.Thread(target=print_pdf).start()
     return used_addr
 
+
 def only_qr(list_bills):
     a4_png = Image.open('img/bills_to_print/a4.png')
     state = QrPrintState()
 
     def bill_gen_qr(bill):
         sm = bill.splitlines()[0]
-        address_qr = qrcode.QRCode(version=1, box_size=6, border=2, error_correction=qrcode.constants.ERROR_CORRECT_L)
+        address_qr = qrcode.QRCode(
+            version=1, box_size=6, border=2, error_correction=qrcode.constants.ERROR_CORRECT_L
+        )
         address_qr.add_data(bill)
         qr_make = address_qr.make_image(fill_color='black', back_color='white')
         qr_resize = qr_make.resize((240, 240), Image.Resampling.LANCZOS)

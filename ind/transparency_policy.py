@@ -1,12 +1,11 @@
-"""Configuration objects for transparency-log verification."""
+# Configuration objects for transparency-log verification.
 
 from dataclasses import dataclass
 
 
+# Runtime policy knobs that shape current-root and consistency checks.
 @dataclass(frozen=True)
 class TransparencyVerifierPolicy:
-    """Runtime policy knobs that shape current-root and consistency checks."""
-
     max_root_lag_seconds: int
     min_mirrors: int
     allow_unsafe_single_mirror: bool

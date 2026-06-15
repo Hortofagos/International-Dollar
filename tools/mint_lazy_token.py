@@ -12,7 +12,9 @@ import ind_token
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Mint one IND lazy-genesis bill from a signed supply manifest.")
+    parser = argparse.ArgumentParser(
+        description="Mint one IND lazy-genesis bill from a signed supply manifest."
+    )
     parser.add_argument("--manifest", required=True, help="path to signed genesis manifest JSON")
     parser.add_argument("--index", type=int, required=True, help="bill index to mint")
     parser.add_argument("--output", help="output bill JSON path; defaults to stdout")

@@ -1,4 +1,4 @@
-"""Genesis bill and lazy-manifest helpers."""
+# Genesis bill and lazy-manifest helpers.
 
 from .protocol import (
     GENESIS_MANIFEST_TYPE,

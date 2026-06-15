@@ -1,4 +1,4 @@
-"""Compatibility wrapper for IND wallet decryption."""
+# Compatibility wrapper for IND wallet decryption.
 
 from ind import wallet_decryption as _impl
 

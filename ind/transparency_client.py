@@ -1,7 +1,7 @@
-"""Client and local-operator helpers for IND transparency log verification."""
+# Client and local-operator helpers for IND transparency log verification.
 
-import copy
 import contextlib
+import copy
 import json
 import logging
 import os
@@ -23,7 +23,6 @@ from pymerkle.proof import InvalidProof, MerkleProof
 
 from . import token as ind_token
 from .transparency_policy import TransparencyVerifierPolicy
-
 
 logger = logging.getLogger(__name__)
 LOG_ROOT_TYPE = "ind.transparency_root.v1"
@@ -67,53 +66,57 @@ STRICT_UNSAFE_SINGLE_MIRROR_ERROR = (
 )
 
 
+# Base error for IND transparency log verification failures.
 class TransparencyLogError(Exception):
-    """Base error for IND transparency log verification failures."""
+    pass
 
 
+# Raised when a signed log root is malformed or has an invalid signature.
 class RootVerificationError(TransparencyLogError):
-    """Raised when a signed log root is malformed or has an invalid signature."""
+    pass
 
 
+# Raised when an inclusion proof does not resolve to a mirrored root.
 class InclusionProofError(TransparencyLogError):
-    """Raised when an inclusion proof does not resolve to a mirrored root."""
+    pass
 
 
+# Raised when a signed root proves the operator violated log policy.
 class OperatorPolicyViolationError(InclusionProofError):
-    """Raised when a signed root proves the operator violated log policy."""
-
     def __init__(self, message, evidence):
         self.evidence = evidence
         super().__init__(message)
 
 
+# Raised when a consistency proof does not link two signed roots.
 class ConsistencyProofError(TransparencyLogError):
-    """Raised when a consistency proof does not link two signed roots."""
+    pass
 
 
+# Raised when mirrors show valid conflicting roots for one log timestamp.
 class MirrorDisagreementError(TransparencyLogError):
-    """Raised when mirrors show valid conflicting roots for one log timestamp."""
-
     def __init__(self, evidence):
         self.evidence = evidence
         super().__init__("mirrors disagree about a signed transparency log root")
 
 
+# Raised when a consistency check cannot reach the operator.
 class ConsistencyUnavailableError(TransparencyLogError):
-    """Raised when a consistency check cannot reach the operator."""
+    pass
 
 
+# Raised when an operator key rotation record is invalid.
 class KeyRotationError(TransparencyLogError):
-    """Raised when an operator key rotation record is invalid."""
+    pass
 
 
+# Raised when an operator key revocation record is invalid.
 class KeyRevocationError(TransparencyLogError):
-    """Raised when an operator key revocation record is invalid."""
+    pass
 
 
+# Serialize transparency-log records in the canonical IND JSON form.
 def canonical_json(data):
-    """Serialize transparency-log records in the canonical IND JSON form."""
-
     return ind_token.canonical_json(data)
 
 
@@ -142,7 +145,10 @@ def _settings_module():
 def _production_security_mode_enabled():
     ind_settings = _settings_module()
     if ind_settings is None:
-        return _env_true("IND_PRODUCTION") or os.environ.get("IND_SECURITY_PROFILE", "").strip().lower() == "production"
+        return (
+            _env_true("IND_PRODUCTION")
+            or os.environ.get("IND_SECURITY_PROFILE", "").strip().lower() == "production"
+        )
     settings = ind_settings.load_security_settings(validate_production=False)
     return ind_settings.production_mode(settings)
 
@@ -155,32 +161,28 @@ def accept_legacy_algorithm_names():
     return not _env_false(ACCEPT_LEGACY_ALGORITHM_NAMES_ENV)
 
 
+# Return current and configured legacy transparency tree algorithm names.
 def accepted_tree_algorithms():
-    """Return current and configured legacy transparency tree algorithm names."""
-
     algorithms = {LOG_TREE_ALGORITHM}
     if accept_legacy_algorithm_names():
         algorithms.add(LEGACY_LOG_TREE_ALGORITHM)
     return algorithms
 
 
+# Derive the stable log id from the operator signing key.
 def log_id_from_public_key(public_key_base85):
-    """Derive the stable log id from the operator signing key."""
-
     return ind_token.sha3_hex(public_key_base85.strip().encode("utf-8"))
 
 
+# Return the bytes covered by the signed-root signature.
 def root_signature_payload(root):
-    """Return the bytes covered by the signed-root signature."""
-
     unsigned = copy.deepcopy(root)
     unsigned.pop("signature", None)
     return ind_token.signature_payload(LOG_ROOT_SIGNATURE_DOMAIN, unsigned)
 
 
+# Return a stable id for one complete signed root record.
 def signed_root_id(root):
-    """Return a stable id for one complete signed root record."""
-
     return ind_token.sha3_hex(canonical_bytes(root))
 
 
@@ -264,9 +266,8 @@ def _spend_map_empty_root():
     return _spend_map_empty_hashes()[0]
 
 
+# Return the globally indexed key for one spend of a previous bill state.
 def spend_key_for_transfer(transfer):
-    """Return the globally indexed key for one spend of a previous bill state."""
-
     key_material = {
         "token_id": transfer["token_id"],
         "previous_hash": transfer["previous_hash"],
@@ -276,9 +277,8 @@ def spend_key_for_transfer(transfer):
     return ind_token.sha3_hex(canonical_bytes(key_material))
 
 
+# Build the public spend-map record committed by signed transparency roots.
 def spend_claim_for_transfer(transfer, log_id, transfer_leaf_index, accepted_at):
-    """Build the public spend-map record committed by signed transparency roots."""
-
     transfer_hash = ind_token.transfer_hash(transfer)
     claim = {
         "type": "ind.transparency_spend_claim.v1",
@@ -315,9 +315,8 @@ _SPEND_CLAIM_REQUIRED = {
 _SPEND_CLAIM_OPTIONAL = {"transfer"}
 
 
+# Return the canonical spend-claim shape used for inclusion verification.
 def _normalize_spend_claim(claim, error_cls=None):
-    """Return the canonical spend-claim shape used for inclusion verification."""
-
     error_cls = error_cls or InclusionProofError
     _require_exact_keys(
         claim,
@@ -326,18 +325,26 @@ def _normalize_spend_claim(claim, error_cls=None):
         optional=_SPEND_CLAIM_OPTIONAL,
         error_cls=error_cls,
     )
-    if claim["type"] != "ind.transparency_spend_claim.v1" or _require_int_for(
-        claim["version"],
-        "transparency spend claim version",
-        error_cls=error_cls,
-    ) != LOG_VERSION:
+    if (
+        claim["type"] != "ind.transparency_spend_claim.v1"
+        or _require_int_for(
+            claim["version"],
+            "transparency spend claim version",
+            error_cls=error_cls,
+        )
+        != LOG_VERSION
+    ):
         raise error_cls("unsupported transparency spend claim version")
     normalized = {
         "type": "ind.transparency_spend_claim.v1",
         "version": LOG_VERSION,
-        "log_id": _require_str(claim["log_id"], "transparency spend claim log id", error_cls=error_cls),
+        "log_id": _require_str(
+            claim["log_id"], "transparency spend claim log id", error_cls=error_cls
+        ),
         "spend_key": _hex32(claim["spend_key"], "spend key"),
-        "token_id": _require_str(claim["token_id"], "transparency spend claim bill id", error_cls=error_cls),
+        "token_id": _require_str(
+            claim["token_id"], "transparency spend claim bill id", error_cls=error_cls
+        ),
         "previous_hash": _hex32(claim["previous_hash"], "transparency spend claim previous hash"),
         "sequence": _require_int_for(
             claim["sequence"],
@@ -345,8 +352,12 @@ def _normalize_spend_claim(claim, error_cls=None):
             minimum=1,
             error_cls=error_cls,
         ),
-        "sender_address": _require_str(claim["sender_address"], "transparency spend claim sender", error_cls=error_cls),
-        "sender_public_key": _require_str(claim["sender_public_key"], "transparency spend claim sender key", error_cls=error_cls),
+        "sender_address": _require_str(
+            claim["sender_address"], "transparency spend claim sender", error_cls=error_cls
+        ),
+        "sender_public_key": _require_str(
+            claim["sender_public_key"], "transparency spend claim sender key", error_cls=error_cls
+        ),
         "transfer_hash": _hex32(claim["transfer_hash"], "transparency spend claim transfer hash"),
         "transfer_leaf_index": _require_int_for(
             claim["transfer_leaf_index"],
@@ -364,12 +375,25 @@ def _normalize_spend_claim(claim, error_cls=None):
     if "transfer" in claim:
         transfer = copy.deepcopy(claim["transfer"])
         try:
-            ind_token._verify_transfer_signature(transfer)
+            if isinstance(transfer, dict) and transfer.get("type") == "ind.transfer.v3":
+                from . import protocol_v3
+
+                protocol_v3._validate_transfer_shape(
+                    transfer,
+                    int(transfer["network_id"]),
+                )
+                protocol_v3.verify_transfer_signature(transfer)
+                transfer_hash_value = protocol_v3.transfer_hash(transfer)
+                spend_key_value = protocol_v3.spend_key_for_transfer(transfer)
+            else:
+                ind_token._verify_transfer_signature(transfer)
+                transfer_hash_value = ind_token.transfer_hash(transfer)
+                spend_key_value = spend_key_for_transfer(transfer)
         except Exception as exc:
             raise error_cls("transparency spend claim transfer signature is invalid") from exc
-        if ind_token.transfer_hash(transfer) != normalized["transfer_hash"]:
+        if transfer_hash_value != normalized["transfer_hash"]:
             raise error_cls("transparency spend claim transfer hash mismatch")
-        if spend_key_for_transfer(transfer) != normalized["spend_key"]:
+        if spend_key_value != normalized["spend_key"]:
             raise error_cls("transparency spend claim transfer spend key mismatch")
         for field in ("token_id", "previous_hash", "sender_address", "sender_public_key"):
             if transfer[field] != normalized[field]:
@@ -419,7 +443,9 @@ def _spend_map_levels(claims):
         claims_by_hash = claims_by_key.setdefault(position, {})
         existing = claims_by_hash.get(claim["transfer_hash"])
         if existing is not None and existing != claim:
-            raise InclusionProofError("transparency spend map contains inconsistent duplicate claims")
+            raise InclusionProofError(
+                "transparency spend map contains inconsistent duplicate claims"
+            )
         claims_by_hash[claim["transfer_hash"]] = claim
 
     for position, claims_by_hash in claims_by_key.items():
@@ -444,16 +470,14 @@ def _spend_map_levels(claims):
     return levels, claims_by_key, total_claims
 
 
+# Compute the sparse spend-map root for the supplied public spend claims.
 def spend_map_root(claims):
-    """Compute the sparse spend-map root for the supplied public spend claims."""
-
     levels, _claims_by_key, _total_claims = _spend_map_levels(claims)
     return levels[0].get(0, _spend_map_empty_root())
 
 
+# Build an inclusion proof for one spend key in the sparse spend map.
 def build_spend_map_proof(claims, spend_key, tree_size):
-    """Build an inclusion proof for one spend key in the sparse spend map."""
-
     spend_key = _hex32(spend_key, "spend key")
     position = _spend_key_position(spend_key)
     levels, claims_by_key, total_claims = _spend_map_levels(claims)
@@ -482,9 +506,8 @@ def build_spend_map_proof(claims, spend_key, tree_size):
     }
 
 
+# Verify that a spend claim is included in a signed root's spend-map commitment.
 def verify_spend_map_proof(proof, signed_root):
-    """Verify that a spend claim is included in a signed root's spend-map commitment."""
-
     verify_signed_root(signed_root)
     required = {
         "type",
@@ -499,11 +522,15 @@ def verify_spend_map_proof(proof, signed_root):
     legacy_required = (required - {"spend_claims"}) | {"spend_claim"}
     if not isinstance(proof, dict) or (set(proof) != required and set(proof) != legacy_required):
         raise InclusionProofError("malformed transparency spend-map proof")
-    if proof["type"] != LOG_SPEND_MAP_PROOF_TYPE or _require_int_for(
-        proof["version"],
-        "transparency spend-map proof version",
-        error_cls=InclusionProofError,
-    ) != LOG_VERSION:
+    if (
+        proof["type"] != LOG_SPEND_MAP_PROOF_TYPE
+        or _require_int_for(
+            proof["version"],
+            "transparency spend-map proof version",
+            error_cls=InclusionProofError,
+        )
+        != LOG_VERSION
+    ):
         raise InclusionProofError("unsupported transparency spend-map proof version")
     if proof["algorithm"] != LOG_SPEND_MAP_ALGORITHM:
         raise InclusionProofError("unsupported transparency spend-map algorithm")
@@ -577,9 +604,10 @@ def verify_spend_map_proof(proof, signed_root):
     return sorted(claims, key=_spend_claim_sort_key)
 
 
-def make_operator_policy_violation_proof(root, spend_proof, violation_type="accepted_conflicting_spend", detected_at=None):
-    """Build portable evidence that an operator signed a policy-violating root."""
-
+# Build portable evidence that an operator signed a policy-violating root.
+def make_operator_policy_violation_proof(
+    root, spend_proof, violation_type="accepted_conflicting_spend", detected_at=None
+):
     proof = {
         "type": LOG_OPERATOR_POLICY_VIOLATION_TYPE,
         "version": LOG_VERSION,
@@ -593,9 +621,8 @@ def make_operator_policy_violation_proof(root, spend_proof, violation_type="acce
     return proof
 
 
+# Verify self-contained evidence that a signed root accepted a double spend.
 def verify_operator_policy_violation_proof(proof, operator_public_key=None):
-    """Verify self-contained evidence that a signed root accepted a double spend."""
-
     required = {"type", "version", "violation_type", "log_id", "root", "spend_proof", "detected_at"}
     _require_exact_keys(
         proof,
@@ -603,11 +630,15 @@ def verify_operator_policy_violation_proof(proof, operator_public_key=None):
         "operator policy violation proof",
         error_cls=InclusionProofError,
     )
-    if proof["type"] != LOG_OPERATOR_POLICY_VIOLATION_TYPE or _require_int_for(
-        proof["version"],
-        "operator policy violation proof version",
-        error_cls=InclusionProofError,
-    ) != LOG_VERSION:
+    if (
+        proof["type"] != LOG_OPERATOR_POLICY_VIOLATION_TYPE
+        or _require_int_for(
+            proof["version"],
+            "operator policy violation proof version",
+            error_cls=InclusionProofError,
+        )
+        != LOG_VERSION
+    ):
         raise InclusionProofError("unsupported operator policy violation proof version")
     if proof["violation_type"] != "accepted_conflicting_spend":
         raise InclusionProofError("unsupported operator policy violation type")
@@ -626,26 +657,33 @@ def verify_operator_policy_violation_proof(proof, operator_public_key=None):
         raise InclusionProofError("operator policy violation proof has no conflicting spend")
     missing_transfer = [claim for claim in claims if "transfer" not in claim]
     if missing_transfer:
-        raise InclusionProofError("operator policy violation proof is missing conflicting transfer bodies")
+        raise InclusionProofError(
+            "operator policy violation proof is missing conflicting transfer bodies"
+        )
     spend_keys = {claim["spend_key"] for claim in claims}
     if len(spend_keys) != 1:
         raise InclusionProofError("operator policy violation proof mixes spend keys")
     first = claims[0]
     for claim in claims[1:]:
-        for field in ("token_id", "previous_hash", "sequence", "sender_address", "sender_public_key"):
+        for field in (
+            "token_id",
+            "previous_hash",
+            "sequence",
+            "sender_address",
+            "sender_public_key",
+        ):
             if claim[field] != first[field]:
                 raise InclusionProofError("operator policy violation proof claims are not siblings")
     return copy.deepcopy(proof)
 
 
+# Verify that the signed root maps this transfer's spend key to this transfer hash.
 def verify_spend_map_proof_for_transfer(
     transfer,
     proof,
     signed_root,
     operator_public_key=None,
 ):
-    """Verify that the signed root maps this transfer's spend key to this transfer hash."""
-
     verify_signed_root(signed_root, operator_public_key=operator_public_key)
     claims = verify_spend_map_proof(proof, signed_root)
     expected_spend_key = spend_key_for_transfer(transfer)
@@ -667,24 +705,27 @@ def verify_spend_map_proof_for_transfer(
         raise InclusionProofError("spend proof sender mismatch")
     if claim["sender_public_key"] != transfer["sender_public_key"]:
         raise InclusionProofError("spend proof sender key mismatch")
-    conflicting_claims = [item for item in claims if item["transfer_hash"] != expected_transfer_hash]
+    conflicting_claims = [
+        item for item in claims if item["transfer_hash"] != expected_transfer_hash
+    ]
     if conflicting_claims:
         all_claims = [claim, *conflicting_claims]
         if all("transfer" in item for item in all_claims):
             evidence = make_operator_policy_violation_proof(signed_root, proof)
-            raise OperatorPolicyViolationError("operator accepted conflicting spend claims", evidence)
+            raise OperatorPolicyViolationError(
+                "operator accepted conflicting spend claims", evidence
+            )
         raise InclusionProofError("spend proof contains an unverifiable conflicting sibling claim")
     return True
 
 
+# Verify that a checkpoint's settled tip has a non-conflicting spend-map claim.
 def verify_spend_map_proof_for_checkpoint(
     checkpoint,
     proof,
     signed_root,
     operator_public_key=None,
 ):
-    """Verify that a checkpoint's settled tip has a non-conflicting spend-map claim."""
-
     verify_signed_root(signed_root, operator_public_key=operator_public_key)
     claims = verify_spend_map_proof(proof, signed_root)
     expected_transfer_hash = str(checkpoint["last_transfer_hash"]).lower()
@@ -708,19 +749,24 @@ def verify_spend_map_proof_for_checkpoint(
         raise InclusionProofError("checkpoint spend proof owner mismatch")
     if int(transfer["timestamp"]) != int(checkpoint["last_transfer_timestamp"]):
         raise InclusionProofError("checkpoint spend proof timestamp mismatch")
-    conflicting_claims = [item for item in claims if item["transfer_hash"] != expected_transfer_hash]
+    conflicting_claims = [
+        item for item in claims if item["transfer_hash"] != expected_transfer_hash
+    ]
     if conflicting_claims:
         all_claims = [claim, *conflicting_claims]
         if all("transfer" in item for item in all_claims):
             evidence = make_operator_policy_violation_proof(signed_root, proof)
-            raise OperatorPolicyViolationError("operator accepted conflicting spend claims", evidence)
-        raise InclusionProofError("checkpoint spend proof contains an unverifiable conflicting sibling claim")
+            raise OperatorPolicyViolationError(
+                "operator accepted conflicting spend claims", evidence
+            )
+        raise InclusionProofError(
+            "checkpoint spend proof contains an unverifiable conflicting sibling claim"
+        )
     return True
 
 
+# Build an unsigned proof archive snapshot for one signed root.
 def make_proof_archive(signed_root, entries, spend_claims):
-    """Build an unsigned proof archive snapshot for one signed root."""
-
     verify_signed_root(signed_root)
     tree_size = _require_int_for(
         signed_root["tree_size"],
@@ -747,9 +793,8 @@ def _archive_entries_tree(entries, tree_size):
     if len(entries) != tree_size:
         raise InclusionProofError("proof archive entry count does not match signed root")
     tree = InmemoryTree(algorithm=LOG_HASH_ALGORITHM)
-    expected_index = 0
     entry_by_hash = {}
-    for entry in entries:
+    for expected_index, entry in enumerate(entries):
         _require_exact_keys(
             entry,
             {"leaf_index", "entry_hash", "submitted_at"},
@@ -766,37 +811,58 @@ def _archive_entries_tree(entries, tree_size):
         if leaf_index != expected_index:
             raise InclusionProofError("proof archive entries are not contiguous")
         entry_hash = _hex32(entry["entry_hash"], "proof archive entry hash")
-        _require_int_for(entry["submitted_at"], "proof archive submitted_at", minimum=0, error_cls=InclusionProofError)
+        _require_int_for(
+            entry["submitted_at"],
+            "proof archive submitted_at",
+            minimum=0,
+            error_cls=InclusionProofError,
+        )
         tree.append_entry(bytes.fromhex(entry_hash))
         entry_by_hash[entry_hash] = copy.deepcopy(entry)
-        expected_index += 1
     return tree, entry_by_hash
 
 
+# Verify that an archive can reproduce the signed root and spend-map root.
 def verify_proof_archive(archive, signed_root, operator_public_key=None):
-    """Verify that an archive can reproduce the signed root and spend-map root."""
-
     verify_signed_root(signed_root, operator_public_key=operator_public_key)
-    required = {"type", "version", "log_id", "tree_size", "root_hash", "signed_root_id", "entries", "spend_claims"}
+    required = {
+        "type",
+        "version",
+        "log_id",
+        "tree_size",
+        "root_hash",
+        "signed_root_id",
+        "entries",
+        "spend_claims",
+    }
     _require_exact_keys(archive, required, "proof archive", error_cls=InclusionProofError)
-    if archive["type"] != LOG_PROOF_ARCHIVE_TYPE or _require_int_for(
-        archive["version"],
-        "proof archive version",
-        error_cls=InclusionProofError,
-    ) != LOG_VERSION:
+    if (
+        archive["type"] != LOG_PROOF_ARCHIVE_TYPE
+        or _require_int_for(
+            archive["version"],
+            "proof archive version",
+            error_cls=InclusionProofError,
+        )
+        != LOG_VERSION
+    ):
         raise InclusionProofError("unsupported proof archive version")
     if archive["log_id"] != signed_root["log_id"]:
         raise InclusionProofError("proof archive is for a different log")
-    if _require_int_for(archive["tree_size"], "proof archive tree size", minimum=0, error_cls=InclusionProofError) != int(
-        signed_root["tree_size"]
-    ):
+    if _require_int_for(
+        archive["tree_size"], "proof archive tree size", minimum=0, error_cls=InclusionProofError
+    ) != int(signed_root["tree_size"]):
         raise InclusionProofError("proof archive tree size mismatch")
     if _hex32(archive["root_hash"], "proof archive root hash") != signed_root["root_hash"]:
         raise InclusionProofError("proof archive root hash mismatch")
-    if _hex32(archive["signed_root_id"], "proof archive signed root id") != signed_root_id(signed_root):
+    if _hex32(archive["signed_root_id"], "proof archive signed root id") != signed_root_id(
+        signed_root
+    ):
         raise InclusionProofError("proof archive signed root id mismatch")
     tree, _entry_by_hash = _archive_entries_tree(archive["entries"], int(signed_root["tree_size"]))
-    if int(signed_root["tree_size"]) > 0 and tree.get_state(int(signed_root["tree_size"])).hex() != signed_root["root_hash"]:
+    if (
+        int(signed_root["tree_size"]) > 0
+        and tree.get_state(int(signed_root["tree_size"])).hex() != signed_root["root_hash"]
+    ):
         raise InclusionProofError("proof archive entries do not reproduce the signed root")
     claims = archive["spend_claims"]
     if not isinstance(claims, list):
@@ -849,21 +915,24 @@ def _root_fingerprint(root):
     )
 
 
+# Return the collision type if two valid roots prove operator equivocation.
 def equivocation_collision_type(root_a, root_b):
-    """Return the collision type if two valid roots prove operator equivocation."""
-
     if root_a["log_id"] != root_b["log_id"]:
         return None
     if signed_root_id(root_a) == signed_root_id(root_b):
         return None
-    if int(root_a["tree_size"]) == int(root_b["tree_size"]) and _root_fingerprint(root_a) != _root_fingerprint(root_b):
+    if int(root_a["tree_size"]) == int(root_b["tree_size"]) and _root_fingerprint(
+        root_a
+    ) != _root_fingerprint(root_b):
         return "same_tree_size"
-    if int(root_a["timestamp"]) == int(root_b["timestamp"]):
-        if _root_fingerprint(root_a) != _root_fingerprint(root_b):
-            return "same_timestamp"
+    if int(root_a["timestamp"]) == int(root_b["timestamp"]) and _root_fingerprint(
+        root_a
+    ) != _root_fingerprint(root_b):
+        return "same_timestamp"
     return None
 
 
+# Build and sign a transparency log root record.
 def make_signed_root(
     tree_size,
     root_hash,
@@ -873,8 +942,6 @@ def make_signed_root(
     spend_map_root=None,
     spend_map_size=0,
 ):
-    """Build and sign a transparency log root record."""
-
     root = {
         "type": LOG_ROOT_TYPE,
         "version": LOG_VERSION,
@@ -894,9 +961,8 @@ def make_signed_root(
     return root
 
 
+# Validate a signed root and its operator signature.
 def verify_signed_root(root, operator_public_key=None):
-    """Validate a signed root and its operator signature."""
-
     required = {
         "type",
         "version",
@@ -918,11 +984,15 @@ def verify_signed_root(root, operator_public_key=None):
         optional=spend_map_fields,
         error_cls=RootVerificationError,
     )
-    if root["type"] != LOG_ROOT_TYPE or _require_int_for(
-        root["version"],
-        "transparency root version",
-        error_cls=RootVerificationError,
-    ) != LOG_VERSION:
+    if (
+        root["type"] != LOG_ROOT_TYPE
+        or _require_int_for(
+            root["version"],
+            "transparency root version",
+            error_cls=RootVerificationError,
+        )
+        != LOG_VERSION
+    ):
         raise RootVerificationError("unsupported transparency root version")
     if root["tree_algorithm"] not in accepted_tree_algorithms():
         raise RootVerificationError("unsupported transparency tree algorithm")
@@ -930,8 +1000,12 @@ def verify_signed_root(root, operator_public_key=None):
         raise RootVerificationError("unsupported transparency hash algorithm")
     if root["signature_algorithm"] != LOG_SIGNATURE_ALGORITHM:
         raise RootVerificationError("unsupported transparency root signature algorithm")
-    _require_int_for(root["tree_size"], "transparency tree size", minimum=0, error_cls=RootVerificationError)
-    _require_int_for(root["timestamp"], "transparency root timestamp", minimum=0, error_cls=RootVerificationError)
+    _require_int_for(
+        root["tree_size"], "transparency tree size", minimum=0, error_cls=RootVerificationError
+    )
+    _require_int_for(
+        root["timestamp"], "transparency root timestamp", minimum=0, error_cls=RootVerificationError
+    )
     _hex32(root["root_hash"], "transparency root hash")
     if spend_map_fields & set(root):
         if not spend_map_fields.issubset(root):
@@ -955,9 +1029,8 @@ def verify_signed_root(root, operator_public_key=None):
     return True
 
 
+# Wrap a signed root in the peer gossip format.
 def make_root_announcement(root, observed_at=None):
-    """Wrap a signed root in the peer gossip format."""
-
     verify_signed_root(root)
     return {
         "type": LOG_ROOT_ANNOUNCEMENT_TYPE,
@@ -967,9 +1040,8 @@ def make_root_announcement(root, observed_at=None):
     }
 
 
+# Validate a peer-gossiped signed root announcement.
 def verify_root_announcement(message, operator_public_key=None):
-    """Validate a peer-gossiped signed root announcement."""
-
     _require_exact_keys(
         message,
         {"type", "version", "root", "observed_at"},
@@ -978,21 +1050,28 @@ def verify_root_announcement(message, operator_public_key=None):
     )
     if message.get("type") != LOG_ROOT_ANNOUNCEMENT_TYPE:
         raise RootVerificationError("not a transparency root announcement")
-    if _require_int_for(
-        message["version"],
-        "transparency root announcement version",
-        error_cls=RootVerificationError,
-    ) != LOG_VERSION:
+    if (
+        _require_int_for(
+            message["version"],
+            "transparency root announcement version",
+            error_cls=RootVerificationError,
+        )
+        != LOG_VERSION
+    ):
         raise RootVerificationError("unsupported transparency root announcement version")
     root = message.get("root")
     verify_signed_root(root, operator_public_key=operator_public_key)
-    _require_int_for(message["observed_at"], "transparency root observed_at", minimum=0, error_cls=RootVerificationError)
+    _require_int_for(
+        message["observed_at"],
+        "transparency root observed_at",
+        minimum=0,
+        error_cls=RootVerificationError,
+    )
     return root
 
 
+# Build the peer-gossip proof that an operator signed conflicting roots.
 def make_equivocation_proof(root_a, root_b, collision_type=None, detected_at=None):
-    """Build the peer-gossip proof that an operator signed conflicting roots."""
-
     verify_signed_root(root_a)
     verify_signed_root(root_b)
     collision_type = collision_type or equivocation_collision_type(root_a, root_b)
@@ -1009,9 +1088,8 @@ def make_equivocation_proof(root_a, root_b, collision_type=None, detected_at=Non
     }
 
 
+# Validate a self-contained signed-root equivocation proof.
 def verify_equivocation_proof(message, operator_public_key=None):
-    """Validate a self-contained signed-root equivocation proof."""
-
     _require_exact_keys(
         message,
         {"type", "version", "log_id", "collision_type", "root_a", "root_b", "detected_at"},
@@ -1020,17 +1098,27 @@ def verify_equivocation_proof(message, operator_public_key=None):
     )
     if message.get("type") != LOG_EQUIVOCATION_PROOF_TYPE:
         raise RootVerificationError("not a transparency equivocation proof")
-    if _require_int_for(
-        message["version"],
-        "transparency equivocation proof version",
-        error_cls=RootVerificationError,
-    ) != LOG_VERSION:
+    if (
+        _require_int_for(
+            message["version"],
+            "transparency equivocation proof version",
+            error_cls=RootVerificationError,
+        )
+        != LOG_VERSION
+    ):
         raise RootVerificationError("unsupported transparency equivocation proof version")
-    _require_int_for(message["detected_at"], "transparency equivocation detected_at", minimum=0, error_cls=RootVerificationError)
+    _require_int_for(
+        message["detected_at"],
+        "transparency equivocation detected_at",
+        minimum=0,
+        error_cls=RootVerificationError,
+    )
     claimed_log_id = str(message.get("log_id", "")).strip()
     collision_type = message.get("collision_type")
     if collision_type not in {"same_tree_size", "same_timestamp"}:
-        raise MirrorDisagreementError({"error": "unsupported transparency equivocation collision type"})
+        raise MirrorDisagreementError(
+            {"error": "unsupported transparency equivocation collision type"}
+        )
     root_a = message.get("root_a")
     root_b = message.get("root_b")
     verify_signed_root(root_a, operator_public_key=operator_public_key)
@@ -1042,10 +1130,14 @@ def verify_equivocation_proof(message, operator_public_key=None):
     if root_a["log_id"] != claimed_log_id or root_b["log_id"] != claimed_log_id:
         raise RootVerificationError("equivocation proof log id does not match both roots")
     if log_id_from_public_key(public_key_a) != claimed_log_id:
-        raise RootVerificationError("equivocation proof operator key does not derive the claimed log id")
+        raise RootVerificationError(
+            "equivocation proof operator key does not derive the claimed log id"
+        )
     actual_collision = equivocation_collision_type(root_a, root_b)
     if actual_collision != collision_type:
-        raise MirrorDisagreementError({"root_a": root_a, "root_b": root_b, "claimed": collision_type})
+        raise MirrorDisagreementError(
+            {"root_a": root_a, "root_b": root_b, "claimed": collision_type}
+        )
     return {
         "log_id": claimed_log_id,
         "collision_type": collision_type,
@@ -1072,6 +1164,7 @@ def key_rotation_id(record):
     return ind_token.sha3_hex(canonical_bytes(record))
 
 
+# Create a signed operator-key rotation record.
 def make_key_rotation(
     old_private_key,
     old_public_key,
@@ -1083,8 +1176,6 @@ def make_key_rotation(
     reason="scheduled",
     log_id=None,
 ):
-    """Create a signed operator-key rotation record."""
-
     rotation_timestamp = int(rotation_timestamp)
     effective_from_tree_size = int(effective_from_tree_size)
     overlap_until_timestamp = int(
@@ -1113,9 +1204,8 @@ def make_key_rotation(
     return record
 
 
+# Verify a dual-signed transparency operator key rotation record.
 def verify_key_rotation(record, expected_log_id=None, old_public_key=None, new_public_key=None):
-    """Verify a dual-signed transparency operator key rotation record."""
-
     required = {
         "type",
         "version",
@@ -1137,11 +1227,15 @@ def verify_key_rotation(record, expected_log_id=None, old_public_key=None, new_p
         "transparency operator key rotation",
         error_cls=KeyRotationError,
     )
-    if record["type"] != LOG_KEY_ROTATION_TYPE or _require_int_for(
-        record["version"],
-        "operator key rotation version",
-        error_cls=KeyRotationError,
-    ) != LOG_VERSION:
+    if (
+        record["type"] != LOG_KEY_ROTATION_TYPE
+        or _require_int_for(
+            record["version"],
+            "operator key rotation version",
+            error_cls=KeyRotationError,
+        )
+        != LOG_VERSION
+    ):
         raise KeyRotationError("unsupported transparency operator key rotation version")
     if record["signature_algorithm"] != LOG_SIGNATURE_ALGORITHM:
         raise KeyRotationError("unsupported transparency operator key rotation signature algorithm")
@@ -1155,7 +1249,12 @@ def verify_key_rotation(record, expected_log_id=None, old_public_key=None, new_p
         raise KeyRotationError("operator key rotation log id does not match old key")
     if record["new_log_id"] != log_id_from_public_key(record["new_public_key"].strip()):
         raise KeyRotationError("operator key rotation new log id does not match new key")
-    _require_int_for(record["rotation_timestamp"], "operator key rotation timestamp", minimum=0, error_cls=KeyRotationError)
+    _require_int_for(
+        record["rotation_timestamp"],
+        "operator key rotation timestamp",
+        minimum=0,
+        error_cls=KeyRotationError,
+    )
     _require_int_for(
         record["effective_from_tree_size"],
         "operator key rotation effective tree size",
@@ -1172,9 +1271,13 @@ def verify_key_rotation(record, expected_log_id=None, old_public_key=None, new_p
         raise KeyRotationError("operator key rotation overlap ends before rotation timestamp")
     payload = key_rotation_signature_payload(record)
     # Both keys sign the same payload to prove continuity across the rotation.
-    if not ind_token.b85_verify(record["old_public_key"].strip(), record["signature_by_old_key"], payload):
+    if not ind_token.b85_verify(
+        record["old_public_key"].strip(), record["signature_by_old_key"], payload
+    ):
         raise KeyRotationError("invalid operator key rotation old-key signature")
-    if not ind_token.b85_verify(record["new_public_key"].strip(), record["signature_by_new_key"], payload):
+    if not ind_token.b85_verify(
+        record["new_public_key"].strip(), record["signature_by_new_key"], payload
+    ):
         raise KeyRotationError("invalid operator key rotation new-key signature")
     return True
 
@@ -1215,9 +1318,8 @@ def make_key_revocation(
     return record
 
 
+# Verify a successor-signed revocation for a prior operator key.
 def verify_key_revocation(record, rotation_record=None):
-    """Verify a successor-signed revocation for a prior operator key."""
-
     required = {
         "type",
         "version",
@@ -1236,14 +1338,20 @@ def verify_key_revocation(record, rotation_record=None):
         "transparency operator key revocation",
         error_cls=KeyRevocationError,
     )
-    if record["type"] != LOG_KEY_REVOCATION_TYPE or _require_int_for(
-        record["version"],
-        "operator key revocation version",
-        error_cls=KeyRevocationError,
-    ) != LOG_VERSION:
+    if (
+        record["type"] != LOG_KEY_REVOCATION_TYPE
+        or _require_int_for(
+            record["version"],
+            "operator key revocation version",
+            error_cls=KeyRevocationError,
+        )
+        != LOG_VERSION
+    ):
         raise KeyRevocationError("unsupported transparency operator key revocation version")
     if record["signature_algorithm"] != LOG_SIGNATURE_ALGORITHM:
-        raise KeyRevocationError("unsupported transparency operator key revocation signature algorithm")
+        raise KeyRevocationError(
+            "unsupported transparency operator key revocation signature algorithm"
+        )
     _require_int_for(
         record["revocation_timestamp"],
         "operator key revocation timestamp",
@@ -1261,13 +1369,17 @@ def verify_key_revocation(record, rotation_record=None):
     if rotation_record is not None:
         verify_key_rotation(rotation_record)
         if record["rotation_record_hash"] != key_rotation_id(rotation_record):
-            raise KeyRevocationError("operator key revocation does not reference the supplied rotation")
+            raise KeyRevocationError(
+                "operator key revocation does not reference the supplied rotation"
+            )
         if record["log_id"] != rotation_record["log_id"]:
             raise KeyRevocationError("operator key revocation log id does not match rotation")
         if record["revoked_public_key"] != rotation_record["old_public_key"]:
             raise KeyRevocationError("operator key revocation old key does not match rotation")
         if record["successor_public_key"] != rotation_record["new_public_key"]:
-            raise KeyRevocationError("operator key revocation successor key does not match rotation")
+            raise KeyRevocationError(
+                "operator key revocation successor key does not match rotation"
+            )
     return True
 
 
@@ -1281,34 +1393,44 @@ def _entry_hash_bytes(entry_hash):
         raise InclusionProofError("invalid transparency entry hash") from exc
 
 
+# Return the CT-style SHA3-256 leaf hash for a transfer entry hash.
 def log_leaf_hash(entry_hash):
-    """Return the CT-style SHA3-256 leaf hash for a transfer entry hash."""
-
     return MerkleHasher(LOG_HASH_ALGORITHM, True).hash_buff(_entry_hash_bytes(entry_hash))
 
 
+# Return the log entry hash for a signed transfer.
 def transfer_entry_hash(transfer):
-    """Return the log entry hash for a signed transfer."""
-
     return ind_token.transfer_hash(transfer)
 
 
+# Verify that an entry is included in the signed mirrored tree root.
 def verify_inclusion_proof(entry_hash, proof_response, signed_root, operator_public_key=None):
-    """Verify that an entry is included in the signed mirrored tree root."""
-
     verify_signed_root(signed_root, operator_public_key=operator_public_key)
-    required = {"type", "version", "log_id", "entry_hash", "leaf_hash", "leaf_index", "tree_size", "proof"}
+    required = {
+        "type",
+        "version",
+        "log_id",
+        "entry_hash",
+        "leaf_hash",
+        "leaf_index",
+        "tree_size",
+        "proof",
+    }
     _require_exact_keys(
         proof_response,
         required,
         "transparency inclusion proof",
         error_cls=InclusionProofError,
     )
-    if proof_response["type"] != LOG_INCLUSION_PROOF_TYPE or _require_int_for(
-        proof_response["version"],
-        "transparency inclusion proof version",
-        error_cls=InclusionProofError,
-    ) != LOG_VERSION:
+    if (
+        proof_response["type"] != LOG_INCLUSION_PROOF_TYPE
+        or _require_int_for(
+            proof_response["version"],
+            "transparency inclusion proof version",
+            error_cls=InclusionProofError,
+        )
+        != LOG_VERSION
+    ):
         raise InclusionProofError("unsupported transparency inclusion proof version")
     if proof_response["log_id"] != signed_root["log_id"]:
         raise InclusionProofError("inclusion proof is for a different transparency log")
@@ -1326,7 +1448,12 @@ def verify_inclusion_proof(entry_hash, proof_response, signed_root, operator_pub
     )
     if proof_tree_size != root_tree_size:
         raise InclusionProofError("inclusion proof tree size does not match mirrored root")
-    _require_int_for(proof_response["leaf_index"], "transparency leaf index", minimum=0, error_cls=InclusionProofError)
+    _require_int_for(
+        proof_response["leaf_index"],
+        "transparency leaf index",
+        minimum=0,
+        error_cls=InclusionProofError,
+    )
     entry_hash = str(entry_hash).lower()
     if str(proof_response["entry_hash"]).lower() != entry_hash:
         raise InclusionProofError("inclusion proof is for a different entry")
@@ -1347,6 +1474,7 @@ def verify_inclusion_proof(entry_hash, proof_response, signed_root, operator_pub
     return True
 
 
+# Verify that new_root is an append-only extension of old_root.
 def verify_consistency_proof(
     old_root,
     new_root,
@@ -1354,8 +1482,6 @@ def verify_consistency_proof(
     operator_public_key=None,
     allow_log_id_transition=False,
 ):
-    """Verify that new_root is an append-only extension of old_root."""
-
     verify_signed_root(old_root, operator_public_key=operator_public_key)
     verify_signed_root(new_root, operator_public_key=operator_public_key)
     if old_root["log_id"] != new_root["log_id"] and not allow_log_id_transition:
@@ -1378,30 +1504,40 @@ def verify_consistency_proof(
         "transparency consistency proof",
         error_cls=ConsistencyProofError,
     )
-    if proof_response["type"] != LOG_CONSISTENCY_PROOF_TYPE or _require_int_for(
-        proof_response["version"],
-        "transparency consistency proof version",
-        error_cls=ConsistencyProofError,
-    ) != LOG_VERSION:
+    if (
+        proof_response["type"] != LOG_CONSISTENCY_PROOF_TYPE
+        or _require_int_for(
+            proof_response["version"],
+            "transparency consistency proof version",
+            error_cls=ConsistencyProofError,
+        )
+        != LOG_VERSION
+    ):
         raise ConsistencyProofError("unsupported transparency consistency proof version")
     allowed_proof_log_ids = {old_root["log_id"]}
     if allow_log_id_transition:
         allowed_proof_log_ids.add(new_root["log_id"])
     if proof_response["log_id"] not in allowed_proof_log_ids:
         raise ConsistencyProofError("consistency proof is for a different transparency log")
-    if _require_int_for(
-        proof_response["first_tree_size"],
-        "transparency consistency first tree size",
-        minimum=0,
-        error_cls=ConsistencyProofError,
-    ) != old_size:
+    if (
+        _require_int_for(
+            proof_response["first_tree_size"],
+            "transparency consistency first tree size",
+            minimum=0,
+            error_cls=ConsistencyProofError,
+        )
+        != old_size
+    ):
         raise ConsistencyProofError("consistency proof first tree size mismatch")
-    if _require_int_for(
-        proof_response["second_tree_size"],
-        "transparency consistency second tree size",
-        minimum=0,
-        error_cls=ConsistencyProofError,
-    ) != new_size:
+    if (
+        _require_int_for(
+            proof_response["second_tree_size"],
+            "transparency consistency second tree size",
+            minimum=0,
+            error_cls=ConsistencyProofError,
+        )
+        != new_size
+    ):
         raise ConsistencyProofError("consistency proof second tree size mismatch")
 
     proof = MerkleProof.deserialize(proof_response["proof"])
@@ -1420,9 +1556,8 @@ def verify_consistency_proof(
     return True
 
 
+# Raise if mirrors expose two valid roots for one log id timestamp or tree size.
 def detect_mirror_disagreement(roots, operator_public_key=None):
-    """Raise if mirrors expose two valid roots for one log id timestamp or tree size."""
-
     by_timestamp = {}
     by_tree_size = {}
     for root in roots:
@@ -1480,7 +1615,9 @@ def _safe_http_base_url(url):
         if next_path == decoded_path:
             break
         decoded_path = next_path
-    return "\\" not in decoded_path and not any(segment == ".." for segment in decoded_path.split("/"))
+    return "\\" not in decoded_path and not any(
+        segment == ".." for segment in decoded_path.split("/")
+    )
 
 
 def _normalize_http_base_url(url):
@@ -1520,9 +1657,8 @@ def _configured_identity(source):
     return ("custom", identity)
 
 
+# Return the source identity used for mirror independence checks.
 def transparency_source_identity(source):
-    """Return the source identity used for mirror independence checks."""
-
     if isinstance(source, str):
         origin = _http_origin_identity(source)
         if origin:
@@ -1569,9 +1705,8 @@ def _status_row_to_dict(row):
     }
 
 
+# Persistent observed-root store used to enforce append-only consistency.
 class SQLiteObservedRootStore:
-    """Persistent observed-root store used to enforce append-only consistency."""
-
     def __init__(self, path=DEFAULT_OBSERVED_ROOTS_DB):
         self.path = str(Path(path))
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
@@ -1598,8 +1733,7 @@ class SQLiteObservedRootStore:
     def _init_db(self):
         def action():
             with contextlib.closing(self._connect()) as conn, conn:
-                conn.executescript(
-                    """
+                conn.executescript("""
                     CREATE TABLE IF NOT EXISTS observed_roots (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         log_id TEXT NOT NULL,
@@ -1710,8 +1844,7 @@ class SQLiteObservedRootStore:
                         updated_at INTEGER NOT NULL,
                         last_successful_consistency_at INTEGER
                     );
-                    """
-                )
+                    """)
 
         self._with_retry(action)
 
@@ -1753,7 +1886,12 @@ class SQLiteObservedRootStore:
                         SET consistency_checked_at = ?
                         WHERE log_id = ? AND tree_size = ? AND root_hash = ?
                         """,
-                        (int(consistency_checked_at), root["log_id"], int(root["tree_size"]), root["root_hash"]),
+                        (
+                            int(consistency_checked_at),
+                            root["log_id"],
+                            int(root["tree_size"]),
+                            root["root_hash"],
+                        ),
                     )
 
         self._with_retry(action)
@@ -1797,13 +1935,11 @@ class SQLiteObservedRootStore:
     def known_log_ids(self):
         def action():
             with contextlib.closing(self._connect()) as conn, conn:
-                rows = conn.execute(
-                    """
+                rows = conn.execute("""
                     SELECT log_id FROM observed_roots
                     UNION
                     SELECT log_id FROM peer_observed_roots
-                    """
-                ).fetchall()
+                    """).fetchall()
             return [row["log_id"] for row in rows]
 
         return self._with_retry(action)
@@ -1935,7 +2071,9 @@ class SQLiteObservedRootStore:
     def record_key_revocation(self, record, observed_at=None):
         rotation = self.key_rotation_by_hash(record.get("rotation_record_hash", ""))
         if not rotation:
-            raise KeyRevocationError("operator key revocation references an unknown rotation record")
+            raise KeyRevocationError(
+                "operator key revocation references an unknown rotation record"
+            )
         verify_key_revocation(record, rotation_record=rotation)
         observed_at = int(observed_at or time.time())
         record_hash = key_revocation_id(record)
@@ -1983,7 +2121,9 @@ class SQLiteObservedRootStore:
     def status(self, log_id):
         def action():
             with contextlib.closing(self._connect()) as conn, conn:
-                row = conn.execute("SELECT * FROM operator_status WHERE log_id = ?", (log_id,)).fetchone()
+                row = conn.execute(
+                    "SELECT * FROM operator_status WHERE log_id = ?", (log_id,)
+                ).fetchone()
             return _status_row_to_dict(row)
 
         return self._with_retry(action)
@@ -2112,7 +2252,9 @@ class SQLiteObservedRootStore:
                 )
                 self._prune_peer_roots(conn, peer_id, root["log_id"], int(max_roots_for_log))
                 if max_total_roots_for_log is not None:
-                    self._prune_peer_roots_for_log(conn, root["log_id"], int(max_total_roots_for_log))
+                    self._prune_peer_roots_for_log(
+                        conn, root["log_id"], int(max_total_roots_for_log)
+                    )
 
         self._with_retry(action)
 
@@ -2161,7 +2303,9 @@ class SQLiteObservedRootStore:
 
     def save_equivocation_evidence(self, root_a, root_b, collision_type, detected_at=None):
         detected_at = int(detected_at or time.time())
-        proof = make_equivocation_proof(root_a, root_b, collision_type=collision_type, detected_at=detected_at)
+        proof = make_equivocation_proof(
+            root_a, root_b, collision_type=collision_type, detected_at=detected_at
+        )
         evidence_id = ind_token.sha3_hex(canonical_bytes(proof))
         root_a_id = signed_root_id(root_a)
         root_b_id = signed_root_id(root_b)
@@ -2294,9 +2438,8 @@ class SQLiteObservedRootStore:
         self._with_retry(action)
 
 
+# In-memory observed-root store for tests and short-lived local tools.
 class InMemoryObservedRootStore:
-    """In-memory observed-root store for tests and short-lived local tools."""
-
     def __init__(self):
         self.roots = []
         self.peer_roots = []
@@ -2333,7 +2476,11 @@ class InMemoryObservedRootStore:
         candidates = [item["root"] for item in self.roots if item["root"]["log_id"] == log_id]
         if not candidates:
             return None
-        return copy.deepcopy(sorted(candidates, key=lambda root: (int(root["tree_size"]), int(root["timestamp"])))[-1])
+        return copy.deepcopy(
+            sorted(candidates, key=lambda root: (int(root["tree_size"]), int(root["timestamp"])))[
+                -1
+            ]
+        )
 
     def observed_position(self, log_id):
         candidates = [item["root"] for item in self.roots if item["root"]["log_id"] == log_id]
@@ -2379,10 +2526,15 @@ class InMemoryObservedRootStore:
             return record_hash
         latest = None
         for item in self.key_rotations.values():
-            if item["record"]["log_id"] == record["log_id"]:
-                if latest is None or int(item["record"]["effective_from_tree_size"]) > int(latest["effective_from_tree_size"]):
-                    latest = item["record"]
-        if latest and int(record["effective_from_tree_size"]) <= int(latest["effective_from_tree_size"]):
+            if item["record"]["log_id"] == record["log_id"] and (
+                latest is None
+                or int(item["record"]["effective_from_tree_size"])
+                > int(latest["effective_from_tree_size"])
+            ):
+                latest = item["record"]
+        if latest and int(record["effective_from_tree_size"]) <= int(
+            latest["effective_from_tree_size"]
+        ):
             raise KeyRotationError(
                 "operator key rotation records must be strictly monotonic in effective_from_tree_size"
             )
@@ -2422,7 +2574,9 @@ class InMemoryObservedRootStore:
     def record_key_revocation(self, record, observed_at=None):
         rotation = self.key_rotation_by_hash(record.get("rotation_record_hash", ""))
         if not rotation:
-            raise KeyRevocationError("operator key revocation references an unknown rotation record")
+            raise KeyRevocationError(
+                "operator key revocation references an unknown rotation record"
+            )
         verify_key_revocation(record, rotation_record=rotation)
         record_hash = key_revocation_id(record)
         self.key_revocations[record_hash] = {
@@ -2435,11 +2589,14 @@ class InMemoryObservedRootStore:
         records = [
             item["record"]
             for item in self.key_revocations.values()
-            if item["record"]["log_id"] == log_id and item["record"]["revoked_public_key"] == public_key
+            if item["record"]["log_id"] == log_id
+            and item["record"]["revoked_public_key"] == public_key
         ]
         if not records:
             return None
-        return copy.deepcopy(sorted(records, key=lambda item: int(item["revocation_timestamp"]))[-1])
+        return copy.deepcopy(
+            sorted(records, key=lambda item: int(item["revocation_timestamp"]))[-1]
+        )
 
     def status(self, log_id):
         current = self.statuses.get(log_id)
@@ -2525,7 +2682,8 @@ class InMemoryObservedRootStore:
             evidence_bound.add(signed_root_id(item["root_a"]))
             evidence_bound.add(signed_root_id(item["root_b"]))
         matching = [
-            item for item in self.peer_roots
+            item
+            for item in self.peer_roots
             if item["peer_id"] == peer_id and item["root"]["log_id"] == log_id
         ]
         overflow = len(matching) - max_roots_for_log
@@ -2558,14 +2716,18 @@ class InMemoryObservedRootStore:
 
     def save_equivocation_evidence(self, root_a, root_b, collision_type, detected_at=None):
         detected_at = int(detected_at or time.time())
-        proof = make_equivocation_proof(root_a, root_b, collision_type=collision_type, detected_at=detected_at)
+        proof = make_equivocation_proof(
+            root_a, root_b, collision_type=collision_type, detected_at=detected_at
+        )
         evidence_id = ind_token.sha3_hex(canonical_bytes(proof))
         self.equivocations[evidence_id] = proof
         return evidence_id, copy.deepcopy(proof)
 
     def equivocation_messages(self, limit=100):
-        items = sorted(self.equivocations.values(), key=lambda item: int(item["detected_at"]), reverse=True)
-        return [copy.deepcopy(item) for item in items[:int(limit)]]
+        items = sorted(
+            self.equivocations.values(), key=lambda item: int(item["detected_at"]), reverse=True
+        )
+        return [copy.deepcopy(item) for item in items[: int(limit)]]
 
     def save_operator_policy_violation(self, proof):
         proof = verify_operator_policy_violation_proof(proof)
@@ -2574,8 +2736,10 @@ class InMemoryObservedRootStore:
         return evidence_id, copy.deepcopy(proof)
 
     def operator_policy_violation_messages(self, limit=100):
-        items = sorted(self.policy_violations.values(), key=lambda item: int(item["detected_at"]), reverse=True)
-        return [copy.deepcopy(item) for item in items[:int(limit)]]
+        items = sorted(
+            self.policy_violations.values(), key=lambda item: int(item["detected_at"]), reverse=True
+        )
+        return [copy.deepcopy(item) for item in items[: int(limit)]]
 
     def mark_blacklisted(self, log_id, operator_public_key, reason, evidence_id, updated_at=None):
         updated_at = int(updated_at or time.time())
@@ -2590,9 +2754,8 @@ class InMemoryObservedRootStore:
         }
 
 
+# Small JSON-over-HTTP client used by operators and mirrors.
 class HTTPJSONClient:
-    """Small JSON-over-HTTP client used by operators and mirrors."""
-
     def __init__(self, base_url, timeout=10):
         self.base_url = _normalize_http_base_url(base_url)
         self.timeout = int(timeout)
@@ -2627,15 +2790,16 @@ class HTTPJSONClient:
             return json.loads(response.read().decode("utf-8"))
 
 
+# Client for the log operator's proof endpoints.
 class HTTPTransparencyOperator:
-    """Client for the log operator's proof endpoints."""
-
     def __init__(self, base_url, timeout=10):
         self.http = HTTPJSONClient(base_url, timeout=timeout)
         self.identity_id = self.http.identity_id
 
     def inclusion_proof(self, entry_hash, tree_size):
-        return self.http.get_json("/v1/proof", {"entry_hash": entry_hash, "tree_size": int(tree_size)})
+        return self.http.get_json(
+            "/v1/proof", {"entry_hash": entry_hash, "tree_size": int(tree_size)}
+        )
 
     def consistency_proof(self, first_tree_size, second_tree_size):
         return self.http.get_json(
@@ -2644,7 +2808,9 @@ class HTTPTransparencyOperator:
         )
 
     def spend_map_proof(self, spend_key, tree_size):
-        return self.http.get_json("/v1/spend-proof", {"spend_key": spend_key, "tree_size": int(tree_size)})
+        return self.http.get_json(
+            "/v1/spend-proof", {"spend_key": spend_key, "tree_size": int(tree_size)}
+        )
 
     def submit_transfer_announcement(self, announcement):
         return self.http.post_json("/v1/append", announcement)
@@ -2656,9 +2822,8 @@ class HTTPTransparencyOperator:
         return self.http.get_json("/v1/root")
 
 
+# Client for an HTTP mirror serving signed roots.
 class HTTPRootMirror:
-    """Client for an HTTP mirror serving signed roots."""
-
     def __init__(self, base_url, timeout=10):
         self.http = HTTPJSONClient(base_url, timeout=timeout)
         self.identity_id = self.http.identity_id
@@ -2670,15 +2835,18 @@ class HTTPRootMirror:
         return self.http.get_json("/v1/root")
 
     def inclusion_proof(self, entry_hash, tree_size):
-        return self.http.get_json("/v1/proof", {"entry_hash": entry_hash, "tree_size": int(tree_size)})
+        return self.http.get_json(
+            "/v1/proof", {"entry_hash": entry_hash, "tree_size": int(tree_size)}
+        )
 
     def spend_map_proof(self, spend_key, tree_size):
-        return self.http.get_json("/v1/spend-proof", {"spend_key": spend_key, "tree_size": int(tree_size)})
+        return self.http.get_json(
+            "/v1/spend-proof", {"spend_key": spend_key, "tree_size": int(tree_size)}
+        )
 
 
+# Client for a static HTTP root mirror produced by operator_tools.root_streamer.
 class HTTPStaticRootMirror:
-    """Client for a static HTTP root mirror produced by operator_tools.root_streamer."""
-
     def __init__(self, base_url, timeout=10):
         self.http = HTTPJSONClient(base_url, timeout=timeout)
         self.identity_id = self.http.identity_id
@@ -2708,15 +2876,16 @@ class HTTPStaticRootMirror:
         candidates = [root for root in self.roots() if int(root.get("timestamp", -1)) >= timestamp]
         if not candidates:
             raise RootVerificationError("static HTTP mirror has no historical root for timestamp")
-        return sorted(candidates, key=lambda root: (int(root["timestamp"]), int(root["tree_size"])))[0]
+        return sorted(
+            candidates, key=lambda root: (int(root["timestamp"]), int(root["tree_size"]))
+        )[0]
 
     def latest_root(self):
         return self.http.get_json("/latest.json")
 
 
+# Read signed roots from a local mirror directory or JSON/JSONL file.
 class DirectoryRootMirror:
-    """Read signed roots from a local mirror directory or JSON/JSONL file."""
-
     def __init__(self, path):
         self.path = Path(path)
         self.identity_id = _directory_identity(self.path)
@@ -2763,7 +2932,9 @@ class DirectoryRootMirror:
         candidates = [root for root in self.roots() if int(root.get("timestamp", -1)) >= timestamp]
         if not candidates:
             raise RootVerificationError("mirror has no historical root for timestamp")
-        return sorted(candidates, key=lambda root: (int(root["timestamp"]), int(root["tree_size"])))[0]
+        return sorted(
+            candidates, key=lambda root: (int(root["timestamp"]), int(root["tree_size"]))
+        )[0]
 
     def latest_root(self):
         roots = self.roots()
@@ -2813,9 +2984,8 @@ class DirectoryRootMirror:
         )
 
 
+# In-memory mirror used by tests and local tooling.
 class StaticRootMirror:
-    """In-memory mirror used by tests and local tooling."""
-
     def __init__(self, roots, identity_id=None):
         self._roots = list(roots)
         self.identity_id = str(identity_id).strip() if identity_id else None
@@ -2828,20 +2998,26 @@ class StaticRootMirror:
         candidates = [root for root in self._roots if int(root.get("timestamp", -1)) >= timestamp]
         if not candidates:
             raise RootVerificationError("mirror has no historical root for timestamp")
-        return sorted(candidates, key=lambda root: (int(root["timestamp"]), int(root["tree_size"])))[0]
+        return sorted(
+            candidates, key=lambda root: (int(root["timestamp"]), int(root["tree_size"]))
+        )[0]
 
     def latest_root(self):
         if not self._roots:
             raise RootVerificationError("mirror has no signed roots")
-        return sorted(self._roots, key=lambda root: (int(root["timestamp"]), int(root["tree_size"])))[-1]
+        return sorted(
+            self._roots, key=lambda root: (int(root["timestamp"]), int(root["tree_size"]))
+        )[-1]
 
 
+# Adapter around log_server.TransparencyLog for tests and local tools.
 class LocalTransparencyOperator:
-    """Adapter around log_server.TransparencyLog for tests and local tools."""
-
     def __init__(self, log):
         self.log = log
-        self.identity_id = ("local-log", os.path.normcase(str(Path(log.db_path).resolve(strict=False))))
+        self.identity_id = (
+            "local-log",
+            os.path.normcase(str(Path(log.db_path).resolve(strict=False))),
+        )
 
     def inclusion_proof(self, entry_hash, tree_size):
         return self.log.inclusion_proof(entry_hash, int(tree_size))
@@ -2860,7 +3036,9 @@ class LocalTransparencyOperator:
         try:
             self.log.publish_root(int(time.time()))
         except Exception as exc:
-            logger.warning("local transparency root publish failed after checkpoint append: %s", exc)
+            logger.warning(
+                "local transparency root publish failed after checkpoint append: %s", exc
+            )
         return result
 
     def latest_root(self):
@@ -2879,7 +3057,9 @@ def _coerce_operator(operator):
 def _coerce_mirror(mirror):
     if isinstance(mirror, str) and mirror.startswith(("http://", "https://")):
         parsed = urllib.parse.urlparse(mirror)
-        if parsed.path.rstrip("/").endswith("/transparency") or parsed.path.rstrip("/").endswith("/roots"):
+        if parsed.path.rstrip("/").endswith("/transparency") or parsed.path.rstrip("/").endswith(
+            "/roots"
+        ):
             return HTTPStaticRootMirror(mirror)
         return HTTPRootMirror(mirror)
     if isinstance(mirror, str):
@@ -2953,8 +3133,12 @@ class TransparencyVerifier:
         self._background_stop = threading.Event()
         self._background_thread = None
         # Durable observed roots are what let the client detect split-view behavior later.
-        self.observed_root_store = self._build_observed_root_store(observed_root_store, observed_roots_path)
-        self._load_consistency_anchor(consistency_anchor=consistency_anchor, consistency_anchor_path=consistency_anchor_path)
+        self.observed_root_store = self._build_observed_root_store(
+            observed_root_store, observed_roots_path
+        )
+        self._load_consistency_anchor(
+            consistency_anchor=consistency_anchor, consistency_anchor_path=consistency_anchor_path
+        )
         if run_startup_check:
             self._run_startup_consistency_check()
         if start_background_checks and self.consistency_check_interval_seconds > 0:
@@ -2967,7 +3151,9 @@ class TransparencyVerifier:
             return SQLiteObservedRootStore(observed_roots_path or DEFAULT_OBSERVED_ROOTS_DB)
         except Exception as exc:
             if self.strict_mode:
-                raise TransparencyLogError(f"transparency observed-root store is unavailable: {exc}") from exc
+                raise TransparencyLogError(
+                    f"transparency observed-root store is unavailable: {exc}"
+                ) from exc
             warnings.warn(
                 f"transparency observed-root persistence is unavailable; consistency checks are not durable: {exc}",
                 RuntimeWarning,
@@ -3001,7 +3187,11 @@ class TransparencyVerifier:
         except Exception as exc:
             if self.strict_mode:
                 self._enforce_known_log_status()
-            warnings.warn(f"startup transparency consistency check did not complete: {exc}", RuntimeWarning, stacklevel=3)
+            warnings.warn(
+                f"startup transparency consistency check did not complete: {exc}",
+                RuntimeWarning,
+                stacklevel=3,
+            )
         if self.strict_mode:
             self._enforce_known_log_status()
 
@@ -3029,7 +3219,9 @@ class TransparencyVerifier:
                 "IND_LOG_MAX_CURRENT_ROOT_AGE_SECONDS must be greater than 0 for current root replay protection"
             )
         if self.current_root_future_skew_seconds < 0:
-            raise TransparencyLogError("IND_LOG_CURRENT_ROOT_FUTURE_SKEW_SECONDS must not be negative")
+            raise TransparencyLogError(
+                "IND_LOG_CURRENT_ROOT_FUTURE_SKEW_SECONDS must not be negative"
+            )
         if self.current_root_future_skew_seconds > MAX_CURRENT_ROOT_FUTURE_SKEW_SECONDS:
             raise TransparencyLogError(
                 f"IND_LOG_CURRENT_ROOT_FUTURE_SKEW_SECONDS={self.current_root_future_skew_seconds} exceeds "
@@ -3042,7 +3234,10 @@ class TransparencyVerifier:
                 f"smaller than IND_LOG_MAX_CURRENT_ROOT_AGE_SECONDS={self.max_current_root_age_seconds}; "
                 "future-dated roots cannot be allowed to extend the replay window."
             )
-        if self.strict_mode and self.max_current_root_age_seconds > STRICT_MAX_CURRENT_ROOT_AGE_SECONDS:
+        if (
+            self.strict_mode
+            and self.max_current_root_age_seconds > STRICT_MAX_CURRENT_ROOT_AGE_SECONDS
+        ):
             raise TransparencyLogError(
                 f"IND_LOG_MAX_CURRENT_ROOT_AGE_SECONDS={self.max_current_root_age_seconds} is too loose for "
                 "IND_REQUIRE_TRANSPARENCY_LOG=1. Strict transparency mode requires current roots no older "
@@ -3215,23 +3410,34 @@ class TransparencyVerifier:
         root_timestamp = int(root["timestamp"])
 
         if root["log_id"] == configured_log_id and root_key == configured_key:
-            revocation = self.observed_root_store.key_revocation_for_key(configured_log_id, configured_key)
+            revocation = self.observed_root_store.key_revocation_for_key(
+                configured_log_id, configured_key
+            )
             if revocation and root_timestamp >= int(revocation["revocation_timestamp"]):
-                raise RootVerificationError("transparency root was signed by a revoked operator key")
+                raise RootVerificationError(
+                    "transparency root was signed by a revoked operator key"
+                )
             rotations = self.observed_root_store.key_rotations_for_log(configured_log_id)
             if rotations:
                 latest = rotations[-1]
-                if (
-                    root_size >= int(latest["effective_from_tree_size"])
-                    and root_timestamp > int(latest["overlap_until_timestamp"])
+                if root_size >= int(latest["effective_from_tree_size"]) and root_timestamp > int(
+                    latest["overlap_until_timestamp"]
                 ):
-                    raise RootVerificationError("transparency root was signed by the old operator key after rotation overlap")
+                    raise RootVerificationError(
+                        "transparency root was signed by the old operator key after rotation overlap"
+                    )
             return True
 
         rotation = self._rotation_for_root(root)
-        if rotation and root_key == rotation["new_public_key"] and root["log_id"] == rotation["new_log_id"]:
+        if (
+            rotation
+            and root_key == rotation["new_public_key"]
+            and root["log_id"] == rotation["new_log_id"]
+        ):
             if root_size < int(rotation["effective_from_tree_size"]):
-                raise RootVerificationError("transparency root was signed by successor key before rotation effective tree size")
+                raise RootVerificationError(
+                    "transparency root was signed by successor key before rotation effective tree size"
+                )
             return True
 
         raise RootVerificationError("transparency root was signed by an unexpected operator")
@@ -3295,7 +3501,9 @@ class TransparencyVerifier:
         return persisted(limit=limit)
 
     def _handle_operator_policy_violation(self, proof):
-        proof = verify_operator_policy_violation_proof(proof, operator_public_key=self.operator_public_key)
+        proof = verify_operator_policy_violation_proof(
+            proof, operator_public_key=self.operator_public_key
+        )
         root = proof["root"]
         evidence_id, stored_proof = self.observed_root_store.save_operator_policy_violation(proof)
         self.observed_root_store.mark_blacklisted(
@@ -3339,7 +3547,9 @@ class TransparencyVerifier:
         evidence = self.observed_root_store.find_equivocation(root)
         if not evidence:
             return None
-        self._handle_equivocation(evidence["root_a"], evidence["root_b"], evidence["collision_type"])
+        self._handle_equivocation(
+            evidence["root_a"], evidence["root_b"], evidence["collision_type"]
+        )
 
     def _enforce_consistency_freshness(self, log_id):
         status = self.observed_root_store.status(log_id)
@@ -3368,7 +3578,9 @@ class TransparencyVerifier:
             evidence_id,
         )
         status = self.observed_root_store.status(old_root["log_id"])
-        raise ConsistencyProofError(self._blacklisted_message(old_root["log_id"], status)) from error
+        raise ConsistencyProofError(
+            self._blacklisted_message(old_root["log_id"], status)
+        ) from error
 
     def _current_time(self, now=None):
         return int(time.time() if now is None else now)
@@ -3423,7 +3635,7 @@ class TransparencyVerifier:
         now = self._current_time(now)
         roots_by_identity = {}
         errors = []
-        for mirror, identity in zip(self.mirrors, self.mirror_identities):
+        for mirror, identity in zip(self.mirrors, self.mirror_identities, strict=False):
             try:
                 root = mirror.latest_root()
                 self._verify_signed_root_for_lineage(root)
@@ -3437,19 +3649,22 @@ class TransparencyVerifier:
         roots = list(roots_by_identity.values())
         if len(roots) < self.min_mirrors:
             detail = "; ".join(errors) if errors else "no mirrors configured"
-            raise RootVerificationError(f"not enough usable current transparency root mirrors for {error_context}: {detail}")
+            raise RootVerificationError(
+                f"not enough usable current transparency root mirrors for {error_context}: {detail}"
+            )
         detect_mirror_disagreement(roots)
         self._observe_roots(roots_by_identity)
         return roots
 
+    # Persist and consistency-check a signed root observed from a mirror.
     def observe_root(self, root, source_identity):
-        """Persist and consistency-check a signed root observed from a mirror."""
-
         self._verify_signed_root_for_lineage(root)
         now = int(time.time())
         log_id = root["log_id"]
         lineage_log_id = self._lineage_log_id_for_root(root)
-        status = self.observed_root_store.status(log_id) or self.observed_root_store.status(lineage_log_id)
+        status = self.observed_root_store.status(log_id) or self.observed_root_store.status(
+            lineage_log_id
+        )
         if status and status.get("status") == "blacklisted":
             raise ConsistencyProofError(self._blacklisted_message(lineage_log_id, status))
         self._detect_and_handle_equivocation(root)
@@ -3457,13 +3672,16 @@ class TransparencyVerifier:
         if lineage_log_id != log_id:
             lineage_previous = self.observed_root_store.latest_root(lineage_log_id)
             if lineage_previous and (
-                previous is None
-                or int(lineage_previous["tree_size"]) > int(previous["tree_size"])
+                previous is None or int(lineage_previous["tree_size"]) > int(previous["tree_size"])
             ):
                 previous = lineage_previous
         if previous is None:
-            self.observed_root_store.record_root(root, source_identity, observed_at=now, consistency_checked_at=now)
-            self.observed_root_store.mark_active(log_id, root["operator_public_key"], checked_at=now)
+            self.observed_root_store.record_root(
+                root, source_identity, observed_at=now, consistency_checked_at=now
+            )
+            self.observed_root_store.mark_active(
+                log_id, root["operator_public_key"], checked_at=now
+            )
             self._queue_root_announcement(root)
             return root
 
@@ -3475,7 +3693,9 @@ class TransparencyVerifier:
             self._enforce_consistency_freshness(log_id)
             return root
         if old_size == new_size:
-            error = ConsistencyProofError("new observed root is not an append-only extension of the stored root")
+            error = ConsistencyProofError(
+                "new observed root is not an append-only extension of the stored root"
+            )
             self._handle_consistency_failure(previous, root, error)
 
         if new_size < old_size:
@@ -3489,7 +3709,13 @@ class TransparencyVerifier:
             first_size = old_size
             second_size = new_size
 
-        pair_key = (log_id, first_size, first_root["root_hash"], second_size, second_root["root_hash"])
+        pair_key = (
+            log_id,
+            first_size,
+            first_root["root_hash"],
+            second_size,
+            second_root["root_hash"],
+        )
         try:
             if pair_key not in self._consistency_pairs_checked:
                 proof = self.operator.consistency_proof(first_size, second_size)
@@ -3500,13 +3726,19 @@ class TransparencyVerifier:
                     allow_log_id_transition=self._roots_share_lineage(first_root, second_root),
                 )
                 self._consistency_pairs_checked.add(pair_key)
-            self.observed_root_store.record_root(root, source_identity, observed_at=now, consistency_checked_at=now)
-            self.observed_root_store.mark_active(log_id, root["operator_public_key"], checked_at=now)
+            self.observed_root_store.record_root(
+                root, source_identity, observed_at=now, consistency_checked_at=now
+            )
+            self.observed_root_store.mark_active(
+                log_id, root["operator_public_key"], checked_at=now
+            )
             self._queue_root_announcement(root)
         except ConsistencyProofError as exc:
             self._handle_consistency_failure(previous, root, exc)
         except Exception as exc:
-            self.observed_root_store.mark_unresponsive(log_id, root["operator_public_key"], exc, updated_at=now)
+            self.observed_root_store.mark_unresponsive(
+                log_id, root["operator_public_key"], exc, updated_at=now
+            )
             warnings.warn(
                 f"transparency consistency proof unavailable for operator {log_id}: {exc}",
                 RuntimeWarning,
@@ -3522,9 +3754,8 @@ class TransparencyVerifier:
     def check_latest_consistency(self, now=None):
         return self._current_roots_from_mirrors(now=now, error_context="consistency check")
 
+    # Store a peer-gossiped signed root and check it for equivocation.
     def process_root_announcement(self, message, peer_id=None, message_hash=None):
-        """Store a peer-gossiped signed root and check it for equivocation."""
-
         root = verify_root_announcement(message)
         received_at = int(time.time())
         self.observed_root_store.record_peer_root(
@@ -3533,14 +3764,17 @@ class TransparencyVerifier:
             message_hash=message_hash or signed_root_id(root),
             received_at=received_at,
             max_roots_for_log=self._peer_root_cap_for_log(root["log_id"]),
-            max_total_roots_for_log=None if self._is_configured_log(root["log_id"]) else DEFAULT_UNKNOWN_PEER_ROOT_CAP_PER_LOG_ID,
+            max_total_roots_for_log=(
+                None
+                if self._is_configured_log(root["log_id"])
+                else DEFAULT_UNKNOWN_PEER_ROOT_CAP_PER_LOG_ID
+            ),
         )
         self._detect_and_handle_equivocation(root)
         return root
 
+    # Verify, persist, blacklist, and queue a peer-gossiped equivocation proof.
     def process_equivocation_proof(self, message, peer_id=None, message_hash=None):
-        """Verify, persist, blacklist, and queue a peer-gossiped equivocation proof."""
-
         evidence = verify_equivocation_proof(message)
         root_a = evidence["root_a"]
         root_b = evidence["root_b"]
@@ -3552,7 +3786,11 @@ class TransparencyVerifier:
             message_hash=message_hash or signed_root_id(root_a),
             received_at=received_at,
             max_roots_for_log=self._peer_root_cap_for_log(root_a["log_id"]),
-            max_total_roots_for_log=None if self._is_configured_log(root_a["log_id"]) else DEFAULT_UNKNOWN_PEER_ROOT_CAP_PER_LOG_ID,
+            max_total_roots_for_log=(
+                None
+                if self._is_configured_log(root_a["log_id"])
+                else DEFAULT_UNKNOWN_PEER_ROOT_CAP_PER_LOG_ID
+            ),
         )
         self.observed_root_store.record_peer_root(
             root_b,
@@ -3560,7 +3798,11 @@ class TransparencyVerifier:
             message_hash=message_hash or signed_root_id(root_b),
             received_at=received_at,
             max_roots_for_log=self._peer_root_cap_for_log(root_b["log_id"]),
-            max_total_roots_for_log=None if self._is_configured_log(root_b["log_id"]) else DEFAULT_UNKNOWN_PEER_ROOT_CAP_PER_LOG_ID,
+            max_total_roots_for_log=(
+                None
+                if self._is_configured_log(root_b["log_id"])
+                else DEFAULT_UNKNOWN_PEER_ROOT_CAP_PER_LOG_ID
+            ),
         )
         evidence_id, proof = self.observed_root_store.save_equivocation_evidence(
             root_a,
@@ -3578,10 +3820,11 @@ class TransparencyVerifier:
         self._queue_equivocation_proof(proof)
         return proof
 
+    # Verify, persist, blacklist, and queue a peer-gossiped operator policy violation.
     def process_operator_policy_violation_proof(self, message, peer_id=None, message_hash=None):
-        """Verify, persist, blacklist, and queue a peer-gossiped operator policy violation."""
-
-        proof = verify_operator_policy_violation_proof(message, operator_public_key=self.operator_public_key)
+        proof = verify_operator_policy_violation_proof(
+            message, operator_public_key=self.operator_public_key
+        )
         root = proof["root"]
         received_at = int(time.time())
         self.observed_root_store.record_peer_root(
@@ -3590,7 +3833,11 @@ class TransparencyVerifier:
             message_hash=message_hash or signed_root_id(root),
             received_at=received_at,
             max_roots_for_log=self._peer_root_cap_for_log(root["log_id"]),
-            max_total_roots_for_log=None if self._is_configured_log(root["log_id"]) else DEFAULT_UNKNOWN_PEER_ROOT_CAP_PER_LOG_ID,
+            max_total_roots_for_log=(
+                None
+                if self._is_configured_log(root["log_id"])
+                else DEFAULT_UNKNOWN_PEER_ROOT_CAP_PER_LOG_ID
+            ),
         )
         return self._handle_operator_policy_violation(proof)
 
@@ -3609,7 +3856,9 @@ class TransparencyVerifier:
                         stacklevel=2,
                     )
 
-        self._background_thread = threading.Thread(target=loop, name="ind-transparency-consistency", daemon=True)
+        self._background_thread = threading.Thread(
+            target=loop, name="ind-transparency-consistency", daemon=True
+        )
         self._background_thread.start()
 
     def stop_background_consistency_checks(self):
@@ -3619,7 +3868,7 @@ class TransparencyVerifier:
         timestamp = int(timestamp)
         roots_by_identity = {}
         errors = []
-        for mirror, identity in zip(self.mirrors, self.mirror_identities):
+        for mirror, identity in zip(self.mirrors, self.mirror_identities, strict=False):
             try:
                 root = mirror.root_at(timestamp)
                 self._verify_signed_root_for_lineage(root)
@@ -3641,15 +3890,19 @@ class TransparencyVerifier:
                 continue
             candidates.append(root)
         if not candidates:
-            raise RootVerificationError("no mirrored transparency root close enough to transfer timestamp")
-        return sorted(candidates, key=lambda root: (int(root["timestamp"]), int(root["tree_size"])))[0]
+            raise RootVerificationError(
+                "no mirrored transparency root close enough to transfer timestamp"
+            )
+        return sorted(
+            candidates, key=lambda root: (int(root["timestamp"]), int(root["tree_size"]))
+        )[0]
 
     def mirrored_root_containing_leaf(self, timestamp, leaf_index):
         timestamp = int(timestamp)
         min_tree_size = int(leaf_index) + 1
         roots_by_identity = {}
         errors = []
-        for mirror, identity in zip(self.mirrors, self.mirror_identities):
+        for mirror, identity in zip(self.mirrors, self.mirror_identities, strict=False):
             next_timestamp = timestamp
             seen_timestamps = set()
             while True:
@@ -3662,9 +3915,13 @@ class TransparencyVerifier:
                     seen_timestamps.add(root_timestamp)
                     lag = root_timestamp - timestamp
                     if lag < 0:
-                        raise RootVerificationError("mirror returned a root before the requested timestamp")
+                        raise RootVerificationError(
+                            "mirror returned a root before the requested timestamp"
+                        )
                     if self.max_root_lag_seconds is not None and lag > self.max_root_lag_seconds:
-                        raise RootVerificationError("no mirrored transparency root close enough to transfer timestamp")
+                        raise RootVerificationError(
+                            "no mirrored transparency root close enough to transfer timestamp"
+                        )
                     if int(root["tree_size"]) >= min_tree_size:
                         roots_by_identity[identity] = root
                         break
@@ -3675,7 +3932,9 @@ class TransparencyVerifier:
         roots = list(roots_by_identity.values())
         if len(roots) < self.min_mirrors:
             detail = "; ".join(errors) if errors else "no mirrors configured"
-            raise RootVerificationError(f"not enough usable transparency root mirrors containing leaf: {detail}")
+            raise RootVerificationError(
+                f"not enough usable transparency root mirrors containing leaf: {detail}"
+            )
         detect_mirror_disagreement(roots)
         self._observe_roots(roots_by_identity)
         return sorted(roots, key=lambda root: (int(root["timestamp"]), int(root["tree_size"])))[0]
@@ -3708,9 +3967,8 @@ class TransparencyVerifier:
         detail = "; ".join(errors) if errors else "no proof source available"
         raise InclusionProofError(f"could not discover transparency leaf index: {detail}")
 
+    # Verify that this transfer was logged in a root close to its timestamp.
     def verify_transfer_history(self, transfer):
-        """Verify that this transfer was logged in a root close to its timestamp."""
-
         timestamp = int(transfer["timestamp"])
         entry_hash = transfer_entry_hash(transfer)
         leaf_index = self._leaf_index_for_entry(entry_hash)
@@ -3722,7 +3980,9 @@ class TransparencyVerifier:
             root,
             operator_public_key=root["operator_public_key"],
         )
-        spend_proof = self._first_proof("spend_map_proof", spend_key_for_transfer(transfer), int(root["tree_size"]))
+        spend_proof = self._first_proof(
+            "spend_map_proof", spend_key_for_transfer(transfer), int(root["tree_size"])
+        )
         try:
             verify_spend_map_proof_for_transfer(
                 transfer,
@@ -3735,11 +3995,12 @@ class TransparencyVerifier:
             raise
         return root
 
+    # Verify the transfer's spend key against the freshest mirrored root.
     def verify_transfer_current_spend(self, transfer, now=None, current_root=None):
-        """Verify the transfer's spend key against the freshest mirrored root."""
-
         root = current_root if current_root is not None else self.current_mirrored_root(now=now)
-        spend_proof = self._first_proof("spend_map_proof", spend_key_for_transfer(transfer), int(root["tree_size"]))
+        spend_proof = self._first_proof(
+            "spend_map_proof", spend_key_for_transfer(transfer), int(root["tree_size"])
+        )
         try:
             verify_spend_map_proof_for_transfer(
                 transfer,
@@ -3752,9 +4013,8 @@ class TransparencyVerifier:
             raise
         return True
 
+    # Verify a compact checkpoint against independently mirrored historical roots.
     def verify_checkpoint_history(self, checkpoint):
-        """Verify a compact checkpoint against independently mirrored historical roots."""
-
         transparency = checkpoint.get("transparency")
         if not isinstance(transparency, dict):
             raise InclusionProofError("checkpoint is missing transparency proof")
@@ -3779,7 +4039,9 @@ class TransparencyVerifier:
             raise
         leaf_index = int(transparency["inclusion_proof"]["leaf_index"])
         mirrored_root = self.mirrored_root_containing_leaf(int(root["timestamp"]), leaf_index)
-        mirrored_inclusion = self._first_proof("inclusion_proof", entry_hash, int(mirrored_root["tree_size"]))
+        mirrored_inclusion = self._first_proof(
+            "inclusion_proof", entry_hash, int(mirrored_root["tree_size"])
+        )
         verify_inclusion_proof(
             entry_hash,
             mirrored_inclusion,
@@ -3803,9 +4065,8 @@ class TransparencyVerifier:
             raise
         return mirrored_root
 
+    # Verify a compact checkpoint against the freshest mirrored log state.
     def verify_checkpoint_current_spend(self, checkpoint, now=None, current_root=None):
-        """Verify a compact checkpoint against the freshest mirrored log state."""
-
         transparency = checkpoint.get("transparency")
         if not isinstance(transparency, dict):
             raise InclusionProofError("checkpoint is missing transparency proof")
@@ -3848,7 +4109,11 @@ class TransparencyVerifier:
         return True
 
     def verify_token(self, token, now=None, require_current_root=True):
-        history = token.get("recent_history", []) if token.get("type") == ind_token.BILL_TYPE else token.get("history", [])
+        history = (
+            token.get("recent_history", [])
+            if token.get("type") == ind_token.BILL_TYPE
+            else token.get("history", [])
+        )
         for transfer in history:
             self.verify_transfer(transfer, require_current_root=False)
         if require_current_root:
@@ -3870,9 +4135,8 @@ class TransparencyVerifier:
         )
 
 
+# Build a verifier from IND transparency environment variables.
 def verifier_from_environment(strict_mode=None):
-    """Build a verifier from IND transparency environment variables."""
-
     proof_archives = []
     ind_settings = _settings_module()
     if ind_settings is not None:
@@ -3886,8 +4150,12 @@ def verifier_from_environment(strict_mode=None):
         current_future_skew = ind_settings.current_root_future_skew_seconds(settings)
         min_mirrors = ind_settings.min_root_mirrors(settings)
         observed_roots_path = ind_settings.transparency_observed_roots_db(settings)
-        consistency_anchor_path = ind_settings.transparency_consistency_anchor_path(settings) or None
-        consistency_interval = ind_settings.transparency_consistency_check_interval_seconds(settings)
+        consistency_anchor_path = (
+            ind_settings.transparency_consistency_anchor_path(settings) or None
+        )
+        consistency_interval = ind_settings.transparency_consistency_check_interval_seconds(
+            settings
+        )
         consistency_max_stale = ind_settings.transparency_consistency_max_stale_seconds(settings)
         if strict_mode is None:
             strict_mode = ind_settings.require_transparency_log(settings)
@@ -3897,13 +4165,21 @@ def verifier_from_environment(strict_mode=None):
         operator_public_key = os.environ.get("IND_LOG_OPERATOR_PUBLIC_KEY", "").strip() or None
         mirrors = [item.strip() for item in mirrors_raw.split(",") if item.strip()]
         proof_archives_raw = os.environ.get("IND_LOG_PROOF_ARCHIVES", "").strip()
-        proof_archives = [item.strip() for item in proof_archives_raw.replace("\n", ",").split(",") if item.strip()]
+        proof_archives = [
+            item.strip()
+            for item in proof_archives_raw.replace("\n", ",").split(",")
+            if item.strip()
+        ]
         max_lag = int(os.environ.get("IND_LOG_MAX_ROOT_LAG_SECONDS", DEFAULT_MAX_ROOT_LAG_SECONDS))
         max_current_age = int(
-            os.environ.get("IND_LOG_MAX_CURRENT_ROOT_AGE_SECONDS", DEFAULT_MAX_CURRENT_ROOT_AGE_SECONDS)
+            os.environ.get(
+                "IND_LOG_MAX_CURRENT_ROOT_AGE_SECONDS", DEFAULT_MAX_CURRENT_ROOT_AGE_SECONDS
+            )
         )
         current_future_skew = int(
-            os.environ.get("IND_LOG_CURRENT_ROOT_FUTURE_SKEW_SECONDS", DEFAULT_CURRENT_ROOT_FUTURE_SKEW_SECONDS)
+            os.environ.get(
+                "IND_LOG_CURRENT_ROOT_FUTURE_SKEW_SECONDS", DEFAULT_CURRENT_ROOT_FUTURE_SKEW_SECONDS
+            )
         )
         min_mirrors = int(os.environ.get("IND_LOG_MIN_MIRRORS", str(DEFAULT_MIN_ROOT_MIRRORS)))
         observed_roots_path = os.environ.get("IND_LOG_OBSERVED_ROOTS_DB", DEFAULT_OBSERVED_ROOTS_DB)
@@ -3915,7 +4191,9 @@ def verifier_from_environment(strict_mode=None):
             )
         )
         consistency_max_stale = int(
-            os.environ.get("IND_LOG_CONSISTENCY_MAX_STALE_SECONDS", DEFAULT_CONSISTENCY_MAX_STALE_SECONDS)
+            os.environ.get(
+                "IND_LOG_CONSISTENCY_MAX_STALE_SECONDS", DEFAULT_CONSISTENCY_MAX_STALE_SECONDS
+            )
         )
         if strict_mode is None:
             strict_mode = _env_true("IND_REQUIRE_TRANSPARENCY_LOG")
@@ -3945,9 +4223,8 @@ def verifier_from_environment(strict_mode=None):
     )
 
 
+# Build a log submitter from IND transparency environment variables.
 def submitter_from_environment():
-    """Build a log submitter from IND transparency environment variables."""
-
     ind_settings = _settings_module()
     if ind_settings is not None:
         settings = ind_settings.load_security_settings()

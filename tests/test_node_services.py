@@ -23,7 +23,9 @@ class NodeServicesTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"IND_LOG_OPERATOR_URL": "https://example.invalid"}):
                 env, _mirror_dir = node_services.apply_operator_environment(temp_dir)
                 self.assertEqual(env["IND_LOG_OPERATOR_URL"], node_services.LOCAL_OPERATOR_URL)
-                self.assertEqual(os.environ["IND_LOG_OPERATOR_URL"], node_services.LOCAL_OPERATOR_URL)
+                self.assertEqual(
+                    os.environ["IND_LOG_OPERATOR_URL"], node_services.LOCAL_OPERATOR_URL
+                )
 
                 node_services.restore_operator_environment()
 

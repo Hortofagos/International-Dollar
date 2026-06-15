@@ -1,15 +1,19 @@
-"""Tk desktop interface for wallet, node, print, claim, and settings workflows."""
+# Tk desktop interface for wallet, node, print, claim, and settings workflows.
 
+import contextlib
+import getpass
 import importlib
+import json
 import logging
 import os
+import platform
+import queue
 import shutil
 import subprocess
 import sys
 import threading
 import time
-import json
-import queue
+from datetime import datetime
 from pathlib import Path
 from tkinter import (
     BOTH,
@@ -31,21 +35,20 @@ from tkinter import (
     StringVar,
     TclError,
     Text,
-    Tk,
     Toplevel,
-    mainloop,
+    filedialog,
 )
-from tkinter import filedialog, messagebox
 from tkinter import font as tkfont
+from tkinter import (
+    mainloop,
+    messagebox,
+)
 
 from tkinterdnd2 import DND_FILES, TkinterDnD
-import getpass
-from datetime import datetime
 
-import platform
+from . import node_services
 from . import runtime as runtime_json
 from . import settings as ind_settings
-from . import node_services
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 os.chdir(BASE_DIR)
@@ -62,9 +65,8 @@ def log_ignored_exception(context="suppressed desktop exception"):
     logger.debug(context, exc_info=True)
 
 
+# Delay heavyweight imports until the GUI path actually needs them.
 class LazyModule:
-    """Delay heavyweight imports until the GUI path actually needs them."""
-
     def __init__(self, module_name, on_load=None):
         self.module_name = module_name
         self.on_load = on_load
@@ -113,6 +115,8 @@ def ensure_runtime_files_light():
         wallet_decryption.clear_plaintext_wallet_files(clear_memory=True)
     except Exception:
         log_ignored_exception()
+
+
 ensure_runtime_files_light()
 
 
@@ -135,19 +139,27 @@ def install_windows_font(font_path, font_family):
         installed_path = copy_font_if_needed(font_path, fonts_dir / font_path.name)
 
         import winreg
+
         registry_path = r'Software\Microsoft\Windows NT\CurrentVersion\Fonts'
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_path, 0, winreg.KEY_SET_VALUE) as font_key:
-            winreg.SetValueEx(font_key, font_family + ' (TrueType)', 0, winreg.REG_SZ, str(installed_path))
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, registry_path, 0, winreg.KEY_SET_VALUE
+        ) as font_key:
+            winreg.SetValueEx(
+                font_key, font_family + ' (TrueType)', 0, winreg.REG_SZ, str(installed_path)
+            )
     except Exception:
         installed_path = font_path
 
     try:
         import ctypes
+
         ctypes.windll.gdi32.AddFontResourceExW(str(installed_path), 0, 0)
         ctypes.windll.gdi32.AddFontResourceExW(str(font_path), 0x10, 0)
         ctypes.windll.user32.SendMessageW(0xFFFF, 0x001D, 0, 0)
     except Exception:
         log_ignored_exception()
+
+
 def load_custom_font(font_path, font_family):
     font_path = Path(font_path)
     if not font_path.exists():
@@ -175,9 +187,15 @@ def load_custom_font(font_path, font_family):
             fonts_dir = Path.home() / '.local' / 'share' / 'fonts'
             fonts_dir.mkdir(parents=True, exist_ok=True)
             copy_font_if_needed(font_path, fonts_dir / font_path.name)
-            subprocess.run(['fc-cache', '-f', str(fonts_dir)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                ['fc-cache', '-f', str(fonts_dir)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         except Exception:
             log_ignored_exception()
+
+
 def schedule_custom_font_load():
     try:
         if APP_FONT_FAMILY in tkfont.families(root):
@@ -193,6 +211,8 @@ def hide_root_window():
         root.update_idletasks()
     except Exception:
         log_ignored_exception()
+
+
 def show_root_when_ready():
     try:
         root.update_idletasks()
@@ -200,6 +220,8 @@ def show_root_when_ready():
         root.lift()
     except Exception:
         log_ignored_exception()
+
+
 def start_new_app_process():
     subprocess.Popen([sys.executable, str(BASE_DIR / 'main.py')], cwd=str(BASE_DIR))
 
@@ -227,12 +249,15 @@ def enable_high_dpi_awareness():
 
     try:
         import ctypes
+
         try:
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception:
             ctypes.windll.user32.SetProcessDPIAware()
     except Exception:
         log_ignored_exception()
+
+
 def scaled_px(value, scale):
     return int(round(value * scale))
 
@@ -382,10 +407,13 @@ GENERATE_WALLET_FIELD_WIDTH = 400
 GENERATE_WALLET_BUTTON_GAP = 12
 GENERATE_WALLET_SIDE_BUTTON_WIDTH = 100
 GENERATE_WALLET_SUBMIT_BUTTON_WIDTH = 267
-GENERATE_WALLET_SIDE_BUTTON_X = GENERATE_WALLET_FIELD_X + GENERATE_WALLET_FIELD_WIDTH + GENERATE_WALLET_BUTTON_GAP
-GENERATE_WALLET_SUBMIT_BUTTON_X = GENERATE_WALLET_PANEL_LEFT + (
-    GENERATE_WALLET_PANEL_WIDTH - GENERATE_WALLET_SUBMIT_BUTTON_WIDTH
-) // 2
+GENERATE_WALLET_SIDE_BUTTON_X = (
+    GENERATE_WALLET_FIELD_X + GENERATE_WALLET_FIELD_WIDTH + GENERATE_WALLET_BUTTON_GAP
+)
+GENERATE_WALLET_SUBMIT_BUTTON_X = (
+    GENERATE_WALLET_PANEL_LEFT
+    + (GENERATE_WALLET_PANEL_WIDTH - GENERATE_WALLET_SUBMIT_BUTTON_WIDTH) // 2
+)
 GENERATE_WALLET_ADDRESS_Y = 312
 GENERATE_WALLET_PUBLIC_KEY_Y = 405
 GENERATE_WALLET_PRIVATE_KEY_Y = 498
@@ -430,7 +458,9 @@ CLAIM_SEPARATOR_HEIGHT = APP_BASE_HEIGHT - CLAIM_SEPARATOR_TOP - 34
 CLAIM_LEFT_SEPARATOR_X = CLAIM_RIGHT_SECTION_X - (CLAIM_COLUMN_GAP // 2)
 CLAIM_CLOSE_WIDTH = 37
 CLAIM_CLOSE_HEIGHT = 33
-CLAIM_CLOSE_X = CLAIM_RIGHT_SECTION_X + CLAIM_RIGHT_SECTION_WIDTH - CLAIM_RIGHT_PADDING - CLAIM_CLOSE_WIDTH
+CLAIM_CLOSE_X = (
+    CLAIM_RIGHT_SECTION_X + CLAIM_RIGHT_SECTION_WIDTH - CLAIM_RIGHT_PADDING - CLAIM_CLOSE_WIDTH
+)
 CLAIM_CLOSE_Y = CLAIM_RIGHT_SECTION_Y + 10
 CLAIM_READY_TITLE_X = CLAIM_RIGHT_SECTION_X + CLAIM_RIGHT_PADDING
 CLAIM_READY_TITLE_Y = CLAIM_RIGHT_SECTION_Y + 34
@@ -475,7 +505,12 @@ GUI_TEXT = {
     'home_code_open': '(',
     'home_code_body': '"Hello World!"',
     'home_code_suffix': ')',
-    'node_labels': ('Node class:', 'Run on startup:', 'Run in background:', 'Transparency operator:'),
+    'node_labels': (
+        'Node class:',
+        'Run on startup:',
+        'Run in background:',
+        'Transparency operator:',
+    ),
     'node_forwarding': (
         'If you are running a public node make sure to\n'
         f'forward TCP port {ind_settings.node_port()} to your local machine\n'
@@ -616,9 +651,8 @@ def px(value):
     return scaled_px(value, reso)
 
 
+# Return a readable one-line error for wallet action popups.
 def error_detail(error):
-    """Return a readable one-line error for wallet action popups."""
-
     if isinstance(error, Exception):
         message = str(error).strip()
         if message:
@@ -627,9 +661,8 @@ def error_detail(error):
     return str(error).strip() or "Unknown error"
 
 
+# Show a simple error popup, safely scheduling it from worker threads.
 def show_error_popup(title, error):
-    """Show a simple error popup, safely scheduling it from worker threads."""
-
     detail = error_detail(error)
 
     def show():
@@ -642,9 +675,10 @@ def show_error_popup(title, error):
             root.after(0, show)
     except Exception:
         log_ignored_exception()
-def refresh_wallet_view():
-    """Refresh visible wallet state and report refresh failures."""
 
+
+# Refresh visible wallet state and report refresh failures.
+def refresh_wallet_view():
     try:
         update_balance()
         page()
@@ -664,9 +698,8 @@ def place_scaled(widget, x, y, width=None, height=None, x_nudge=0, y_nudge=0):
     widget.place(**options)
 
 
+# Raise a Tk widget window, avoiding Canvas item-raise method collisions.
 def raise_widget(widget):
-    """Raise a Tk widget window, avoiding Canvas item-raise method collisions."""
-
     widget.tk.call('raise', widget._w)
 
 
@@ -693,8 +726,9 @@ def app_font(size, weight=None):
     return font
 
 
-def canvas_text(canvas, x, y, text, size, fill=IND_WHITE, anchor='nw', justify='left', weight=None,
-                width=None):
+def canvas_text(
+    canvas, x, y, text, size, fill=IND_WHITE, anchor='nw', justify='left', weight=None, width=None
+):
     kwargs = {
         'text': text,
         'fill': fill,
@@ -705,6 +739,7 @@ def canvas_text(canvas, x, y, text, size, fill=IND_WHITE, anchor='nw', justify='
     if width is not None:
         kwargs['width'] = px(width)
     return canvas.create_text(px(x), px(y), **kwargs)
+
 
 class GuiScreen(Canvas):
     """Canvas-backed renderer for the fixed-size desktop screens.
@@ -745,7 +780,9 @@ class GuiScreen(Canvas):
         self.create_polygon(*coordinates, fill=color, outline=color)
 
     def rect(self, x1, y1, x2, y2, fill='', outline=IND_WHITE, width=2):
-        self.create_rectangle(px(x1), px(y1), px(x2), px(y2), fill=fill, outline=outline, width=px(width))
+        self.create_rectangle(
+            px(x1), px(y1), px(x2), px(y2), fill=fill, outline=outline, width=px(width)
+        )
 
     def draw_header(self):
         self.rect(1, 1, APP_BASE_WIDTH - 1, APP_BASE_HEIGHT - 1, fill=IND_BLACK, width=2)
@@ -764,9 +801,8 @@ class GuiScreen(Canvas):
         canvas_text(self, 550, 420, GUI_TEXT['home_code_body'], 45, fill='#64a982')
         canvas_text(self, 781, 420, GUI_TEXT['home_code_suffix'], 45, fill=IND_WHITE)
 
+    # Draw the node control page around separately placed live widgets.
     def draw_node_terminal(self):
-        """Draw the node control page around separately placed live widgets."""
-
         # Top strip: live node health values are overlaid as Labels/Canvas dots.
         self.rect(
             NODE_STATUS_X,
@@ -777,14 +813,21 @@ class GuiScreen(Canvas):
             outline=IND_WHITE,
             width=1,
         )
-        for x, width, label in (
+        for x, width, _label in (
             (300, 120, 'TCP'),
             (430, 100, 'Peers'),
             (540, 112, 'Events'),
             (662, 132, 'Operator'),
         ):
-            self.rect(x, NODE_STATUS_Y + 14, x + width, NODE_STATUS_Y + 44, fill=NODE_CHIP_BG,
-                      outline=NODE_CHIP_BORDER, width=1)
+            self.rect(
+                x,
+                NODE_STATUS_Y + 14,
+                x + width,
+                NODE_STATUS_Y + 44,
+                fill=NODE_CHIP_BG,
+                outline=NODE_CHIP_BORDER,
+                width=1,
+            )
 
         # Left panel: persistent node settings and port-forwarding hints.
         self.rect(
@@ -796,8 +839,14 @@ class GuiScreen(Canvas):
             outline=IND_WHITE,
             width=1,
         )
-        self.line(NODE_SETUP_X + 20, NODE_PANEL_Y + 54, NODE_SETUP_X + NODE_SETUP_WIDTH - 20,
-                  NODE_PANEL_Y + 54, color='#313a36', width=1)
+        self.line(
+            NODE_SETUP_X + 20,
+            NODE_PANEL_Y + 54,
+            NODE_SETUP_X + NODE_SETUP_WIDTH - 20,
+            NODE_PANEL_Y + 54,
+            color='#313a36',
+            width=1,
+        )
         for y, label, helper in (
             (NODE_PANEL_Y + 68, 'Node class', 'gossip network role'),
             (NODE_PANEL_Y + 138, 'PC startup', 'launch when this PC starts'),
@@ -806,20 +855,59 @@ class GuiScreen(Canvas):
         ):
             canvas_text(self, NODE_SETUP_X + 22, y, label, 20)
             canvas_text(self, NODE_SETUP_X + 22, y + 26, helper, 13, fill=IND_MUTED, width=145)
-        self.rect(NODE_SETUP_X + 178, NODE_PANEL_Y + 72, NODE_SETUP_X + NODE_SETUP_WIDTH - 22,
-                  NODE_PANEL_Y + 108, fill=IND_BLACK, outline=IND_WHITE, width=1)
+        self.rect(
+            NODE_SETUP_X + 178,
+            NODE_PANEL_Y + 72,
+            NODE_SETUP_X + NODE_SETUP_WIDTH - 22,
+            NODE_PANEL_Y + 108,
+            fill=IND_BLACK,
+            outline=IND_WHITE,
+            width=1,
+        )
         for y in (NODE_PANEL_Y + 142, NODE_PANEL_Y + 212, NODE_PANEL_Y + 282):
-            self.rect(NODE_SETUP_X + 178, y, NODE_SETUP_X + NODE_SETUP_WIDTH - 22, y + 36,
-                      fill=IND_BLACK, outline=IND_WHITE, width=1)
-        self.line(NODE_SETUP_X + 20, NODE_PANEL_Y + 334, NODE_SETUP_X + NODE_SETUP_WIDTH - 20,
-                  NODE_PANEL_Y + 334, color='#313a36', width=1)
+            self.rect(
+                NODE_SETUP_X + 178,
+                y,
+                NODE_SETUP_X + NODE_SETUP_WIDTH - 22,
+                y + 36,
+                fill=IND_BLACK,
+                outline=IND_WHITE,
+                width=1,
+            )
+        self.line(
+            NODE_SETUP_X + 20,
+            NODE_PANEL_Y + 334,
+            NODE_SETUP_X + NODE_SETUP_WIDTH - 20,
+            NODE_PANEL_Y + 334,
+            color='#313a36',
+            width=1,
+        )
         canvas_text(self, NODE_SETUP_X + 22, NODE_PANEL_Y + 350, 'Port forwarding', 20)
-        self.rect(300, NODE_PANEL_Y + 354, 374, NODE_PANEL_Y + 382, fill=IND_BLACK, outline=IND_WHITE, width=1)
-        canvas_text(self, NODE_SETUP_X + 22, NODE_PANEL_Y + 388,
-                    f'Open TCP port {ind_settings.node_port()} on your router/firewall', 16,
-                    fill=IND_MUTED)
-        canvas_text(self, NODE_SETUP_X + 22, NODE_PANEL_Y + 414,
-                    'so external peers can reach this node.', 16, fill=IND_MUTED)
+        self.rect(
+            300,
+            NODE_PANEL_Y + 354,
+            374,
+            NODE_PANEL_Y + 382,
+            fill=IND_BLACK,
+            outline=IND_WHITE,
+            width=1,
+        )
+        canvas_text(
+            self,
+            NODE_SETUP_X + 22,
+            NODE_PANEL_Y + 388,
+            f'Open TCP port {ind_settings.node_port()} on your router/firewall',
+            16,
+            fill=IND_MUTED,
+        )
+        canvas_text(
+            self,
+            NODE_SETUP_X + 22,
+            NODE_PANEL_Y + 414,
+            'so external peers can reach this node.',
+            16,
+            fill=IND_MUTED,
+        )
 
         # Right panel: console shell; Text widgets and filter buttons sit above it.
         self.rect(
@@ -841,9 +929,14 @@ class GuiScreen(Canvas):
             width=1,
         )
         canvas_text(self, NODE_CONSOLE_X + 22, NODE_PANEL_Y + 8, 'Console log', 29)
-        self.line(NODE_CONSOLE_X, NODE_PANEL_Y + NODE_CONSOLE_HEADER_HEIGHT,
-                  NODE_CONSOLE_X + NODE_CONSOLE_WIDTH, NODE_PANEL_Y + NODE_CONSOLE_HEADER_HEIGHT,
-                  color='#313a36', width=1)
+        self.line(
+            NODE_CONSOLE_X,
+            NODE_PANEL_Y + NODE_CONSOLE_HEADER_HEIGHT,
+            NODE_CONSOLE_X + NODE_CONSOLE_WIDTH,
+            NODE_PANEL_Y + NODE_CONSOLE_HEADER_HEIGHT,
+            color='#313a36',
+            width=1,
+        )
         self.rect(
             NODE_LOG_X,
             NODE_LOG_Y,
@@ -868,13 +961,16 @@ class GuiScreen(Canvas):
         self.line(1030, 330, 1159, 210, color=IND_RED, width=14)
         canvas_text(self, 1093, 254, GUI_TEXT['info_blockchain'], 28, anchor='n', justify='center')
         self.create_oval(px(1003), px(402), px(1183), px(582), outline='#35c758', width=px(16))
-        canvas_text(self, 1093, 449, GUI_TEXT['info_supply_amount'], 22, anchor='n', justify='center')
-        canvas_text(self, 1093, 492, GUI_TEXT['info_supply_label'], 24, anchor='n', justify='center')
+        canvas_text(
+            self, 1093, 449, GUI_TEXT['info_supply_amount'], 22, anchor='n', justify='center'
+        )
+        canvas_text(
+            self, 1093, 492, GUI_TEXT['info_supply_label'], 24, anchor='n', justify='center'
+        )
         canvas_text(self, 1093, 620, GUI_TEXT['info_inflation'], 43, anchor='n', justify='center')
 
+    # Draw the paper-bill printing workflow shell.
     def draw_print_page(self):
-        """Draw the paper-bill printing workflow shell."""
-
         # Left and right panels map to the available-bills list and print queue.
         self.rect(
             PRINT_LEFT_PANEL_X,
@@ -894,7 +990,14 @@ class GuiScreen(Canvas):
             outline='#333c3b',
             width=1,
         )
-        canvas_text(self, PRINT_AVAILABLE_X, PRINT_PANEL_Y + 30, GUI_TEXT['print_available_label'], 23, weight='bold')
+        canvas_text(
+            self,
+            PRINT_AVAILABLE_X,
+            PRINT_PANEL_Y + 30,
+            GUI_TEXT['print_available_label'],
+            23,
+            weight='bold',
+        )
         self.line(
             PRINT_AVAILABLE_X,
             PRINT_PANEL_Y + 86,
@@ -903,7 +1006,14 @@ class GuiScreen(Canvas):
             color='#333c3b',
             width=1,
         )
-        canvas_text(self, PRINT_QUEUE_X, PRINT_PANEL_Y + 30, GUI_TEXT['print_queue_label'], 23, weight='bold')
+        canvas_text(
+            self,
+            PRINT_QUEUE_X,
+            PRINT_PANEL_Y + 30,
+            GUI_TEXT['print_queue_label'],
+            23,
+            weight='bold',
+        )
         self.rect(
             PRINT_QUEUE_X,
             PRINT_QUEUE_LIST_Y,
@@ -922,10 +1032,12 @@ class GuiScreen(Canvas):
             width=1,
         )
         canvas_text(self, PRINT_QUEUE_X, PRINT_OUTPUT_LABEL_Y, 'Output', 16, weight='bold')
-        canvas_text(self, PRINT_QUEUE_X + 210, PRINT_OUTPUT_FULL_Y + 2, '6 per sheet', 14,
-                    fill=IND_MUTED)
-        canvas_text(self, PRINT_QUEUE_X + 210, PRINT_OUTPUT_QR_Y + 2, 'backup print', 14,
-                    fill=IND_PENDING)
+        canvas_text(
+            self, PRINT_QUEUE_X + 210, PRINT_OUTPUT_FULL_Y + 2, '6 per sheet', 14, fill=IND_MUTED
+        )
+        canvas_text(
+            self, PRINT_QUEUE_X + 210, PRINT_OUTPUT_QR_Y + 2, 'backup print', 14, fill=IND_PENDING
+        )
         self.rect(
             PRINT_PAGES_X,
             PRINT_PAGES_Y,
@@ -962,11 +1074,20 @@ class GuiScreen(Canvas):
 
     def draw_wallet(self):
         self.line(825, 151, 825, APP_BASE_HEIGHT)
-        canvas_text(self, 1020, 138 + WALLET_SEND_Y_OFFSET, GUI_TEXT['wallet_send_title'], 30, anchor='n',
-                    justify='center')
+        canvas_text(
+            self,
+            1020,
+            138 + WALLET_SEND_Y_OFFSET,
+            GUI_TEXT['wallet_send_title'],
+            30,
+            anchor='n',
+            justify='center',
+        )
         canvas_text(self, 852, 176 + WALLET_SEND_Y_OFFSET, GUI_TEXT['wallet_receiver_label'], 22)
         canvas_text(self, 852, 257 + WALLET_SEND_Y_OFFSET, GUI_TEXT['wallet_amount_label'], 22)
-        canvas_text(self, 1024, 420, GUI_TEXT['wallet_receive_title'], 30, anchor='n', justify='center')
+        canvas_text(
+            self, 1024, 420, GUI_TEXT['wallet_receive_title'], 30, anchor='n', justify='center'
+        )
 
     def draw_settings(self):
         self.rect(
@@ -995,15 +1116,25 @@ class GuiScreen(Canvas):
             field_label(928, SETTINGS_BOTTOM_LABEL_Y, 'Diagnostics')
         elif settings_active_tab == SETTINGS_TAB_BILL_SAFETY:
             field_label(SETTINGS_ROW_COLS[0], SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_finality'])
-            field_label(SETTINGS_ROW_COLS[1], SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_require_log'])
-            field_label(SETTINGS_ROW_COLS[2], SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_security_profile'])
-            field_label(SETTINGS_ROW_COLS[3], SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_untrusted_genesis'])
+            field_label(
+                SETTINGS_ROW_COLS[1], SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_require_log']
+            )
+            field_label(
+                SETTINGS_ROW_COLS[2], SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_security_profile']
+            )
+            field_label(
+                SETTINGS_ROW_COLS[3], SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_untrusted_genesis']
+            )
             separator(SETTINGS_DIVIDER_Y)
             field_label(SETTINGS_TWO_COL_LEFT, SETTINGS_BOTTOM_LABEL_Y, 'Trusted issuer keys')
             field_label(SETTINGS_TWO_COL_RIGHT, SETTINGS_BOTTOM_LABEL_Y, 'Trusted manifest hashes')
         elif settings_active_tab == SETTINGS_TAB_TRANSPARENCY:
-            field_label(SETTINGS_TWO_COL_LEFT, SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_operator_url'])
-            field_label(SETTINGS_TWO_COL_RIGHT, SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_operator_key'])
+            field_label(
+                SETTINGS_TWO_COL_LEFT, SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_operator_url']
+            )
+            field_label(
+                SETTINGS_TWO_COL_RIGHT, SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_operator_key']
+            )
             separator(SETTINGS_DIVIDER_Y)
             field_label(SETTINGS_CONTENT_X, SETTINGS_BOTTOM_LABEL_Y, 'Root domains', 18)
             field_label(354, SETTINGS_BOTTOM_LABEL_Y, 'Root mirrors', 18)
@@ -1016,7 +1147,9 @@ class GuiScreen(Canvas):
             field_label(SETTINGS_CONTENT_X, SETTINGS_TOP_LABEL_Y, 'Domain')
             field_label(988, SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_update_startup'])
             separator(SETTINGS_DIVIDER_Y)
-            field_label(SETTINGS_CONTENT_X, SETTINGS_BOTTOM_LABEL_Y, GUI_TEXT['settings_update_status'])
+            field_label(
+                SETTINGS_CONTENT_X, SETTINGS_BOTTOM_LABEL_Y, GUI_TEXT['settings_update_status']
+            )
 
     def draw_sign_in_panel(self, generate=False):
         self.rect(282, 190, 933, 740, fill=IND_BLACK, outline=IND_WHITE, width=3)
@@ -1037,8 +1170,12 @@ class GuiScreen(Canvas):
             ):
                 self.line(348, y, 872, y, color='#242424', width=1)
         else:
-            canvas_text(self, 607, 297, GUI_TEXT['signin_wallet_label'], 28, anchor='n', justify='center')
-            canvas_text(self, 607, 442, GUI_TEXT['signin_password_label'], 28, anchor='n', justify='center')
+            canvas_text(
+                self, 607, 297, GUI_TEXT['signin_wallet_label'], 28, anchor='n', justify='center'
+            )
+            canvas_text(
+                self, 607, 442, GUI_TEXT['signin_password_label'], 28, anchor='n', justify='center'
+            )
 
     def draw_sign_in(self):
         self.draw_sign_in_panel(generate=False)
@@ -1047,9 +1184,8 @@ class GuiScreen(Canvas):
         self.draw_sign_in_panel(generate=True)
 
 
+# Renderer for small modal surfaces that still use the app canvas style.
 class ModalCanvas(Canvas):
-    """Renderer for small modal surfaces that still use the app canvas style."""
-
     def __init__(self, master, modal_name, width, height, bg=IND_BLACK):
         super().__init__(
             master,
@@ -1066,8 +1202,15 @@ class ModalCanvas(Canvas):
 
     def draw(self):
         if self.modal_name != 'claim':
-            self.create_rectangle(px(1), px(1), px(self.width - 1), px(self.height - 1), outline=IND_WHITE,
-                                  width=px(2), fill=self['bg'])
+            self.create_rectangle(
+                px(1),
+                px(1),
+                px(self.width - 1),
+                px(self.height - 1),
+                outline=IND_WHITE,
+                width=px(2),
+                fill=self['bg'],
+            )
         if self.modal_name == 'claim':
             canvas_text(self, CLAIM_TITLE_X, CLAIM_TITLE_Y, GUI_TEXT['claim_title'], 36)
             canvas_text(
@@ -1105,20 +1248,51 @@ class ModalCanvas(Canvas):
                 outline=IND_WHITE,
             )
         elif self.modal_name == 'success':
-            self.create_rectangle(px(1), px(1), px(self.width - 1), px(self.height - 1), outline=IND_GREEN,
-                                  width=px(2), fill='#007a3b')
-            canvas_text(self, 326, 14, GUI_TEXT['success_title'], 58, anchor='n', justify='center',
-                        weight='bold')
+            self.create_rectangle(
+                px(1),
+                px(1),
+                px(self.width - 1),
+                px(self.height - 1),
+                outline=IND_GREEN,
+                width=px(2),
+                fill='#007a3b',
+            )
+            canvas_text(
+                self,
+                326,
+                14,
+                GUI_TEXT['success_title'],
+                58,
+                anchor='n',
+                justify='center',
+                weight='bold',
+            )
             canvas_text(self, 46, 123, GUI_TEXT['success_body'], 29)
         elif self.modal_name == 'valid':
-            canvas_text(self, self.width / 2, self.height / 2, 'Valid', 44, anchor='center', justify='center')
+            canvas_text(
+                self,
+                self.width / 2,
+                self.height / 2,
+                'Valid',
+                44,
+                anchor='center',
+                justify='center',
+            )
         elif self.modal_name == 'not_valid':
-            canvas_text(self, self.width / 2, self.height / 2, 'Not valid', 44, anchor='center',
-                        justify='center')
+            canvas_text(
+                self,
+                self.width / 2,
+                self.height / 2,
+                'Not valid',
+                44,
+                anchor='center',
+                justify='center',
+            )
 
 
-def make_text_button(text, command, font_size=24, bg=IND_GREEN, fg='white', font_weight=None, bd=0,
-                     relief=FLAT):
+def make_text_button(
+    text, command, font_size=24, bg=IND_GREEN, fg='white', font_weight=None, bd=0, relief=FLAT
+):
     font = app_font(font_size, font_weight)
     return Button(
         root,
@@ -1153,9 +1327,8 @@ def source_asset_image_path(folder, name):
     return BASE_DIR / 'img' / folder / f'{name}.png'
 
 
+# Image button that redraws bitmap assets at the active UI scale.
 class ScaledAssetButton(Button):
-    """Image button that redraws bitmap assets at the active UI scale."""
-
     def __init__(self, master, image_path, command, bg=IND_BLACK):
         with Image.open(image_path) as source:
             self.source_image = source.convert('RGBA')
@@ -1187,11 +1360,15 @@ class ScaledAssetButton(Button):
         self.config(image=self.current_image)
 
 
-def make_asset_button(folder, name, command, fallback_text, font_size=18, bg=IND_BLACK, fg=IND_WHITE):
+def make_asset_button(
+    folder, name, command, fallback_text, font_size=18, bg=IND_BLACK, fg=IND_WHITE
+):
     try:
         return ScaledAssetButton(root, source_asset_image_path(folder, name), command, bg=bg)
     except Exception:
-        return make_text_button(fallback_text, command, font_size=font_size, bg=bg, fg=fg, bd=1, relief=SOLID)
+        return make_text_button(
+            fallback_text, command, font_size=font_size, bg=bg, fg=fg, bd=1, relief=SOLID
+        )
 
 
 try:
@@ -1204,9 +1381,10 @@ try:
         shutil.copyfile(wallet_path, os.path.join(path, wallet_path.name))
 except Exception:
     log_ignored_exception()
-def update_wallet():
-    """Return the active decrypted wallet lines, if a wallet is unlocked."""
 
+
+# Return the active decrypted wallet lines, if a wallet is unlocked.
+def update_wallet():
     for wallet_path in runtime_json.iter_decrypted_wallet_files():
         dr_w = runtime_json.read_decrypted_wallet_lines(wallet_path)
         num_lines_w = len(dr_w)
@@ -1261,7 +1439,9 @@ try:
 except Exception:
     log_ignored_exception()
 
-international_dollar = Text(root, font=app_font(45), bg='black', fg='white', bd=0, highlightthickness=0)
+international_dollar = Text(
+    root, font=app_font(45), bg='black', fg='white', bd=0, highlightthickness=0
+)
 international_dollar.insert(1.0, GUI_TEXT['app_title'])
 international_dollar.place(x=150 * reso, y=45 * reso, height=90 * reso, width=410 * reso)
 international_dollar.config(state='disabled', cursor='arrow')
@@ -1294,8 +1474,9 @@ def ensure_wallet_qr():
         qr_resize = qr_make.resize((px(250), px(250)), Image.Resampling.LANCZOS)
         qr_img = ImageTk.PhotoImage(qr_resize)
         qr = Label(root, image=qr_img, bd=0, highlightthickness=0)
-        address_txt = Text(root, font=app_font(19), bg='black', fg='white', bd=0,
-                           highlightthickness=0)
+        address_txt = Text(
+            root, font=app_font(19), bg='black', fg='white', bd=0, highlightthickness=0
+        )
         return True
     except Exception:
         return False
@@ -1321,8 +1502,11 @@ def reset_wallet_qr_mode():
             qr.config(image=qr_img, text='', compound='none')
     except Exception:
         log_ignored_exception()
+
+
 def transfer_wallet_warning_text(seconds_remaining):
     return f'SECURITY RISK\nQR in {seconds_remaining}s'
+
 
 root.configure(background=IND_BLACK)
 panel = GuiScreen(root, 'home')
@@ -1347,6 +1531,8 @@ def load_logo_image():
         logo.image = logo_img
     except Exception:
         log_ignored_exception()
+
+
 root.after_idle(load_logo_image)
 receiver = Entry(root, font=app_font(20), bg='light grey')
 frame_w = Frame(root, bg='black')
@@ -1362,39 +1548,78 @@ node_port_notice.config(state='disabled', cursor='arrow')
 
 ron_var = StringVar(root)
 ron = OptionMenu(root, ron_var, 'YES', 'NO')
-ron.config(font=app_font(16, 'bold'), cursor='hand2', bg=IND_BLACK, fg=IND_WHITE,
-           activebackground=NODE_HEADER_BG, activeforeground=IND_WHITE, bd=0,
-           highlightthickness=0, relief=FLAT)
+ron.config(
+    font=app_font(16, 'bold'),
+    cursor='hand2',
+    bg=IND_BLACK,
+    fg=IND_WHITE,
+    activebackground=NODE_HEADER_BG,
+    activeforeground=IND_WHITE,
+    bd=0,
+    highlightthickness=0,
+    relief=FLAT,
+)
 rons = root.nametowidget(ron.menuname)
-rons.config(font=app_font(16), bg=IND_BLACK, fg=IND_WHITE, activebackground=NODE_HEADER_BG,
-            activeforeground=IND_WHITE)
+rons.config(
+    font=app_font(16),
+    bg=IND_BLACK,
+    fg=IND_WHITE,
+    activebackground=NODE_HEADER_BG,
+    activeforeground=IND_WHITE,
+)
 ron_var.set(l3)
 
 bak_var = StringVar(root)
 bak = OptionMenu(root, bak_var, 'YES', 'NO')
-bak.config(font=app_font(16, 'bold'), cursor='hand2', bg=IND_BLACK, fg=IND_WHITE,
-           activebackground=NODE_HEADER_BG, activeforeground=IND_WHITE, bd=0,
-           highlightthickness=0, relief=FLAT)
+bak.config(
+    font=app_font(16, 'bold'),
+    cursor='hand2',
+    bg=IND_BLACK,
+    fg=IND_WHITE,
+    activebackground=NODE_HEADER_BG,
+    activeforeground=IND_WHITE,
+    bd=0,
+    highlightthickness=0,
+    relief=FLAT,
+)
 baks = root.nametowidget(bak.menuname)
-baks.config(font=app_font(16), bg=IND_BLACK, fg=IND_WHITE, activebackground=NODE_HEADER_BG,
-            activeforeground=IND_WHITE)
+baks.config(
+    font=app_font(16),
+    bg=IND_BLACK,
+    fg=IND_WHITE,
+    activebackground=NODE_HEADER_BG,
+    activeforeground=IND_WHITE,
+)
 bak_var.set(l4)
 
 transparency_operator_var = StringVar(root)
 transparency_operator = OptionMenu(root, transparency_operator_var, 'NO', 'YES')
-transparency_operator.config(font=app_font(16, 'bold'), cursor='hand2', bg=IND_BLACK, fg=IND_WHITE,
-                             activebackground=NODE_HEADER_BG, activeforeground=IND_WHITE, bd=0,
-                             highlightthickness=0, relief=FLAT)
+transparency_operator.config(
+    font=app_font(16, 'bold'),
+    cursor='hand2',
+    bg=IND_BLACK,
+    fg=IND_WHITE,
+    activebackground=NODE_HEADER_BG,
+    activeforeground=IND_WHITE,
+    bd=0,
+    highlightthickness=0,
+    relief=FLAT,
+)
 transparency_operators = root.nametowidget(transparency_operator.menuname)
-transparency_operators.config(font=app_font(16), bg=IND_BLACK, fg=IND_WHITE, activebackground=NODE_HEADER_BG,
-                              activeforeground=IND_WHITE)
+transparency_operators.config(
+    font=app_font(16),
+    bg=IND_BLACK,
+    fg=IND_WHITE,
+    activebackground=NODE_HEADER_BG,
+    activeforeground=IND_WHITE,
+)
 transparency_operator_var.set(l_operator)
 transparency_operator_var.trace_add('write', lambda *_args: update_node_status_widgets())
 
 try:
     USER_NAME = getpass.getuser()
     disk = os.path.realpath(__file__)[0]
-    bat_path = disk + r':\Users\%s\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup' % USER_NAME
+    bat_path = f"{disk}:\\Users\\{USER_NAME}\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
 except Exception:
     log_ignored_exception()
 node_process = None
@@ -1453,7 +1678,9 @@ def update_node_status_widgets():
     node_status_value.config(text='RUNNING' if running else 'STOPPED', fg=status_color)
     if 'node_status_dot' in globals():
         node_status_dot.delete('all')
-        node_status_dot.create_oval(px(2), px(2), px(12), px(12), fill=status_color, outline=status_color)
+        node_status_dot.create_oval(
+            px(2), px(2), px(12), px(12), fill=status_color, outline=status_color
+        )
     node_port_value.config(text=str(ind_settings.node_port()))
     node_peer_value.config(text=str(count_known_node_peers()))
     node_event_value.config(text=str(len(node_console_entries)))
@@ -1482,7 +1709,10 @@ def update_node_action_button():
 
 def node_log_level_for_line(line):
     text = line.lower()
-    if any(marker in text for marker in ('warning', 'warn ', 'rejected', 'invalid', 'rate_limited', 'failed', 'error')):
+    if any(
+        marker in text
+        for marker in ('warning', 'warn ', 'rejected', 'invalid', 'rate_limited', 'failed', 'error')
+    ):
         return 'WARN'
     if any(marker in text for marker in ('listening', 'starting', 'started', 'spawned')):
         return 'INFO'
@@ -1491,7 +1721,10 @@ def node_log_level_for_line(line):
 
 def node_log_category_for_line(line):
     text = line.lower()
-    if any(marker in text for marker in ('gossip', 'transfer', 'receipt', 'double-spend', 'equivocation')):
+    if any(
+        marker in text
+        for marker in ('gossip', 'transfer', 'receipt', 'double-spend', 'equivocation')
+    ):
         return 'gossip'
     if any(marker in text for marker in ('peer', 'bootstrap', 'connection')):
         return 'peer'
@@ -1551,7 +1784,7 @@ def append_node_console(level, message, category='node'):
     }
     node_console_entries.append(entry)
     if len(node_console_entries) > NODE_CONSOLE_MAX_ENTRIES:
-        del node_console_entries[:len(node_console_entries) - NODE_CONSOLE_MAX_ENTRIES]
+        del node_console_entries[: len(node_console_entries) - NODE_CONSOLE_MAX_ENTRIES]
     try:
         if threading.current_thread() is threading.main_thread():
             render_node_console()
@@ -1559,6 +1792,8 @@ def append_node_console(level, message, category='node'):
             root.after(0, render_node_console)
     except Exception:
         log_ignored_exception()
+
+
 def set_node_console_filter(filter_name):
     global node_console_filter
     node_console_filter = filter_name
@@ -1584,7 +1819,9 @@ def copy_node_port():
     try:
         root.clipboard_clear()
         root.clipboard_append(str(ind_settings.node_port()))
-        append_node_console('COPY', f'TCP port {ind_settings.node_port()} copied to clipboard', 'node')
+        append_node_console(
+            'COPY', f'TCP port {ind_settings.node_port()} copied to clipboard', 'node'
+        )
     except Exception as exc:
         append_node_console('WARN', 'copy port failed: ' + error_detail(exc), 'node')
 
@@ -1652,7 +1889,9 @@ def start_transparency_operator_if_enabled():
             restore_operator_environment()
             raise
         time.sleep(1)
-        append_node_console('OPER', f'local transparency log running on {LOCAL_OPERATOR_URL}', 'node')
+        append_node_console(
+            'OPER', f'local transparency log running on {LOCAL_OPERATOR_URL}', 'node'
+        )
     return env
 
 
@@ -1691,10 +1930,11 @@ def startup_bat_contents(node_script):
     )
 
 
+# Start the local gossip node and optional transparency operator from the GUI.
 def start():
-    """Start the local gossip node and optional transparency operator from the GUI."""
-
-    runtime_json.write_node_config('NODE', ron_var.get(), bak_var.get(), transparency_operator_var.get())
+    runtime_json.write_node_config(
+        'NODE', ron_var.get(), bak_var.get(), transparency_operator_var.get()
+    )
     append_node_console(
         'SAVE',
         f'node config saved: startup={ron_var.get()} background={bak_var.get()} operator={transparency_operator_var.get()}',
@@ -1733,7 +1973,9 @@ def start():
                 **subprocess_kwargs(env),
             )
             append_node_console('NODE', f'spawned node_client.py pid {node_process.pid}', 'node')
-            threading.Thread(target=read_node_process_output, args=(node_process,), daemon=True).start()
+            threading.Thread(
+                target=read_node_process_output, args=(node_process,), daemon=True
+            ).start()
             return_code = node_process.wait()
             root.after(0, lambda code=return_code: handle_node_process_exit(code))
         except Exception as exc:
@@ -1741,6 +1983,7 @@ def start():
             append_node_console('ERROR', 'node start failed: ' + error_detail(exc), 'node')
             root.after(0, update_node_status_widgets)
             root.after(0, update_node_action_button)
+
     threading.Thread(target=subp).start()
     time.sleep(0.5)
 
@@ -1756,6 +1999,7 @@ def start():
 
     threading.Thread(target=thrd2, daemon=True).start()
 
+
 def end():
     runtime_json.set_kill_node(True)
     append_node_console('STOP', 'stop requested from GUI', 'node')
@@ -1764,35 +2008,100 @@ def end():
     update_node_status_widgets()
     update_node_action_button()
     time.sleep(1)
+
+
 b = Text(root, font=app_font(37), bg='black', fg='white', bd=0, highlightthickness=0)
 balance_top = Text(root, font=app_font(26), bg='black', fg='white', bd=0, highlightthickness=0)
 
-start_button = make_asset_button('different_buttons', 'start', start, 'Start', font_size=32, bg=IND_GREEN)
+start_button = make_asset_button(
+    'different_buttons', 'start', start, 'Start', font_size=32, bg=IND_GREEN
+)
 end_button = make_asset_button('different_buttons', 'end', end, 'End', font_size=32, bg=IND_RED)
 
-node_status_dot = Canvas(root, width=px(14), height=px(14), bg=NODE_PANEL_BG, bd=0, highlightthickness=0)
-node_status_title = Label(root, text='Node status', font=app_font(20, 'bold'), bg=NODE_PANEL_BG,
-                          fg=IND_WHITE, bd=0, highlightthickness=0, anchor='w')
-node_status_value = Label(root, font=app_font(18, 'bold'), bg=NODE_PANEL_BG, fg=IND_RED, bd=0,
-                          highlightthickness=0, anchor='w')
-node_port_label = Label(root, text='TCP', font=app_font(15), bg=NODE_CHIP_BG, fg=IND_MUTED, bd=0,
-                        highlightthickness=0, anchor='w')
-node_port_value = Label(root, font=app_font(16), bg=NODE_CHIP_BG, fg='#5dd7ff', bd=0,
-                        highlightthickness=0, anchor='e')
-node_peer_label = Label(root, text='Peers', font=app_font(15), bg=NODE_CHIP_BG, fg=IND_MUTED, bd=0,
-                        highlightthickness=0, anchor='w')
-node_peer_value = Label(root, font=app_font(16), bg=NODE_CHIP_BG, fg=IND_WHITE, bd=0,
-                        highlightthickness=0, anchor='e')
-node_event_label = Label(root, text='Events', font=app_font(15), bg=NODE_CHIP_BG, fg=IND_MUTED, bd=0,
-                         highlightthickness=0, anchor='w')
-node_event_value = Label(root, font=app_font(16), bg=NODE_CHIP_BG, fg=IND_ORANGE, bd=0,
-                         highlightthickness=0, anchor='e')
-node_operator_label = Label(root, text='Operator', font=app_font(15), bg=NODE_CHIP_BG, fg=IND_MUTED, bd=0,
-                            highlightthickness=0, anchor='w')
-node_operator_value = Label(root, font=app_font(16), bg=NODE_CHIP_BG, fg=IND_MUTED, bd=0,
-                            highlightthickness=0, anchor='e')
-node_class_value = Label(root, text='NODE', font=app_font(18), bg=IND_BLACK, fg='#5dd7ff', bd=0,
-                         highlightthickness=0, anchor='e')
+node_status_dot = Canvas(
+    root, width=px(14), height=px(14), bg=NODE_PANEL_BG, bd=0, highlightthickness=0
+)
+node_status_title = Label(
+    root,
+    text='Node status',
+    font=app_font(20, 'bold'),
+    bg=NODE_PANEL_BG,
+    fg=IND_WHITE,
+    bd=0,
+    highlightthickness=0,
+    anchor='w',
+)
+node_status_value = Label(
+    root,
+    font=app_font(18, 'bold'),
+    bg=NODE_PANEL_BG,
+    fg=IND_RED,
+    bd=0,
+    highlightthickness=0,
+    anchor='w',
+)
+node_port_label = Label(
+    root,
+    text='TCP',
+    font=app_font(15),
+    bg=NODE_CHIP_BG,
+    fg=IND_MUTED,
+    bd=0,
+    highlightthickness=0,
+    anchor='w',
+)
+node_port_value = Label(
+    root, font=app_font(16), bg=NODE_CHIP_BG, fg='#5dd7ff', bd=0, highlightthickness=0, anchor='e'
+)
+node_peer_label = Label(
+    root,
+    text='Peers',
+    font=app_font(15),
+    bg=NODE_CHIP_BG,
+    fg=IND_MUTED,
+    bd=0,
+    highlightthickness=0,
+    anchor='w',
+)
+node_peer_value = Label(
+    root, font=app_font(16), bg=NODE_CHIP_BG, fg=IND_WHITE, bd=0, highlightthickness=0, anchor='e'
+)
+node_event_label = Label(
+    root,
+    text='Events',
+    font=app_font(15),
+    bg=NODE_CHIP_BG,
+    fg=IND_MUTED,
+    bd=0,
+    highlightthickness=0,
+    anchor='w',
+)
+node_event_value = Label(
+    root, font=app_font(16), bg=NODE_CHIP_BG, fg=IND_ORANGE, bd=0, highlightthickness=0, anchor='e'
+)
+node_operator_label = Label(
+    root,
+    text='Operator',
+    font=app_font(15),
+    bg=NODE_CHIP_BG,
+    fg=IND_MUTED,
+    bd=0,
+    highlightthickness=0,
+    anchor='w',
+)
+node_operator_value = Label(
+    root, font=app_font(16), bg=NODE_CHIP_BG, fg=IND_MUTED, bd=0, highlightthickness=0, anchor='e'
+)
+node_class_value = Label(
+    root,
+    text='NODE',
+    font=app_font(18),
+    bg=IND_BLACK,
+    fg='#5dd7ff',
+    bd=0,
+    highlightthickness=0,
+    anchor='e',
+)
 node_console_log = Text(
     root,
     font=node_console_font(11),
@@ -1824,21 +2133,52 @@ node_console_log.tag_config('exit', foreground=IND_MUTED)
 node_console_log.tag_config('stop', foreground=IND_RED)
 node_console_log.tag_config('oper', foreground=IND_GREEN)
 
-node_copy_port_button = make_text_button('Copy port', copy_node_port, font_size=16, bg=IND_BLACK,
-                                         fg=IND_WHITE, bd=1, relief=SOLID)
-node_console_copy_button = make_text_button('Copy', copy_node_console, font_size=16, bg=NODE_HEADER_BG,
-                                            fg=IND_WHITE, bd=1, relief=SOLID)
-node_console_clear_button = make_text_button('Clear', clear_node_console, font_size=16, bg=NODE_HEADER_BG,
-                                             fg=IND_WHITE, bd=1, relief=SOLID)
+node_copy_port_button = make_text_button(
+    'Copy port', copy_node_port, font_size=16, bg=IND_BLACK, fg=IND_WHITE, bd=1, relief=SOLID
+)
+node_console_copy_button = make_text_button(
+    'Copy', copy_node_console, font_size=16, bg=NODE_HEADER_BG, fg=IND_WHITE, bd=1, relief=SOLID
+)
+node_console_clear_button = make_text_button(
+    'Clear', clear_node_console, font_size=16, bg=NODE_HEADER_BG, fg=IND_WHITE, bd=1, relief=SOLID
+)
 node_console_filter_buttons = {
-    'all': make_text_button('All', lambda: set_node_console_filter('all'), font_size=16,
-                            bg=IND_WHITE, fg=IND_BLACK, bd=1, relief=SOLID),
-    'node': make_text_button('Node', lambda: set_node_console_filter('node'), font_size=16,
-                             bg=NODE_HEADER_BG, fg=IND_WHITE, bd=1, relief=SOLID),
-    'gossip': make_text_button('Gossip', lambda: set_node_console_filter('gossip'), font_size=16,
-                               bg=NODE_HEADER_BG, fg=IND_WHITE, bd=1, relief=SOLID),
-    'peer': make_text_button('Peer', lambda: set_node_console_filter('peer'), font_size=16,
-                             bg=NODE_HEADER_BG, fg=IND_WHITE, bd=1, relief=SOLID),
+    'all': make_text_button(
+        'All',
+        lambda: set_node_console_filter('all'),
+        font_size=16,
+        bg=IND_WHITE,
+        fg=IND_BLACK,
+        bd=1,
+        relief=SOLID,
+    ),
+    'node': make_text_button(
+        'Node',
+        lambda: set_node_console_filter('node'),
+        font_size=16,
+        bg=NODE_HEADER_BG,
+        fg=IND_WHITE,
+        bd=1,
+        relief=SOLID,
+    ),
+    'gossip': make_text_button(
+        'Gossip',
+        lambda: set_node_console_filter('gossip'),
+        font_size=16,
+        bg=NODE_HEADER_BG,
+        fg=IND_WHITE,
+        bd=1,
+        relief=SOLID,
+    ),
+    'peer': make_text_button(
+        'Peer',
+        lambda: set_node_console_filter('peer'),
+        font_size=16,
+        bg=NODE_HEADER_BG,
+        fg=IND_WHITE,
+        bd=1,
+        relief=SOLID,
+    ),
 }
 node_terminal_widgets = (
     node_status_dot,
@@ -1889,10 +2229,18 @@ def place_node_terminal_controls():
     bak.place(x=222 * reso, y=508 * reso, width=150 * reso, height=32 * reso)
     transparency_operator.place(x=222 * reso, y=578 * reso, width=150 * reso, height=32 * reso)
     node_copy_port_button.place(x=302 * reso, y=652 * reso, width=70 * reso, height=26 * reso)
-    node_console_filter_buttons['all'].place(x=746 * reso, y=314 * reso, width=52 * reso, height=26 * reso)
-    node_console_filter_buttons['node'].place(x=806 * reso, y=314 * reso, width=70 * reso, height=26 * reso)
-    node_console_filter_buttons['gossip'].place(x=884 * reso, y=314 * reso, width=82 * reso, height=26 * reso)
-    node_console_filter_buttons['peer'].place(x=974 * reso, y=314 * reso, width=64 * reso, height=26 * reso)
+    node_console_filter_buttons['all'].place(
+        x=746 * reso, y=314 * reso, width=52 * reso, height=26 * reso
+    )
+    node_console_filter_buttons['node'].place(
+        x=806 * reso, y=314 * reso, width=70 * reso, height=26 * reso
+    )
+    node_console_filter_buttons['gossip'].place(
+        x=884 * reso, y=314 * reso, width=82 * reso, height=26 * reso
+    )
+    node_console_filter_buttons['peer'].place(
+        x=974 * reso, y=314 * reso, width=64 * reso, height=26 * reso
+    )
     node_console_copy_button.place(x=1046 * reso, y=314 * reso, width=58 * reso, height=26 * reso)
     node_console_clear_button.place(x=1112 * reso, y=314 * reso, width=58 * reso, height=26 * reso)
     node_console_log.place(x=434 * reso, y=370 * reso, width=724 * reso, height=370 * reso)
@@ -1931,11 +2279,23 @@ def make_settings_entry(font_size=17):
 
 def make_settings_option(variable, *values, font_size=17):
     option = OptionMenu(root, variable, *values)
-    option.config(font=app_font(font_size, 'bold'), cursor='hand2', bg=IND_BLACK, fg=IND_WHITE,
-                  activebackground=IND_WHITE, activeforeground=IND_BLACK, highlightthickness=0)
+    option.config(
+        font=app_font(font_size, 'bold'),
+        cursor='hand2',
+        bg=IND_BLACK,
+        fg=IND_WHITE,
+        activebackground=IND_WHITE,
+        activeforeground=IND_BLACK,
+        highlightthickness=0,
+    )
     menu = root.nametowidget(option.menuname)
-    menu.config(font=app_font(15), bg=IND_BLACK, fg=IND_WHITE, activebackground=IND_WHITE,
-                activeforeground=IND_BLACK)
+    menu.config(
+        font=app_font(15),
+        bg=IND_BLACK,
+        fg=IND_WHITE,
+        activebackground=IND_WHITE,
+        activeforeground=IND_BLACK,
+    )
     return option
 
 
@@ -1957,7 +2317,7 @@ def _set_entry_value(widget, value):
 def _set_node_port_value(widget, settings):
     configured_port = int(settings.get('node_port') or 0)
     if configured_port == 0:
-        _set_entry_value(widget, 'AUTO (%s)' % ind_settings.node_port(settings))
+        _set_entry_value(widget, f"AUTO ({ind_settings.node_port(settings)})")
     else:
         _set_entry_value(widget, configured_port)
 
@@ -2018,9 +2378,13 @@ settings_network = make_settings_option(settings_network_var, 'MAINNET', 'TESTNE
 settings_require_log_var = StringVar(root)
 settings_require_log = make_settings_option(settings_require_log_var, 'YES', 'NO')
 settings_security_profile_var = StringVar(root)
-settings_security_profile = make_settings_option(settings_security_profile_var, 'DEVELOPMENT', 'PRODUCTION')
+settings_security_profile = make_settings_option(
+    settings_security_profile_var, 'DEVELOPMENT', 'PRODUCTION'
+)
 settings_allow_untrusted_genesis_var = StringVar(root)
-settings_allow_untrusted_genesis = make_settings_option(settings_allow_untrusted_genesis_var, 'NO', 'YES')
+settings_allow_untrusted_genesis = make_settings_option(
+    settings_allow_untrusted_genesis_var, 'NO', 'YES'
+)
 settings_root_gossip_var = StringVar(root)
 settings_root_gossip = make_settings_option(settings_root_gossip_var, 'YES', 'NO')
 settings_update_check_var = StringVar(root)
@@ -2043,7 +2407,9 @@ def load_security_settings_form():
     _set_entry_value(settings_root_lag_entry, settings['max_root_lag_seconds'])
     _set_entry_value(settings_min_mirrors_entry, settings['min_root_mirrors'])
     _set_entry_value(settings_max_current_root_age_entry, settings['max_current_root_age_seconds'])
-    _set_entry_value(settings_current_root_future_skew_entry, settings['current_root_future_skew_seconds'])
+    _set_entry_value(
+        settings_current_root_future_skew_entry, settings['current_root_future_skew_seconds']
+    )
     _set_entry_value(settings_update_source_entry, settings['update_source'])
     settings_network_var.set(settings['network'].upper())
     settings_require_log_var.set(_bool_label(settings['require_transparency_log']))
@@ -2064,30 +2430,34 @@ def collect_security_settings_form():
     node_port_value = settings_node_port_entry.get().strip()
     if node_port_value.upper().startswith('AUTO'):
         node_port_value = '0'
-    settings.update({
-        'network': settings_network_var.get().strip().lower(),
-        'node_port': node_port_value,
-        'peer_ping_servers': _text_lines(settings_peer_servers),
-        'dns_seed_hosts': _text_lines(settings_dns_seed_hosts),
-        'trusted_root_domains': _text_lines(settings_root_domains),
-        'trusted_root_mirrors': _text_lines(settings_root_mirrors),
-        'trusted_genesis_issuer_keys': _text_lines(settings_genesis_issuer_keys),
-        'trusted_genesis_manifest_hashes': _text_lines(settings_genesis_manifest_hashes),
-        'transparency_operator_url': settings_operator_url_entry.get().strip(),
-        'transparency_operator_public_key': '\n'.join(_text_lines(settings_operator_key)).strip(),
-        'require_transparency_log': _option_bool(settings_require_log_var),
-        'security_profile': settings_security_profile_var.get().strip().lower(),
-        'allow_untrusted_genesis': _option_bool(settings_allow_untrusted_genesis_var),
-        'min_root_mirrors': settings_min_mirrors_entry.get().strip(),
-        'max_root_lag_seconds': settings_root_lag_entry.get().strip(),
-        'max_current_root_age_seconds': settings_max_current_root_age_entry.get().strip(),
-        'current_root_future_skew_seconds': settings_current_root_future_skew_entry.get().strip(),
-        'transparency_root_gossip': _option_bool(settings_root_gossip_var),
-        'finality_buffer_seconds': settings_finality_entry.get().strip(),
-        'peer_request_timeout_seconds': settings_timeout_entry.get().strip(),
-        'update_source': settings_update_source_entry.get().strip(),
-        'update_check_on_startup': _option_bool(settings_update_check_var),
-    })
+    settings.update(
+        {
+            'network': settings_network_var.get().strip().lower(),
+            'node_port': node_port_value,
+            'peer_ping_servers': _text_lines(settings_peer_servers),
+            'dns_seed_hosts': _text_lines(settings_dns_seed_hosts),
+            'trusted_root_domains': _text_lines(settings_root_domains),
+            'trusted_root_mirrors': _text_lines(settings_root_mirrors),
+            'trusted_genesis_issuer_keys': _text_lines(settings_genesis_issuer_keys),
+            'trusted_genesis_manifest_hashes': _text_lines(settings_genesis_manifest_hashes),
+            'transparency_operator_url': settings_operator_url_entry.get().strip(),
+            'transparency_operator_public_key': '\n'.join(
+                _text_lines(settings_operator_key)
+            ).strip(),
+            'require_transparency_log': _option_bool(settings_require_log_var),
+            'security_profile': settings_security_profile_var.get().strip().lower(),
+            'allow_untrusted_genesis': _option_bool(settings_allow_untrusted_genesis_var),
+            'min_root_mirrors': settings_min_mirrors_entry.get().strip(),
+            'max_root_lag_seconds': settings_root_lag_entry.get().strip(),
+            'max_current_root_age_seconds': settings_max_current_root_age_entry.get().strip(),
+            'current_root_future_skew_seconds': settings_current_root_future_skew_entry.get().strip(),
+            'transparency_root_gossip': _option_bool(settings_root_gossip_var),
+            'finality_buffer_seconds': settings_finality_entry.get().strip(),
+            'peer_request_timeout_seconds': settings_timeout_entry.get().strip(),
+            'update_source': settings_update_source_entry.get().strip(),
+            'update_check_on_startup': _option_bool(settings_update_check_var),
+        }
+    )
     return settings
 
 
@@ -2097,8 +2467,8 @@ def save_security_settings_form(show_message=True):
         load_security_settings_form()
         if show_message:
             _set_settings_status(
-                'Saved. Bills settle after %s seconds; %s Merkle mirror(s) required.'
-                % (settings['finality_buffer_seconds'], settings['min_root_mirrors']),
+                f"Saved. Bills settle after {settings['finality_buffer_seconds']} seconds; "
+                f"{settings['min_root_mirrors']} Merkle mirror(s) required.",
                 IND_GREEN,
             )
         return settings
@@ -2112,7 +2482,7 @@ def reset_security_settings_form():
         settings = ind_settings.reset_security_settings()
         load_security_settings_form()
         _set_settings_status(
-            'Reset to defaults. Bills settle after %s seconds.' % settings['finality_buffer_seconds'],
+            f"Reset to defaults. Bills settle after {settings['finality_buffer_seconds']} seconds.",
             IND_ORANGE,
         )
     except Exception as exc:
@@ -2141,7 +2511,9 @@ def ping_security_servers():
 
         def finish():
             settings_ping_button.config(cursor='hand2')
-            _set_ping_status('\n'.join(results), IND_GREEN if any('OK' in row for row in results) else IND_ORANGE)
+            _set_ping_status(
+                '\n'.join(results), IND_GREEN if any('OK' in row for row in results) else IND_ORANGE
+            )
 
         root.after(0, finish)
 
@@ -2152,15 +2524,14 @@ def _short_update_rev(rev):
     return rev[:12] if rev else 'unknown'
 
 
+# Check the configured update source and offer an install when safe.
 def run_manual_update_check():
-    """Check the configured update source and offer an install when safe."""
-
     settings = save_security_settings_form(show_message=False)
     if settings is None:
         _set_update_status('Save failed; update not checked.', IND_RED)
         return
     settings_update_button.config(cursor='watch')
-    _set_update_status('Checking %s...' % settings['update_source'], IND_MUTED)
+    _set_update_status(f"Checking {settings['update_source']}...", IND_MUTED)
 
     def worker():
         try:
@@ -2185,14 +2556,17 @@ def run_manual_update_check():
             return
 
         details = (
-            'Source: %s\nBranch: %s\nCurrent: %s\nLatest: %s'
-            % (info.source, info.upstream_ref, _short_update_rev(info.local_rev), _short_update_rev(info.remote_rev))
+            f"Source: {info.source}\n"
+            f"Branch: {info.upstream_ref}\n"
+            f"Current: {_short_update_rev(info.local_rev)}\n"
+            f"Latest: {_short_update_rev(info.remote_rev)}"
         )
         if info.dirty:
             # Auto-update should not overwrite a checkout with local edits.
             messagebox.showwarning(
                 'International Dollar update available',
-                details + '\n\nLocal files have changes, so the update will not be installed automatically.',
+                details
+                + '\n\nLocal files have changes, so the update will not be installed automatically.',
             )
             _set_update_status('Update available, but local files have changes.', IND_ORANGE)
             return
@@ -2204,7 +2578,9 @@ def run_manual_update_check():
             )
             _set_update_status('Update available, but local branch is ahead.', IND_ORANGE)
             return
-        if not messagebox.askyesno('International Dollar update available', details + '\n\nInstall this update now?'):
+        if not messagebox.askyesno(
+            'International Dollar update available', details + '\n\nInstall this update now?'
+        ):
             _set_update_status('Update available. Install skipped.', IND_ORANGE)
             return
         settings_update_button.config(cursor='watch')
@@ -2220,24 +2596,45 @@ def run_manual_update_check():
         settings_update_button.config(cursor='hand2')
         if not result.success:
             _set_update_status('Update failed: ' + (result.error or 'unknown error'), IND_RED)
-            messagebox.showerror('Update failed', result.error or 'The update could not be installed.')
+            messagebox.showerror(
+                'Update failed', result.error or 'The update could not be installed.'
+            )
             return
-        summary = 'Updated from %s to %s.' % (_short_update_rev(result.old_rev), _short_update_rev(result.new_rev))
+        summary = (
+            f"Updated from {_short_update_rev(result.old_rev)} "
+            f"to {_short_update_rev(result.new_rev)}."
+        )
         _set_update_status(summary, IND_GREEN)
-        if messagebox.askyesno('Update installed', summary + '\n\nRestart now to use the new version?'):
+        if messagebox.askyesno(
+            'Update installed', summary + '\n\nRestart now to use the new version?'
+        ):
             restart_after_update()
 
     threading.Thread(target=worker, name='INDManualUpdateCheck', daemon=True).start()
 
 
-settings_save_button = make_text_button('Save', save_security_settings_form, font_size=24, bg=IND_GREEN)
-settings_reset_button = make_text_button('Reset', reset_security_settings_form, font_size=24, bg=IND_ORANGE)
-settings_ping_button = make_text_button('Ping', ping_security_servers, font_size=22, bg=IND_BLACK,
-                                        fg=IND_WHITE, bd=1, relief=SOLID)
-settings_update_button = make_text_button('Update', run_manual_update_check, font_size=24, bg=IND_GREEN)
+settings_save_button = make_text_button(
+    'Save', save_security_settings_form, font_size=24, bg=IND_GREEN
+)
+settings_reset_button = make_text_button(
+    'Reset', reset_security_settings_form, font_size=24, bg=IND_ORANGE
+)
+settings_ping_button = make_text_button(
+    'Ping', ping_security_servers, font_size=22, bg=IND_BLACK, fg=IND_WHITE, bd=1, relief=SOLID
+)
+settings_update_button = make_text_button(
+    'Update', run_manual_update_check, font_size=24, bg=IND_GREEN
+)
 settings_tab_buttons = {
-    tab_key: make_text_button(label, lambda key=tab_key: set_settings_tab(key), font_size=22,
-                              bg=IND_BLACK, fg=IND_WHITE, bd=1, relief=SOLID)
+    tab_key: make_text_button(
+        label,
+        lambda key=tab_key: set_settings_tab(key),
+        font_size=22,
+        bg=IND_BLACK,
+        fg=IND_WHITE,
+        bd=1,
+        relief=SOLID,
+    )
     for tab_key, label in SETTINGS_TABS
 }
 settings_widgets = (
@@ -2323,16 +2720,38 @@ def place_settings_tab_widgets():
         place_scaled(settings_finality_entry, SETTINGS_ROW_COLS[0], SETTINGS_TOP_FIELD_Y, 130, 38)
         place_scaled(settings_require_log, SETTINGS_ROW_COLS[1], SETTINGS_TOP_FIELD_Y, 110, 38)
         place_scaled(settings_security_profile, SETTINGS_ROW_COLS[2], SETTINGS_TOP_FIELD_Y, 160, 38)
-        place_scaled(settings_allow_untrusted_genesis, SETTINGS_ROW_COLS[3], SETTINGS_TOP_FIELD_Y, 110, 38)
-        place_scaled(settings_genesis_issuer_keys, SETTINGS_TWO_COL_LEFT, SETTINGS_BOTTOM_FIELD_Y,
-                     SETTINGS_TWO_COL_WIDTH, 190)
-        place_scaled(settings_genesis_manifest_hashes, SETTINGS_TWO_COL_RIGHT, SETTINGS_BOTTOM_FIELD_Y,
-                     SETTINGS_TWO_COL_WIDTH, 190)
+        place_scaled(
+            settings_allow_untrusted_genesis, SETTINGS_ROW_COLS[3], SETTINGS_TOP_FIELD_Y, 110, 38
+        )
+        place_scaled(
+            settings_genesis_issuer_keys,
+            SETTINGS_TWO_COL_LEFT,
+            SETTINGS_BOTTOM_FIELD_Y,
+            SETTINGS_TWO_COL_WIDTH,
+            190,
+        )
+        place_scaled(
+            settings_genesis_manifest_hashes,
+            SETTINGS_TWO_COL_RIGHT,
+            SETTINGS_BOTTOM_FIELD_Y,
+            SETTINGS_TWO_COL_WIDTH,
+            190,
+        )
     elif settings_active_tab == SETTINGS_TAB_TRANSPARENCY:
-        place_scaled(settings_operator_url_entry, SETTINGS_TWO_COL_LEFT, SETTINGS_TOP_FIELD_Y,
-                     SETTINGS_TWO_COL_WIDTH, 38)
-        place_scaled(settings_operator_key, SETTINGS_TWO_COL_RIGHT, SETTINGS_TOP_FIELD_Y,
-                     SETTINGS_TWO_COL_WIDTH, 38)
+        place_scaled(
+            settings_operator_url_entry,
+            SETTINGS_TWO_COL_LEFT,
+            SETTINGS_TOP_FIELD_Y,
+            SETTINGS_TWO_COL_WIDTH,
+            38,
+        )
+        place_scaled(
+            settings_operator_key,
+            SETTINGS_TWO_COL_RIGHT,
+            SETTINGS_TOP_FIELD_Y,
+            SETTINGS_TWO_COL_WIDTH,
+            38,
+        )
         place_scaled(settings_root_domains, SETTINGS_CONTENT_X, SETTINGS_BOTTOM_FIELD_Y, 240, 142)
         place_scaled(settings_root_mirrors, 354, SETTINGS_BOTTOM_FIELD_Y, 240, 142)
         place_scaled(settings_min_mirrors_entry, 620, SETTINGS_BOTTOM_FIELD_Y, 64, 38)
@@ -2341,7 +2760,9 @@ def place_settings_tab_widgets():
         place_scaled(settings_root_gossip, 902, SETTINGS_BOTTOM_FIELD_Y, 86, 38)
         place_scaled(settings_current_root_future_skew_entry, 1010, SETTINGS_BOTTOM_FIELD_Y, 70, 38)
     elif settings_active_tab == SETTINGS_TAB_UPDATES:
-        place_scaled(settings_update_source_entry, SETTINGS_CONTENT_X, SETTINGS_TOP_FIELD_Y, 628, 40)
+        place_scaled(
+            settings_update_source_entry, SETTINGS_CONTENT_X, SETTINGS_TOP_FIELD_Y, 628, 40
+        )
         place_scaled(settings_update_button, 744, SETTINGS_TOP_FIELD_Y, 180, 40)
         place_scaled(settings_update_check, 988, SETTINGS_TOP_FIELD_Y, 110, 40)
         place_scaled(settings_update_status, SETTINGS_CONTENT_X, SETTINGS_BOTTOM_FIELD_Y, 998, 190)
@@ -2363,13 +2784,16 @@ def set_settings_tab(tab_key):
 
 
 a = Entry(root, font=app_font(20), bg='light grey')
-receiver_history = Text(root, font=app_font(18), bg='black', fg='light grey', bd=0, highlightthickness=0)
+receiver_history = Text(
+    root, font=app_font(18), bg='black', fg='light grey', bd=0, highlightthickness=0
+)
 receiver_history.bind("<Key>", lambda e: "break")
 
-def write_transfer_announcement(wallet_lines, wallet_bill_line, recipient_address):
-    """Spend one locally stored bill and queue its transfer announcement."""
 
+# Spend one locally stored bill and queue its transfer announcement.
+def write_transfer_announcement(wallet_lines, wallet_bill_line, recipient_address):
     return wallet_services.spend_wallet_bill(wallet_lines, wallet_bill_line, recipient_address)
+
 
 address_to_charge = []
 
@@ -2403,6 +2827,8 @@ def set_print_status(message, color=IND_MUTED):
         print_status_label.config(text=message, fg=color)
     except Exception:
         log_ignored_exception()
+
+
 def set_print_charge_ready(ready):
     try:
         charge_bills_button.config(
@@ -2412,13 +2838,17 @@ def set_print_charge_ready(ready):
         )
     except Exception:
         log_ignored_exception()
+
+
 def refresh_print_summary(event=None):
     try:
         count = len(print_selected_bill_ids())
         total = print_selection_total()
         print_summary_label.config(text=f'{total}$\n{count} bill' + ('' if count == 1 else 's'))
         page_count = print_estimated_page_count(count)
-        print_pages_label.config(text=f'{page_count} page' + ('' if page_count == 1 else 's') + '\nestimated')
+        print_pages_label.config(
+            text=f'{page_count} page' + ('' if page_count == 1 else 's') + '\nestimated'
+        )
         print_full_radio.config(fg=IND_WHITE if print_output_mode.get() == 'full' else IND_MUTED)
         print_qr_radio.config(fg=IND_WHITE if print_output_mode.get() == 'qr' else IND_MUTED)
     except Exception:
@@ -2428,10 +2858,14 @@ def refresh_print_summary(event=None):
             selected_bills_text.edit_modified(False)
     except Exception:
         log_ignored_exception()
+
+
 def reset_print_actions():
     button_print.config(state=NORMAL, cursor='hand2')
     set_print_charge_ready(False)
-    set_print_status('PDF is generated first. Charge sends funds to the printed paper-wallet addresses after printing.')
+    set_print_status(
+        'PDF is generated first. Charge sends funds to the printed paper-wallet addresses after printing.'
+    )
 
 
 def select_all_print_bills():
@@ -2468,18 +2902,16 @@ def on_print_selection_modified(event):
     refresh_print_summary(event)
 
 
+# Route the print action to the selected paper-bill output format.
 def print_selected_output():
-    """Route the print action to the selected paper-bill output format."""
-
     if print_output_mode.get() == 'qr':
         print_only_qr()
     else:
         print_bills()
 
 
+# Send selected printed bills to the generated paper-wallet addresses.
 def charge_bills():
-    """Send selected printed bills to the generated paper-wallet addresses."""
-
     root.config(cursor='watch')
     charge_bills_button.config(cursor='watch')
     sent_count = 0
@@ -2490,7 +2922,9 @@ def charge_bills():
         if not list_sm:
             raise ValueError("No printed bills are selected.")
         if len(address_to_charge) < len(list_sm):
-            raise ValueError("Printed bill addresses are missing. Print the bills again before charging them.")
+            raise ValueError(
+                "Printed bill addresses are missing. Print the bills again before charging them."
+            )
         for wallet_path in runtime_json.iter_decrypted_wallet_files():
             if wallet_path.name.startswith('wallet_decrypted'):
                 of = runtime_json.read_decrypted_wallet_lines(wallet_path)
@@ -2500,10 +2934,20 @@ def charge_bills():
                     if parts and parts[0] in list_sm:
                         index_item = list_sm.index(parts[0])
                         try:
-                            state = write_transfer_announcement(of, wb, address_to_charge[index_item])
+                            state = write_transfer_announcement(
+                                of, wb, address_to_charge[index_item]
+                            )
                             if not state:
                                 raise RuntimeError("bill is not spendable or is not settled")
-                            updated.append('-' + parts[0] + ' ' + str(state.sequence) + ' ' + str(int(time.time())) + '\n')
+                            updated.append(
+                                '-'
+                                + parts[0]
+                                + ' '
+                                + str(state.sequence)
+                                + ' '
+                                + str(int(time.time()))
+                                + '\n'
+                            )
                             sent_count += 1
                         except Exception as exc:
                             errors.append(f"{parts[0]}: {error_detail(exc)}")
@@ -2530,6 +2974,7 @@ def charge_bills():
             set_print_charge_ready(False)
         refresh_print_summary()
 
+
 def selected_print_bill_sequences():
     if len(selected_bills_text.get(1.0, END)) <= 2:
         set_print_status('Select at least one bill before creating a PDF.', IND_ORANGE)
@@ -2547,6 +2992,7 @@ def selected_print_bill_sequences():
     return list_bills_2
 
 
+# Run PDF generation off the Tk thread and unlock charging after a delay.
 def start_print_pdf_job(
     print_method_name,
     creating_status,
@@ -2555,8 +3001,6 @@ def start_print_pdf_job(
     ready_status,
     extra_busy_buttons=(),
 ):
-    """Run PDF generation off the Tk thread and unlock charging after a delay."""
-
     list_bills_2 = selected_print_bill_sequences()
     if list_bills_2 is None:
         return
@@ -2601,9 +3045,8 @@ def start_print_pdf_job(
     threading.Thread(target=t, daemon=True).start()
 
 
+# Create full paper-bill PDF output for the selected spendable bills.
 def print_bills():
-    """Create full paper-bill PDF output for the selected spendable bills."""
-
     start_print_pdf_job(
         'full_bill',
         'Creating full bill PDF...',
@@ -2613,9 +3056,8 @@ def print_bills():
     )
 
 
+# Create a QR-only paper-bill PDF containing private keys for offline custody.
 def print_only_qr():
-    """Create a QR-only paper-bill PDF containing private keys for offline custody."""
-
     start_print_pdf_job(
         'only_qr',
         'Creating QR-only PDF...',
@@ -2627,11 +3069,22 @@ def print_only_qr():
 
 
 print_output_mode = StringVar(root, value='full')
-button_print = make_text_button('Create PDF', print_selected_output, font_size=22, font_weight='bold', bg=IND_GREEN)
-button_only_qr = make_text_button('QR only', print_only_qr, font_size=18, bg='#111616', fg=IND_WHITE, bd=1,
-                                  relief=SOLID)
-print_select_all_button = make_text_button('Select all', select_all_print_bills, font_size=15, font_weight='bold',
-                                           bg='#0b1813', fg='#c9ffe3', bd=1, relief=SOLID)
+button_print = make_text_button(
+    'Create PDF', print_selected_output, font_size=22, font_weight='bold', bg=IND_GREEN
+)
+button_only_qr = make_text_button(
+    'QR only', print_only_qr, font_size=18, bg='#111616', fg=IND_WHITE, bd=1, relief=SOLID
+)
+print_select_all_button = make_text_button(
+    'Select all',
+    select_all_print_bills,
+    font_size=15,
+    font_weight='bold',
+    bg='#0b1813',
+    fg='#c9ffe3',
+    bd=1,
+    relief=SOLID,
+)
 all_bills_text = Text(
     root,
     font=app_font(16),
@@ -2742,23 +3195,36 @@ asl_text = Label(
     highlightthickness=0,
     anchor='w',
 )
-charge_bills_button = make_text_button('Charge after PDF', charge_bills, font_size=15, font_weight='bold',
-                                       bg='#35180f', fg='#ffd3c6', bd=1, relief=SOLID)
+charge_bills_button = make_text_button(
+    'Charge after PDF',
+    charge_bills,
+    font_size=15,
+    font_weight='bold',
+    bg='#35180f',
+    fg='#ffd3c6',
+    bd=1,
+    relief=SOLID,
+)
 charge_bills_button.config(state=DISABLED, disabledforeground='#ffd3c6')
 
 
 # Header navigation callbacks.
 def node_terminal_button():
     close()
-    button.config(bg='white', fg='black'),button2.config(bg='black', fg='white'), button3.config(bg='black', fg='white')
+    button.config(bg='white', fg='black'), button2.config(bg='black', fg='white'), button3.config(
+        bg='black', fg='white'
+    )
     button4.config(bg='black', fg='white'), button_log_in.config(bg='black', fg='black')
     button_settings.config(bg='black', fg='white')
     place_node_terminal_controls()
 
+
 def sign_in_button():
     close()
-    button.config(bg='black', fg='white'),button2.config(bg='black', fg='white'),button3.config(bg='black', fg='white')
-    button4.config(bg='black', fg='white'),button_log_in.config(bg='white', fg='black')
+    button.config(bg='black', fg='white'), button2.config(bg='black', fg='white'), button3.config(
+        bg='black', fg='white'
+    )
+    button4.config(bg='black', fg='white'), button_log_in.config(bg='white', fg='black')
     button_settings.config(bg='black', fg='white')
     button_generate_wallet.config(bg='black', fg='white')
     place_sign_in_control(button_log_in, 609, 196, 322, 57)
@@ -2769,18 +3235,23 @@ def sign_in_button():
     place_sign_in_control(button_show, 765, 500, 60, 50)
     sign_in.place(x=0, y=0)
 
+
 def info_button():
     close()
-    button.config(bg='black', fg='white'),button2.config(bg='white', fg='black'),button3.config(bg='black', fg='white')
+    button.config(bg='black', fg='white'), button2.config(bg='white', fg='black'), button3.config(
+        bg='black', fg='white'
+    )
     button4.config(bg='black', fg='white')
     button_settings.config(bg='black', fg='white')
     info.place(x=0, y=0)
 
-def print_page_button():
-    """Show the print workflow and load the currently spendable wallet bills."""
 
+# Show the print workflow and load the currently spendable wallet bills.
+def print_page_button():
     close()
-    button.config(bg='black', fg='white'),button4.config(bg='black', fg='white'),button2.config(bg='black', fg='white')
+    button.config(bg='black', fg='white'), button4.config(bg='black', fg='white'), button2.config(
+        bg='black', fg='white'
+    )
     button3.config(bg='white', fg='black')
     button_settings.config(bg='black', fg='white')
     print_page.place(x=0, y=0)
@@ -2855,23 +3326,30 @@ def print_page_button():
         log_ignored_exception()
     reset_print_actions()
     refresh_print_summary()
-    
-def wallet_button():
-    """Show the wallet page and refresh balance, bill buttons, and receive QR."""
 
+
+# Show the wallet page and refresh balance, bill buttons, and receive QR.
+def wallet_button():
     close()
     ensure_bill_images()
     refresh_bill_buttons()
-    button.config(bg='black', fg='white'),button2.config(bg='black', fg='white'),button3.config(bg='black', fg='white')
+    button.config(bg='black', fg='white'), button2.config(bg='black', fg='white'), button3.config(
+        bg='black', fg='white'
+    )
     button4.config(bg='white', fg='black'), button_settings.config(bg='black', fg='white')
     plus_bills_button.place(x=435 * reso, y=725 * reso, width=275 * reso, height=30 * reso)
-    receiver.place(x=853 * reso, y=(213 + WALLET_SEND_Y_OFFSET) * reso, width=343 * reso, height=36 * reso)
-    send.place(x=1075 * reso, y=(340 + WALLET_SEND_Y_OFFSET) * reso, width=120 * reso, height=34 * reso)
+    receiver.place(
+        x=853 * reso, y=(213 + WALLET_SEND_Y_OFFSET) * reso, width=343 * reso, height=36 * reso
+    )
+    send.place(
+        x=1075 * reso, y=(340 + WALLET_SEND_Y_OFFSET) * reso, width=120 * reso, height=34 * reso
+    )
     b.place(x=340 * reso, y=187 * reso, width=480 * reso, height=60 * reso)
     balance_top.place(x=660 * reso, y=30 * reso, width=450 * reso, height=40 * reso)
     frame_w.place(x=18 * reso, y=170 * reso, width=305 * reso, height=595 * reso)
-    close_amount_button.place(x=1157 * reso, y=(299 + WALLET_SEND_Y_OFFSET) * reso, width=32 * reso,
-                              height=30 * reso)
+    close_amount_button.place(
+        x=1157 * reso, y=(299 + WALLET_SEND_Y_OFFSET) * reso, width=32 * reso, height=30 * reso
+    )
     receiver_button.place(x=747 * reso, y=190 * reso, width=52 * reso, height=52 * reso)
     a.place(x=853 * reso, y=(295 + WALLET_SEND_Y_OFFSET) * reso, width=343 * reso, height=36 * reso)
     next_button.place(x=720 * reso, y=730 * reso, width=80 * reso, height=22 * reso)
@@ -2892,21 +3370,24 @@ def wallet_button():
         address_txt.lift()
     except Exception:
         log_ignored_exception()
-def settings_button():
-    """Show settings, then load persisted values into the active tab widgets."""
 
+
+# Show settings, then load persisted values into the active tab widgets.
+def settings_button():
     close()
-    button.config(bg='black', fg='white'),button2.config(bg='black', fg='white'),button3.config(bg='black', fg='white')
+    button.config(bg='black', fg='white'), button2.config(bg='black', fg='white'), button3.config(
+        bg='black', fg='white'
+    )
     button4.config(bg='black', fg='white'), button_settings.config(bg='white', fg='black')
     load_security_settings_form()
     settings_page.place(x=0, y=0)
     refresh_settings_widgets()
 
-def generate_wallet_button():
-    """Switch the sign-in panel into the wallet-generation form."""
 
-    button_show.place_forget(),enter_key.place_forget(),log_in_button2.place_forget()
-    enter_address.place_forget(),sign_in.place_forget()
+# Switch the sign-in panel into the wallet-generation form.
+def generate_wallet_button():
+    button_show.place_forget(), enter_key.place_forget(), log_in_button2.place_forget()
+    enter_address.place_forget(), sign_in.place_forget()
     button_generate_wallet.config(bg='white', fg='black')
     button_log_in.config(bg='black', fg='white')
     place_sign_in_control(
@@ -2927,7 +3408,9 @@ def generate_wallet_button():
         public_key,
         GENERATE_WALLET_FIELD_X,
         GENERATE_WALLET_PUBLIC_KEY_Y,
-        GENERATE_WALLET_FIELD_WIDTH + GENERATE_WALLET_BUTTON_GAP + GENERATE_WALLET_SIDE_BUTTON_WIDTH,
+        GENERATE_WALLET_FIELD_WIDTH
+        + GENERATE_WALLET_BUTTON_GAP
+        + GENERATE_WALLET_SIDE_BUTTON_WIDTH,
         GENERATE_WALLET_KEY_FIELD_HEIGHT,
     )
     place_sign_in_control(
@@ -2967,10 +3450,12 @@ def generate_wallet_button():
     )
     generate_wallet.place(x=0, y=0)
 
-tf_text = Text(font=app_font(28), bg='black', fg='white', bd=0)
-def transfer_wallet():
-    """Reveal a full-wallet transfer QR after a delay because it contains private keys."""
 
+tf_text = Text(font=app_font(28), bg='black', fg='white', bd=0)
+
+
+# Reveal a full-wallet transfer QR after a delay because it contains private keys.
+def transfer_wallet():
     global wallet_qr_mode, wallet_qr_warning_after_id
     try:
         if not ensure_wallet_qr():
@@ -2978,8 +3463,9 @@ def transfer_wallet():
         cancel_wallet_qr_warning_timer()
         wallet_lines, _ = update_wallet()
         data_wallet = ''.join(wallet_lines[:3])
-        wallet_qr = qrcode.QRCode(version=1, box_size=4, border=1,
-                                  error_correction=qrcode.constants.ERROR_CORRECT_L)
+        wallet_qr = qrcode.QRCode(
+            version=1, box_size=4, border=1, error_correction=qrcode.constants.ERROR_CORRECT_L
+        )
         wallet_qr.add_data(data_wallet)
         wqr_security_img = ImageTk.PhotoImage(Image.new('RGB', (px(250), px(250)), 'white'))
         qr.wqr_security_img = wqr_security_img
@@ -3032,6 +3518,7 @@ def transfer_wallet():
         lambda: update_warning_countdown(TRANSFER_WALLET_REVEAL_SECONDS - 1),
     )
 
+
 def receive_qr():
     global wallet_qr_mode
     cancel_wallet_qr_warning_timer()
@@ -3042,9 +3529,13 @@ def receive_qr():
     if ensure_wallet_qr():
         qr.config(image=qr_img, text='', compound='none')
 
-tf_button = make_asset_button('different_buttons', 'tf_button', transfer_wallet, 'TX', font_size=16,
-                              bg=IND_BLACK)
-r_button = make_asset_button('different_buttons', 'r_button', receive_qr, 'QR', font_size=16, bg=IND_BLACK)
+
+tf_button = make_asset_button(
+    'different_buttons', 'tf_button', transfer_wallet, 'TX', font_size=16, bg=IND_BLACK
+)
+r_button = make_asset_button(
+    'different_buttons', 'r_button', receive_qr, 'QR', font_size=16, bg=IND_BLACK
+)
 
 page_wallet = 1
 place_next_button = 0
@@ -3060,29 +3551,34 @@ def wallet_history_entries():
             if len(parts) < 3:
                 continue
             timestamp = int(parts[2])
-            entries.append({
-                "timestamp": timestamp,
-                "line": parts[0] + '\t\t        ' + str(datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d   %H:%M')),
-                "tag": "sent" if parts[0].startswith('-') else "wallet",
-            })
+            entries.append(
+                {
+                    "timestamp": timestamp,
+                    "line": parts[0]
+                    + '\t\t        '
+                    + str(datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d   %H:%M')),
+                    "tag": "sent" if parts[0].startswith('-') else "wallet",
+                }
+            )
     except Exception:
         log_ignored_exception()
     try:
         for record in wallet_pending_records():
             timestamp = int(record.get("updated_at") or record.get("first_seen") or time.time())
-            entries.append({
-                "timestamp": timestamp,
-                "line": record["display_id"] + '\t\t        wallet        pending',
-                "tag": "pending",
-            })
+            entries.append(
+                {
+                    "timestamp": timestamp,
+                    "line": record["display_id"] + '\t\t        wallet        pending',
+                    "tag": "pending",
+                }
+            )
     except Exception:
         log_ignored_exception()
     return sorted(entries, key=lambda entry: entry["timestamp"], reverse=True)
 
 
+# Render the current wallet-history page.
 def page():
-    """Render the current wallet-history page."""
-
     global place_next_button, page_wallet
     try:
         receiver_history.delete(1.0, END)
@@ -3101,7 +3597,9 @@ def page():
 
         entries = wallet_history_entries()
         num_of_bills = len(entries)
-        total_pages = max(1, (num_of_bills + WALLET_HISTORY_ROWS_PER_PAGE - 1) // WALLET_HISTORY_ROWS_PER_PAGE)
+        total_pages = max(
+            1, (num_of_bills + WALLET_HISTORY_ROWS_PER_PAGE - 1) // WALLET_HISTORY_ROWS_PER_PAGE
+        )
         if page_wallet > total_pages:
             page_wallet = total_pages
         if page_wallet < 1:
@@ -3118,7 +3616,7 @@ def page():
             previous_button.place_forget()
 
         start_index = (page_wallet - 1) * WALLET_HISTORY_ROWS_PER_PAGE
-        visible_entries = entries[start_index:start_index + WALLET_HISTORY_ROWS_PER_PAGE]
+        visible_entries = entries[start_index : start_index + WALLET_HISTORY_ROWS_PER_PAGE]
         for entry in visible_entries:
             row_start = receiver_history.index(INSERT)
             receiver_history.insert(INSERT, entry["line"] + '\n\n')
@@ -3129,19 +3627,26 @@ def page():
                 receiver_history.tag_add('pending', row_start, row_end)
     except Exception:
         log_ignored_exception()
+
+
 def next_():
     global page_wallet
     page_wallet += 1
     page()
+
+
 def previous():
     global page_wallet
     page_wallet -= 1
     page()
 
 
-next_button = make_asset_button('different_buttons', 'next_button', next_, 'Next', font_size=16, bg=IND_BLACK)
-previous_button = make_asset_button('different_buttons', 'previous_button', previous, 'Back', font_size=16,
-                                    bg=IND_BLACK)
+next_button = make_asset_button(
+    'different_buttons', 'next_button', next_, 'Next', font_size=16, bg=IND_BLACK
+)
+previous_button = make_asset_button(
+    'different_buttons', 'previous_button', previous, 'Back', font_size=16, bg=IND_BLACK
+)
 page()
 
 BILL_VALUES = (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000)
@@ -3173,7 +3678,9 @@ def ensure_bill_images():
             if image_path.exists():
                 width, height = wallet_bill_button_size(value)
                 with Image.open(image_path) as bill_image:
-                    resized = bill_image.convert('RGBA').resize((px(width), px(height)), Image.Resampling.LANCZOS)
+                    resized = bill_image.convert('RGBA').resize(
+                        (px(width), px(height)), Image.Resampling.LANCZOS
+                    )
                 BILL_IMAGES[(value, selected)] = ImageTk.PhotoImage(resized)
     BILL_IMAGES_LOADED = True
 
@@ -3232,8 +3739,10 @@ def configure_bill_button(button, value, remaining, enabled, pending=0):
     else:
         button.config(
             image='',
-            text=bill_button_text(value, remaining) if remaining > 0 else (
-                f'{value:,}$   {pending} Pending' if pending > 0 else ''
+            text=(
+                bill_button_text(value, remaining)
+                if remaining > 0
+                else (f'{value:,}$   {pending} Pending' if pending > 0 else '')
             ),
             compound='none',
             font=app_font(19),
@@ -3244,6 +3753,7 @@ def configure_bill_button(button, value, remaining, enabled, pending=0):
             disabledforeground=IND_PENDING if pending > 0 else IND_MUTED,
         )
 
+
 amount = 0
 pending_bill_counts = {}
 bill_counts = {value: 0 for value in BILL_VALUES}
@@ -3251,9 +3761,8 @@ selected_bill_counts = {value: 0 for value in BILL_VALUES}
 bill_buttons = {}
 
 
+# Refresh wallet counters from locally settled and pending bill records.
 def update_balance():
-    """Refresh wallet counters from locally settled and pending bill records."""
-
     global first_iteration, amount, count_selected, pending_bill_counts, bill_counts
     try:
         spendable_records = wallet_spendable_records()
@@ -3291,12 +3800,16 @@ def update_balance():
     count_selected = False
     start_bills()
 
+
 count_selected = False
+
+
 def amount_config():
     amount_format = f'{amount:,}'
     a.delete(0, END)
     a.insert(0, str(amount_format) + '$')
     a.bind("<Key>", lambda e: "break")
+
 
 def add_bill_value(value):
     global amount, count_selected
@@ -3399,18 +3912,17 @@ w20000 = bill_buttons[20000] = make_bill_button(add_20000)
 w50000 = bill_buttons[50000] = make_bill_button(add_50000)
 w100000 = bill_buttons[100000] = make_bill_button(add_100000)
 
-def start_bills():
-    """Reset denomination buttons to their neutral state before a send selection."""
 
+# Reset denomination buttons to their neutral state before a send selection.
+def start_bills():
     global count_selected
     for value in BILL_VALUES:
         add_bill_value(value)
     count_selected = True
 
 
+# Redraw denomination buttons without changing the current selection state.
 def refresh_bill_buttons():
-    """Redraw denomination buttons without changing the current selection state."""
-
     global count_selected
     was_counting = count_selected
     count_selected = False
@@ -3441,9 +3953,8 @@ w50000.place(x=152 * reso, y=445 * reso, width=149 * reso, height=64 * reso)
 w100000.place(x=152 * reso, y=520 * reso, width=149 * reso, height=64 * reso)
 
 
+# Synchronize wallet-visible bills from local settlement and peer gossip.
 def receive_bills():
-    """Synchronize wallet-visible bills from local settlement and peer gossip."""
-
     root.config(cursor='watch')
     receiver_button.config(cursor='watch')
 
@@ -3469,8 +3980,10 @@ def receive_bills():
 
     threading.Thread(target=worker, daemon=True).start()
 
-receiver_button = make_asset_button('different_buttons', 'reload_button', receive_bills, 'Sync', font_size=16,
-                                    bg=IND_BLACK)
+
+receiver_button = make_asset_button(
+    'different_buttons', 'reload_button', receive_bills, 'Sync', font_size=16, bg=IND_BLACK
+)
 
 # Visibility toggles for masked password/key fields.
 show = 0
@@ -3483,6 +3996,8 @@ def show_key_s():
         enter_key.config(show='')
     else:
         enter_key.config(show='*')
+
+
 show2 = 0
 
 
@@ -3493,6 +4008,8 @@ def show_key_p():
         private_key.config(show='')
     else:
         private_key.config(show='*')
+
+
 show3 = 0
 
 
@@ -3504,22 +4021,25 @@ def show_password():
     else:
         choose_password.config(show='')
 
-def log_in():
-    """Unlock an encrypted wallet into the short-lived desktop session."""
 
+# Unlock an encrypted wallet into the short-lived desktop session.
+def log_in():
     password = enter_key.get()
     unlocked = wallet_decryption.wallet_decrypt(password, address_variable.get())
     enter_key.delete(0, END)
+
     def check_decrypted():
         global decrypted
         for decrypted_wallet in runtime_json.iter_decrypted_wallet_files():
             if decrypted_wallet.name.startswith('wallet_decrypted'):
                 wallet_button()
                 break
+
     if unlocked:
         check_decrypted()
     else:
         messagebox.showerror('Wallet locked', 'That password did not unlock this wallet.')
+
 
 address_variable = StringVar(root)
 options_addr = ['                                                                        ']
@@ -3527,42 +4047,52 @@ for s in runtime_json.iter_encrypted_wallet_files() + runtime_json.iter_decrypte
     wallet_raw = runtime_json.wallet_address_from_name(s.name)
     if wallet_raw not in options_addr:
         options_addr.append(wallet_raw)
-if len(options_addr) == 1:
-    men = 0
-else:
-    men = 1
+men = 0 if len(options_addr) == 1 else 1
 enter_address = OptionMenu(root, address_variable, *options_addr[men:])
 enter_address.config(font=app_font(21, 'bold'), cursor='hand2', bg='black', fg='white')
 eadrr = root.nametowidget(enter_address.menuname)
 eadrr.config(font=app_font(20))
 
 enter_key = Entry(root, font=app_font(26), show='*', bg='light grey')
-log_in_button2 = make_asset_button('different_buttons', 'log_in_button', log_in, 'Sign in', font_size=26,
-                                   bg=IND_GREEN)
-button_show = make_asset_button('different_buttons', 'show_button', show_key_s, 'Show', font_size=16,
-                                bg=IND_WHITE, fg=IND_BLACK)
-button_show3 = make_asset_button('different_buttons', 'show3_button', show_password, 'Show', font_size=16,
-                                 bg=IND_WHITE, fg=IND_BLACK)
+log_in_button2 = make_asset_button(
+    'different_buttons', 'log_in_button', log_in, 'Sign in', font_size=26, bg=IND_GREEN
+)
+button_show = make_asset_button(
+    'different_buttons', 'show_button', show_key_s, 'Show', font_size=16, bg=IND_WHITE, fg=IND_BLACK
+)
+button_show3 = make_asset_button(
+    'different_buttons',
+    'show3_button',
+    show_password,
+    'Show',
+    font_size=16,
+    bg=IND_WHITE,
+    fg=IND_BLACK,
+)
 
+
+# Generate one wallet keypair in a background thread for the sign-up form.
 def gen_ad():
-    """Generate one wallet keypair in a background thread for the sign-up form."""
-
     runtime_json.clear_wallet_generation()
-    generate_address_text.config(state='normal'),public_key.config(state='normal'),private_key.config(state='normal')
-    generate_address_text.delete(0, END),public_key.delete(0, END),private_key.delete(0, END)
+    generate_address_text.config(state='normal'), public_key.config(
+        state='normal'
+    ), private_key.config(state='normal')
+    generate_address_text.delete(0, END), public_key.delete(0, END), private_key.delete(0, END)
     root.config(cursor='watch')
     generate_address_button.config(cursor='watch')
 
     def finish(generated_wallet):
-        runtime_json.write_wallet_generation(generated_wallet[0], generated_wallet[1], generated_wallet[2])
+        runtime_json.write_wallet_generation(
+            generated_wallet[0], generated_wallet[1], generated_wallet[2]
+        )
         ha = runtime_json.wallet_generation_lines()
         h_address = ha[0].strip()
         h_private_key = ha[1].strip()
         h_public_key = ha[2].strip()
-        generate_address_text.insert(0, h_address),public_key.insert(0, h_public_key)
+        generate_address_text.insert(0, h_address), public_key.insert(0, h_public_key)
         private_key.insert(0, h_private_key)
-        generate_address_text.config(state='readonly'),public_key.config(state='readonly')
-        private_key.config(state='readonly'),generate_address_button.config(cursor='hand2')
+        generate_address_text.config(state='readonly'), public_key.config(state='readonly')
+        private_key.config(state='readonly'), generate_address_button.config(cursor='hand2')
         root.config(cursor='arrow')
 
     def fail(exc):
@@ -3573,12 +4103,16 @@ def gen_ad():
     def t():
         try:
             import generate_address as generate_address_module
+
             generated_wallet = generate_address_module.generate_keypair()
         except Exception as exc:
             root.after(0, lambda exc=exc: fail(exc))
             return
         root.after(0, lambda generated_wallet=generated_wallet: finish(generated_wallet))
+
     threading.Thread(target=t, daemon=True).start()
+
+
 SUCCESS_POPUP_DURATION_MS = 7000
 success_popup_hide_after_id = None
 
@@ -3586,10 +4120,8 @@ success_popup_hide_after_id = None
 def hide_success_popup():
     global success_popup_hide_after_id
     if success_popup_hide_after_id is not None:
-        try:
+        with contextlib.suppress(TclError):
             root.after_cancel(success_popup_hide_after_id)
-        except TclError:
-            pass
         success_popup_hide_after_id = None
     success_popup.withdraw()
 
@@ -3605,10 +4137,8 @@ def raise_success_popup():
 
 
 def release_success_topmost():
-    try:
+    with contextlib.suppress(TclError):
         success_popup.attributes('-topmost', False)
-    except TclError:
-        pass
 
 
 def show_success_popup():
@@ -3640,6 +4170,7 @@ def generate_wallet_final():
     sign_in_button()
     show_success_popup()
 
+
 success_popup = Toplevel(root)
 success_popup.withdraw()
 success_popup.overrideredirect(True)
@@ -3660,8 +4191,9 @@ generate_address_text = Entry(
     highlightbackground='#555555',
     highlightcolor=IND_GREEN,
 )
-generate_address_button = make_asset_button('different_buttons', 'generate_address_button', gen_ad, 'Generate',
-                                            font_size=22, bg=IND_GREEN)
+generate_address_button = make_asset_button(
+    'different_buttons', 'generate_address_button', gen_ad, 'Generate', font_size=22, bg=IND_GREEN
+)
 public_key = Entry(
     root,
     font=app_font(18),
@@ -3687,8 +4219,9 @@ private_key = Entry(
     highlightbackground='#555555',
     highlightcolor=IND_GREEN,
 )
-button_show2 = make_asset_button('different_buttons', 'show2_button', show_key_p, 'Show', font_size=16,
-                                 bg='#4d4d4d')
+button_show2 = make_asset_button(
+    'different_buttons', 'show2_button', show_key_p, 'Show', font_size=16, bg='#4d4d4d'
+)
 choose_password = Entry(
     root,
     font=app_font(22),
@@ -3700,17 +4233,41 @@ choose_password = Entry(
     highlightbackground='#555555',
     highlightcolor=IND_GREEN,
 )
-generate_wallet_button2 = make_asset_button('different_buttons', 'generate_wallet_button', generate_wallet_final,
-                                            'Generate Wallet', font_size=24, bg=IND_GREEN)
+generate_wallet_button2 = make_asset_button(
+    'different_buttons',
+    'generate_wallet_button',
+    generate_wallet_final,
+    'Generate Wallet',
+    font_size=24,
+    bg=IND_GREEN,
+)
 
-button_log_in = Button(root, font=app_font(30), text='Sign In', bd=0, highlightthickness=0, cursor='hand2',
-                       bg='black', fg='white', command=sign_in_button)
-button_generate_wallet = Button(root, font=app_font(30), text='Generate Wallet', bd=0, highlightthickness=0,
-                                cursor='hand2', bg='black', fg='white', command=generate_wallet_button)
+button_log_in = Button(
+    root,
+    font=app_font(30),
+    text='Sign In',
+    bd=0,
+    highlightthickness=0,
+    cursor='hand2',
+    bg='black',
+    fg='white',
+    command=sign_in_button,
+)
+button_generate_wallet = Button(
+    root,
+    font=app_font(30),
+    text='Generate Wallet',
+    bd=0,
+    highlightthickness=0,
+    cursor='hand2',
+    bg='black',
+    fg='white',
+    command=generate_wallet_button,
+)
 
+
+# Select wallet bills by denomination and queue signed sends to the receiver.
 def send_bills(serial_num_start):
-    """Select wallet bills by denomination and queue signed sends to the receiver."""
-
     errors = []
     sent_count = 0
     requested = list(serial_num_start)
@@ -3728,7 +4285,15 @@ def send_bills(serial_num_start):
                         state = write_transfer_announcement(of, wb, receiver.get())
                         if not state:
                             raise RuntimeError("bill is not spendable or is not settled")
-                        updated.append('-' + display_id + ' ' + str(state.sequence) + ' ' + str(int(time.time())) + '\n')
+                        updated.append(
+                            '-'
+                            + display_id
+                            + ' '
+                            + str(state.sequence)
+                            + ' '
+                            + str(int(time.time()))
+                            + '\n'
+                        )
                         sent_count += 1
                     except Exception as exc:
                         errors.append(f"{display_id or bill_prefix}: {error_detail(exc)}")
@@ -3749,9 +4314,8 @@ def selected_bill_prefixes():
     return prefixes
 
 
+# Convert the selected UI amount into denomination prefixes and send them.
 def confirm_transaction():
-    """Convert the selected UI amount into denomination prefixes and send them."""
-
     if runtime_json.has_pending_transactions():
         sender_node.send_bills()
 
@@ -3764,6 +4328,7 @@ def confirm_transaction():
     if errors:
         raise RuntimeError("\n".join(errors))
     receiver.delete(0, END)
+
 
 def send_button():
     root.config(cursor='watch')
@@ -3788,9 +4353,8 @@ def send_button():
         refresh_wallet_view()
 
 
+# Hide all page-level widgets before showing the next desktop view.
 def close():
-    """Hide all page-level widgets before showing the next desktop view."""
-
     try:
         if globals().get('cap') is not None or globals().get('num_of_times_clicked'):
             stop_qr_scan()
@@ -3805,10 +4369,10 @@ def close():
     claim_count_label.place_forget()
     hide_scanned_serials_list()
     hide_claim_background_overlay()
-    claim_bill.place_forget(),close_button.place_forget(), next_button.place_forget(), end_button.place_forget()
+    claim_bill.place_forget(), close_button.place_forget(), next_button.place_forget(), end_button.place_forget()
     serial_num.place_forget(), public_key_entry.place_forget(), check_validity_button.place_forget()
     send.place_forget(), receiver.place_forget(), a.place_forget(), frame_w.place_forget()
-    b.place_forget(), close_amount_button.place_forget(),plus_bills_button.place_forget(), r_button.place_forget()
+    b.place_forget(), close_amount_button.place_forget(), plus_bills_button.place_forget(), r_button.place_forget()
     previous_button.place_forget(), start_button.place_forget(), receiver_history.place_forget()
     panel.pack_forget(), print_page.place_forget(), wallet.place_forget(), receiver_button.place_forget()
     sign_in.place_forget(), log_in_button2.place_forget(), button_log_in.place_forget(), enter_address.place_forget()
@@ -3832,9 +4396,10 @@ def close():
         qr.place_forget(), address_txt.place_forget()
     except Exception:
         log_ignored_exception()
-def close_amount():
-    """Clear selected denominations and restore wallet bill button state."""
 
+
+# Clear selected denominations and restore wallet bill button state.
+def close_amount():
     global amount, count_selected
     for value in BILL_VALUES:
         selected_bill_counts[value] = 0
@@ -3856,15 +4421,20 @@ def close_bill_claimer():
     claim_bill.place_forget(), add_bill_button.place_forget(), private_key_entry.place_forget()
     number_entry.place_forget()
 
-send = make_asset_button('different_buttons', 'send_button', send_button, 'Send', font_size=24, bg=IND_GREEN)
-close_button = make_asset_button('pop_up', 'close', close_bill_claimer, 'X', font_size=18, bg=IND_BLACK,
-                                 fg=IND_RED)
-close_amount_button = make_asset_button('different_buttons', 'close_amount', close_amount, 'X', font_size=14,
-                                        bg='#d2d2d2', fg=IND_RED)
 
+send = make_asset_button(
+    'different_buttons', 'send_button', send_button, 'Send', font_size=24, bg=IND_GREEN
+)
+close_button = make_asset_button(
+    'pop_up', 'close', close_bill_claimer, 'X', font_size=18, bg=IND_BLACK, fg=IND_RED
+)
+close_amount_button = make_asset_button(
+    'different_buttons', 'close_amount', close_amount, 'X', font_size=14, bg='#d2d2d2', fg=IND_RED
+)
+
+
+# Open the claim workflow for manual entry, dropped images, or webcam scans.
 def plus_bills():
-    """Open the claim workflow for manual entry, dropped images, or webcam scans."""
-
     restore_webcam_scanner_prompt()
     update_claim_summary()
     show_claim_background_overlay()
@@ -3905,9 +4475,24 @@ def plus_bills():
         width=CLAIM_SUMMARY_ITEM_WIDTH * reso,
         height=CLAIM_TOTAL_LABEL_HEIGHT * reso,
     )
-    serial_num.place(x=CLAIM_ENTRY_X * reso, y=CLAIM_SERIAL_Y * reso, width=CLAIM_ENTRY_WIDTH * reso, height=40 * reso)
-    public_key_entry.place(x=CLAIM_ENTRY_X * reso, y=CLAIM_PUBLIC_Y * reso, width=CLAIM_ENTRY_WIDTH * reso, height=40 * reso)
-    private_key_entry.place(x=CLAIM_ENTRY_X * reso, y=CLAIM_PRIVATE_Y * reso, width=CLAIM_ENTRY_WIDTH * reso, height=40 * reso)
+    serial_num.place(
+        x=CLAIM_ENTRY_X * reso,
+        y=CLAIM_SERIAL_Y * reso,
+        width=CLAIM_ENTRY_WIDTH * reso,
+        height=40 * reso,
+    )
+    public_key_entry.place(
+        x=CLAIM_ENTRY_X * reso,
+        y=CLAIM_PUBLIC_Y * reso,
+        width=CLAIM_ENTRY_WIDTH * reso,
+        height=40 * reso,
+    )
+    private_key_entry.place(
+        x=CLAIM_ENTRY_X * reso,
+        y=CLAIM_PRIVATE_Y * reso,
+        width=CLAIM_ENTRY_WIDTH * reso,
+        height=40 * reso,
+    )
     webcam_scanner.place(
         x=CLAIM_SCANNER_X * reso,
         y=CLAIM_SCANNER_Y * reso,
@@ -3924,8 +4509,16 @@ def plus_bills():
     claim_bills_amount.bind("<Key>", lambda e: "break")
     raise_claim_widgets()
 
-plus_bills_button = make_asset_button('different_buttons', 'plus_bills_button', plus_bills, 'Scan Qr code',
-                                      font_size=18, bg=IND_BLACK, fg=IND_WHITE)
+
+plus_bills_button = make_asset_button(
+    'different_buttons',
+    'plus_bills_button',
+    plus_bills,
+    'Scan Qr code',
+    font_size=18,
+    bg=IND_BLACK,
+    fg=IND_WHITE,
+)
 claim_bill = ModalCanvas(root, 'claim', CLAIM_MODAL_WIDTH, CLAIM_MODAL_HEIGHT, bg=IND_BLACK)
 claim_bills_amount = Entry(
     root,
@@ -3956,9 +4549,8 @@ QR_STATUS_RESULT_HOLD_MS = 800
 qr_scan_status_hold_until = 0.0
 
 
+# Claim scanned bills by issuing receipts or spending paper-wallet bills.
 def claim_bills():
-    """Claim scanned bills by issuing receipts or spending paper-wallet bills."""
-
     errors = []
     claim_count = 0
     try:
@@ -3990,15 +4582,18 @@ def claim_bills():
     finally:
         refresh_wallet_view()
 
-def add_bill():
-    """Add a manually entered bill payload to the pending claim list."""
 
+# Add a manually entered bill payload to the pending claim list.
+def add_bill():
     try:
         if not add_manual_bill_from_fields(show_errors=True):
-            raise ValueError("Manual bill fields are incomplete or already in the pending claim list.")
+            raise ValueError(
+                "Manual bill fields are incomplete or already in the pending claim list."
+            )
     except Exception as exc:
         show_error_popup('Add bill failed', exc)
         refresh_wallet_view()
+
 
 check_validity_button = make_text_button(
     'Claim bills',
@@ -4008,8 +4603,15 @@ check_validity_button = make_text_button(
     bg='#009244',
     fg=IND_WHITE,
 )
-add_bill_button = make_asset_button('different_buttons', 'add_bill_button', add_bill, 'Add bills', font_size=20,
-                                    bg=IND_WHITE, fg=IND_BLACK)
+add_bill_button = make_asset_button(
+    'different_buttons',
+    'add_bill_button',
+    add_bill,
+    'Add bills',
+    font_size=20,
+    bg=IND_WHITE,
+    fg=IND_BLACK,
+)
 valid = ModalCanvas(root, 'valid', 493, 620, bg=IND_GREEN)
 not_valid = ModalCanvas(root, 'not_valid', 493, 620, bg=IND_RED)
 serial_num = Entry(root, font=app_font(19), bg='light grey')
@@ -4036,6 +4638,8 @@ def update_claim_summary():
         claim_count_label.config(text=f'Bills: {count}')
     except Exception:
         log_ignored_exception()
+
+
 def add_manual_bill_from_fields(show_errors=False):
     serial = serial_num.get().strip()
     private_key = private_key_entry.get().strip()
@@ -4067,13 +4671,13 @@ def run_manual_bill_auto_add():
         add_manual_bill_from_fields(show_errors=False)
     except Exception:
         log_ignored_exception()
+
+
 def schedule_manual_bill_auto_add(event=None):
     global manual_bill_auto_add_after_id
     if manual_bill_auto_add_after_id is not None:
-        try:
+        with contextlib.suppress(TclError):
             root.after_cancel(manual_bill_auto_add_after_id)
-        except TclError:
-            pass
     manual_bill_auto_add_after_id = root.after(150, run_manual_bill_auto_add)
 
 
@@ -4100,6 +4704,8 @@ def refresh_scanned_serials_list():
             raise_widget(scanned_serials_empty)
     except Exception:
         log_ignored_exception()
+
+
 def show_scanned_serials_list():
     try:
         refresh_scanned_serials_list()
@@ -4136,6 +4742,8 @@ def show_scanned_serials_list():
         raise_widget(qr_scan_status)
     except Exception:
         log_ignored_exception()
+
+
 def show_claim_background_overlay():
     try:
         claim_background_overlay.place(
@@ -4155,6 +4763,8 @@ def show_claim_background_overlay():
             raise_widget(border)
     except Exception:
         log_ignored_exception()
+
+
 def hide_claim_background_overlay():
     try:
         claim_background_overlay.place_forget()
@@ -4162,6 +4772,8 @@ def hide_claim_background_overlay():
             border.place_forget()
     except Exception:
         log_ignored_exception()
+
+
 def raise_claim_widgets():
     for widget in (
         claim_background_overlay,
@@ -4189,10 +4801,8 @@ def raise_claim_widgets():
         claim_border_right,
         claim_border_bottom,
     ):
-        try:
+        with contextlib.suppress(TclError):
             raise_widget(widget)
-        except TclError:
-            pass
 
 
 def hide_scanned_serials_list():
@@ -4204,6 +4814,8 @@ def hide_scanned_serials_list():
         scanned_serials_overlay.place_forget()
     except Exception:
         log_ignored_exception()
+
+
 def record_scanned_serial(serial):
     serial = str(serial).strip()
     if serial and serial not in scanned_serial_numbers:
@@ -4225,6 +4837,8 @@ def set_qr_scan_status(message, color=IND_MUTED, hold_ms=0):
         raise_widget(qr_scan_status)
     except Exception:
         log_ignored_exception()
+
+
 def report_invalid_qr(decoded_qrcode, error, suppress_repeated=False, show_popup=True):
     marker = decoded_qrcode or error_detail(error)
     if suppress_repeated and marker in reported_invalid_qr_codes:
@@ -4237,14 +4851,16 @@ def report_invalid_qr(decoded_qrcode, error, suppress_repeated=False, show_popup
         ValueError(
             'The scanner detected a QR code, but it is not a valid IND bill or address.\n\n'
             f'Details: {error_detail(error)}'
-        )
+        ),
     )
 
 
 def decode_paper_bill(decoded_qrcode):
     lines = [line.strip() for line in decoded_qrcode.splitlines()]
     if len(lines) < 4:
-        raise ValueError('IND bill QR codes must contain serial, private key, public key, and number lines.')
+        raise ValueError(
+            'IND bill QR codes must contain serial, private key, public key, and number lines.'
+        )
     serial, private_key, public_key, bill_number = lines[:4]
     if not serial or not private_key or not public_key or not bill_number:
         raise ValueError('IND bill QR code contains an empty required field.')
@@ -4328,6 +4944,8 @@ def pyzbar_qr_candidates(qrimage, include_mirror=False):
                 yield 'flipped gray', gray.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
     except Exception:
         log_ignored_exception()
+
+
 def decode_zxing_payloads(qrimage, include_mirror=False):
     payloads = []
     seen_payloads = set()
@@ -4360,9 +4978,8 @@ def decode_qr_payloads_for_live(qrimage, include_mirror=False):
     return payloads, source
 
 
+# Apply decoded QR payloads to wallet fields and return a scan result summary.
 def process_qr_payloads(payloads, suppress_repeated_invalid=False, show_invalid_errors=True):
-    """Apply decoded QR payloads to wallet fields and return a scan result summary."""
-
     global used_codes
     result = {'found': 0, 'accepted': 0, 'duplicate': 0, 'invalid': 0}
     for decoded_qrcode in payloads:
@@ -4390,7 +5007,9 @@ def process_qr_payloads(payloads, suppress_repeated_invalid=False, show_invalid_
                 set_claim_amount_value(claim_amount_value() + state.value)
                 result['accepted'] += 1
             else:
-                serial, private_key, public_key, bill_number, bill_value = decode_paper_bill(decoded_qrcode)
+                serial, private_key, public_key, bill_number, bill_value = decode_paper_bill(
+                    decoded_qrcode
+                )
                 used_codes.append(decoded_qrcode)
                 serial_num.delete(0, END)
                 serial_num.insert(0, serial)
@@ -4414,9 +5033,8 @@ def process_qr_payloads(payloads, suppress_repeated_invalid=False, show_invalid_
     return result
 
 
+# Decode QR payloads with zxing-cpp first, falling back to pyzbar.
 def qr_decoder(qrimage, suppress_repeated_invalid=False, live=False, show_invalid_errors=True):
-    """Decode QR payloads with zxing-cpp first, falling back to pyzbar."""
-
     payloads, source = decode_qr_payloads_for_live(qrimage, include_mirror=live)
     result = process_qr_payloads(
         payloads,
@@ -4466,13 +5084,15 @@ def hard_scan_scaled_crop_candidates(gray_image):
             top = int(round(height * y_fraction - crop_size / 2))
             left = min(max(0, left), max(0, width - crop_size))
             top = min(max(0, top), max(0, height - crop_size))
-            crop = gray_image[top:top + crop_size, left:left + crop_size]
+            crop = gray_image[top : top + crop_size, left : left + crop_size]
             if crop.size == 0:
                 continue
             target_width = max(crop.shape[1], 1200)
             target_height = max(1, int(round(crop.shape[0] * (target_width / crop.shape[1]))))
             if target_width > crop.shape[1]:
-                yield 'hard crop zoom', cv2.resize(crop, (target_width, target_height), interpolation=cv2.INTER_CUBIC)
+                yield 'hard crop zoom', cv2.resize(
+                    crop, (target_width, target_height), interpolation=cv2.INTER_CUBIC
+                )
             yield 'hard crop', crop
 
 
@@ -4567,7 +5187,11 @@ def apply_scanner_result(result, source_label=None):
 def maybe_start_hard_scan(frame):
     global qr_hard_scan_inflight, qr_hard_scan_generation, qr_hard_scan_last_at
     now = time.monotonic()
-    if qr_hard_scan_inflight or detection_is_paused() or now - qr_hard_scan_last_at < QR_HARD_SCAN_INTERVAL_SECONDS:
+    if (
+        qr_hard_scan_inflight
+        or detection_is_paused()
+        or now - qr_hard_scan_last_at < QR_HARD_SCAN_INTERVAL_SECONDS
+    ):
         return
     # Slow image transforms run in a worker; the live camera path stays responsive.
     qr_hard_scan_inflight = True
@@ -4627,7 +5251,9 @@ def restore_webcam_scanner_prompt():
     if image:
         webcam_scanner.config(image=image, text='', cursor='hand2', bd=0, highlightthickness=0)
     else:
-        webcam_scanner.config(image='', text=GUI_TEXT['qr_drop'], cursor='hand2', bd=1, highlightthickness=1)
+        webcam_scanner.config(
+            image='', text=GUI_TEXT['qr_drop'], cursor='hand2', bd=1, highlightthickness=1
+        )
     set_qr_scan_status('Click to scan or drop QR image', IND_MUTED)
 
 
@@ -4646,8 +5272,11 @@ def stop_qr_scan():
 
 
 def select_qr_image():
-    filename = filedialog.askopenfilename(title='Find QR image', initialdir='quickaccess',
-                                          filetypes=(('png files', '*.png'), ('all files', '*.*')))
+    filename = filedialog.askopenfilename(
+        title='Find QR image',
+        initialdir='quickaccess',
+        filetypes=(('png files', '*.png'), ('all files', '*.*')),
+    )
     if not filename:
         show_scanned_serials_list()
         return
@@ -4676,14 +5305,13 @@ def fallback_to_qr_image_picker(error):
         'Webcam unavailable',
         'The webcam could not be opened or stopped returning images.\n\n'
         'Choose a QR image file instead.\n\n'
-        f'Details: {error_detail(error)}'
+        f'Details: {error_detail(error)}',
     )
     select_qr_image()
 
 
+# Toggle live webcam scanning; image-file and drag/drop paths share the decoder.
 def qr_scan():
-    """Toggle live webcam scanning; image-file and drag/drop paths share the decoder."""
-
     global num_of_times_clicked, cap, reported_invalid_qr_codes
     global qr_hard_scan_generation, qr_hard_scan_inflight, qr_hard_scan_last_at, qr_detection_paused_until
     global qr_scan_status_hold_until
@@ -4721,7 +5349,7 @@ def qr_scan():
             ok, frame = cap.read()
             if not ok or frame is None:
                 raise RuntimeError("The webcam stopped returning images.")
-            cropped = frame[0:px(CLAIM_SCANNER_HEIGHT), 0:px(CLAIM_SCANNER_WIDTH)]
+            cropped = frame[0 : px(CLAIM_SCANNER_HEIGHT), 0 : px(CLAIM_SCANNER_WIDTH)]
             cv2image = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGBA)
             qr_pic = Image.fromarray(cv2image)
             imgtk = ImageTk.PhotoImage(image=qr_pic)
@@ -4729,7 +5357,9 @@ def qr_scan():
             webcam_scanner.config(image=imgtk)
             drain_hard_scan_results()
             if not detection_is_paused():
-                result = qr_decoder(frame, suppress_repeated_invalid=True, live=True, show_invalid_errors=False)
+                result = qr_decoder(
+                    frame, suppress_repeated_invalid=True, live=True, show_invalid_errors=False
+                )
                 apply_scanner_result(result)
                 maybe_start_hard_scan(frame)
             if (num_of_times_clicked % 2) != 0:
@@ -4742,6 +5372,7 @@ def qr_scan():
         loop()
     else:
         stop_qr_scan()
+
 
 webcam_scanner = Button(
     root,
@@ -4912,40 +5543,88 @@ def drop(event):
         show_scanned_serials_list()
         show_error_popup('QR image failed', exc)
 
+
 webcam_scanner.drop_target_register(DND_FILES)
 webcam_scanner.dnd_bind('<<Drop>>', drop)
 scanned_serials_list.bind('<Button-1>', lambda event: 'break')
 
-button = Button(root, command=node_terminal_button, text='Node Terminal', bg='black', fg='white',
-                font=app_font(24), cursor='hand2', bd=0, activebackground='white', highlightthickness=0,)
+button = Button(
+    root,
+    command=node_terminal_button,
+    text='Node Terminal',
+    bg='black',
+    fg='white',
+    font=app_font(24),
+    cursor='hand2',
+    bd=0,
+    activebackground='white',
+    highlightthickness=0,
+)
 place_header_button(button, 577, 100, 169, 50)
 
-button2 = Button(root, command=info_button, text='Information', bg='black', fg='white', font=app_font(24),
-                 cursor='hand2', bd=0, activebackground='white', highlightthickness=0)
+button2 = Button(
+    root,
+    command=info_button,
+    text='Information',
+    bg='black',
+    fg='white',
+    font=app_font(24),
+    cursor='hand2',
+    bd=0,
+    activebackground='white',
+    highlightthickness=0,
+)
 place_header_button(button2, 750, 100, 169, 50)
 
-button3 = Button(root, command=print_page_button, text='Print', bg='black', fg='white', font=app_font(24),
-                 cursor='hand2', bd=0, activebackground='white', highlightthickness=0)
+button3 = Button(
+    root,
+    command=print_page_button,
+    text='Print',
+    bg='black',
+    fg='white',
+    font=app_font(24),
+    cursor='hand2',
+    bd=0,
+    activebackground='white',
+    highlightthickness=0,
+)
 place_header_button(button3, 923, 100, 169, 50)
 
-button4 = Button(root, command=wallet_button, text='Wallet', bg='black', fg='white', font=app_font(24),
-                 cursor='hand2', bd=0, activebackground='white', highlightthickness=0)
+button4 = Button(
+    root,
+    command=wallet_button,
+    text='Wallet',
+    bg='black',
+    fg='white',
+    font=app_font(24),
+    cursor='hand2',
+    bd=0,
+    activebackground='white',
+    highlightthickness=0,
+)
 place_header_button(button4, 1096, 100, 114, 50)
 
-button_settings = make_text_button('Settings', settings_button, font_size=22, bg=IND_BLACK, fg=IND_WHITE,
-                                   bd=1, relief=SOLID)
+button_settings = make_text_button(
+    'Settings', settings_button, font_size=22, bg=IND_BLACK, fg=IND_WHITE, bd=1, relief=SOLID
+)
 place_header_button(button_settings, 1016, 18, 94, 64)
 
-button6 = make_asset_button('different_buttons', 'sign_in_button', sign_in_button, 'Sign\nin', font_size=22,
-                            bg=IND_WHITE, fg=IND_BLACK)
+button6 = make_asset_button(
+    'different_buttons',
+    'sign_in_button',
+    sign_in_button,
+    'Sign\nin',
+    font_size=22,
+    bg=IND_WHITE,
+    fg=IND_BLACK,
+)
 place_header_button(button6, 1120, 18, 77, 64)
 international_dollar.lift()
 logo.lift()
 
 
+# Persist unlocked wallet state and stop child processes before closing.
 def on_closing():
-    """Persist unlocked wallet state and stop child processes before closing."""
-
     errors = []
     run_on_startup = 'NO'
     run_in_background = 'NO'
@@ -4971,7 +5650,7 @@ def on_closing():
                         break
                 try:
                     wallet_encryption.wallet_reencrypt_unlocked(address, w)
-                except Exception as exc:
+                except Exception:
                     if encrypted_record.get("format") == "INDW2":
                         raise
                     legacy_lines = str(w).splitlines()
@@ -5027,6 +5706,8 @@ def start_update_check_later():
         auto_update.start_startup_update_check(root, BASE_DIR, restart_after_update)
     except Exception:
         log_ignored_exception()
+
+
 def run():
     show_root_when_ready()
     root.after(1000, start_update_check_later)

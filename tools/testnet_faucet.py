@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Issue one public-testnet IND bill by transferring it from the faucet wallet."""
+# Issue one public-testnet IND bill by transferring it from the faucet wallet.
 
 import argparse
 import contextlib
@@ -17,7 +17,6 @@ import ind_token
 from ind import runtime as runtime_json
 from ind import sender_node
 from tools import testnet_peers
-
 
 DEFAULT_MANIFEST = ROOT_DIR / "testnet" / "genesis_manifest.json"
 DEFAULT_STATE_PATH = ROOT_DIR / "files" / "testnet" / "testnet_faucet_state.json"
@@ -47,7 +46,9 @@ def write_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(path.name + ".tmp")
-    tmp_path.write_text(json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    tmp_path.write_text(
+        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
     os.replace(tmp_path, path)
 
 
@@ -88,22 +89,43 @@ def ensure_manifest_trusted_for_process(manifest):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Transfer one real IND bill on the public testnet.")
+    parser = argparse.ArgumentParser(
+        description="Transfer one real IND bill on the public testnet."
+    )
     parser.add_argument("--recipient-address", required=True, help="recipient wallet address")
-    parser.add_argument("--manifest", default=str(DEFAULT_MANIFEST), help="public testnet genesis manifest")
-    parser.add_argument("--faucet-private-key-file", required=True, help="JSON/text file with the faucet private key")
-    parser.add_argument("--faucet-public-key-file", required=True, help="JSON/text file with the faucet public key")
-    parser.add_argument("--index", type=int, help="specific manifest index to issue; default uses the next local index")
-    parser.add_argument("--state-file", default=str(DEFAULT_STATE_PATH), help="local next-index state file")
+    parser.add_argument(
+        "--manifest", default=str(DEFAULT_MANIFEST), help="public testnet genesis manifest"
+    )
+    parser.add_argument(
+        "--faucet-private-key-file",
+        required=True,
+        help="JSON/text file with the faucet private key",
+    )
+    parser.add_argument(
+        "--faucet-public-key-file", required=True, help="JSON/text file with the faucet public key"
+    )
+    parser.add_argument(
+        "--index",
+        type=int,
+        help="specific manifest index to issue; default uses the next local index",
+    )
+    parser.add_argument(
+        "--state-file", default=str(DEFAULT_STATE_PATH), help="local next-index state file"
+    )
     parser.add_argument(
         "--peer",
         action="append",
         help="seed/node to broadcast to; repeatable and comma-separated; default uses testnet/testnet.json",
     )
-    parser.add_argument("--no-broadcast", action="store_true", help="queue the transfer without immediately gossiping it")
+    parser.add_argument(
+        "--no-broadcast",
+        action="store_true",
+        help="queue the transfer without immediately gossiping it",
+    )
     return parser.parse_args()
 
 
+# Issue one lazy-genesis testnet bill and return a safe public summary.
 def issue_testnet_bill(
     recipient_address,
     manifest_path=DEFAULT_MANIFEST,
@@ -114,8 +136,6 @@ def issue_testnet_bill(
     broadcast=True,
     peers=None,
 ):
-    """Issue one lazy-genesis testnet bill and return a safe public summary."""
-
     if faucet_private_key_file is None or faucet_public_key_file is None:
         raise ValueError("faucet private/public key files are required")
     with testnet_network():
@@ -129,7 +149,9 @@ def issue_testnet_bill(
 
         owner_addresses = {item["owner_address"] for item in manifest_ranges(manifest)}
         if owner_addresses != {faucet_address}:
-            raise SystemExit("faucet public key does not match the owner address in every manifest range")
+            raise SystemExit(
+                "faucet public key does not match the owner address in every manifest range"
+            )
 
         state = read_json(state_file, default={"next_index": manifest["ranges"][0]["start_index"]})
         issue_index = pick_index(manifest, state, explicit_index=index)
@@ -158,7 +180,9 @@ def issue_testnet_bill(
             write_json(state_file, state)
         if broadcast:
             if selected_peers:
-                broadcast_results = testnet_peers.broadcast_message_to_peers(announcement, selected_peers)
+                broadcast_results = testnet_peers.broadcast_message_to_peers(
+                    announcement, selected_peers
+                )
             else:
                 runtime_json.write_transaction_message(announcement)
                 sender_node.send_bills()

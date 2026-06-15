@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import log_client
 from operator_tools import hash_log_exporter
 
-
 EMERGENCY_REVOCATION_WARNING = (
     "WARNING: emergency revocation only works after clients have already accepted the referenced "
     "rotation record. First-rotation compromise cannot be cleanly recovered through this protocol; "
@@ -46,7 +45,9 @@ def _read_public(path):
 
 def cmd_create_rotation(args):
     rotation_timestamp = int(args.rotation_timestamp or time.time())
-    overlap_until = int(args.overlap_until_timestamp or (rotation_timestamp + int(args.overlap_days * 86400)))
+    overlap_until = int(
+        args.overlap_until_timestamp or (rotation_timestamp + int(args.overlap_days * 86400))
+    )
     record = log_client.make_key_rotation(
         _read_private(args.old_private_key_file),
         _read_public(args.old_public_key_file),
@@ -90,7 +91,9 @@ def cmd_verify_revocation(args):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Create and verify IND transparency operator key rotation records")
+    parser = argparse.ArgumentParser(
+        description="Create and verify IND transparency operator key rotation records"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     create = subparsers.add_parser("create-rotation")

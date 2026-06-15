@@ -1,11 +1,10 @@
-"""Process and environment helpers for the desktop node controls."""
+# Process and environment helpers for the desktop node controls.
 
 import os
 import platform
 import subprocess
 import sys
 from pathlib import Path
-
 
 LOCAL_OPERATOR_URL = 'http://127.0.0.1:8890'
 LOCAL_OPERATOR_MIRROR_DIR = 'files/transparency_roots'
@@ -28,9 +27,8 @@ LOCAL_OPERATOR_ENV_KEYS = (
 _operator_env_previous = None
 
 
+# Return localhost transparency settings for development-only desktop operator mode.
 def local_operator_settings(base_dir):
-    """Return localhost transparency settings for development-only desktop operator mode."""
-
     mirror_dir = str(Path(base_dir) / LOCAL_OPERATOR_MIRROR_DIR)
     return {
         'IND_SUBMIT_TO_TRANSPARENCY_LOG': '1',
@@ -49,9 +47,8 @@ def local_operator_settings(base_dir):
     }, mirror_dir
 
 
+# Temporarily install local-operator env vars and return a child-process env.
 def apply_operator_environment(base_dir):
-    """Temporarily install local-operator env vars and return a child-process env."""
-
     global _operator_env_previous
     settings, mirror_dir = local_operator_settings(base_dir)
     if _operator_env_previous is None:
@@ -60,9 +57,8 @@ def apply_operator_environment(base_dir):
     return os.environ.copy(), mirror_dir
 
 
+# Restore process env vars changed by apply_operator_environment.
 def restore_operator_environment():
-    """Restore process env vars changed by apply_operator_environment."""
-
     global _operator_env_previous
     if _operator_env_previous is None:
         return

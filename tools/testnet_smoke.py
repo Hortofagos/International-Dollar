@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run an operator smoke test against the public IND testnet."""
+# Run an operator smoke test against the public IND testnet.
 
 import argparse
 import base64
@@ -10,27 +10,30 @@ import secrets as secretlib
 import shlex
 import subprocess
 import sys
-import time
 import tempfile
+import time
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from ind import address_generation
+from ind import (
+    address_generation,
+    protocol_policy,
+)
 from ind import runtime as runtime_json
-from ind import sender_node
+from ind import (
+    sender_node,
+)
 from ind import settings as ind_settings
 from ind import token as ind_token
-from ind import wallet_decryption
-from ind import wallet_encryption
-from ind import wallet_services
-
-from tools import testnet_faucet
-from tools import testnet_peers
-from tools import testnet_report
-
+from ind import (
+    wallet_decryption,
+    wallet_encryption,
+    wallet_services,
+)
+from tools import testnet_faucet, testnet_peers, testnet_report
 
 DEFAULT_VPS_HOST = os.environ.get("IND_TESTNET_VPS_HOST", "")
 DEFAULT_VPS_USER = os.environ.get("IND_TESTNET_VPS_USER", "")
@@ -47,14 +50,19 @@ DEFAULT_SSH_KEY = os.environ.get("IND_TESTNET_SSH_KEY", "")
 DEFAULT_BOOTSTRAP_SECRETS = os.environ.get("IND_TESTNET_BOOTSTRAP_SECRETS", "")
 DEFAULT_PEER = "testnet-seed.international-dollar.com"
 DEFAULT_LOCAL_METADATA = ROOT_DIR / "files" / "testnet" / "local_clean_wallet.local.json"
-DEFAULT_LOCAL_PASSPHRASE = ROOT_DIR / "files" / "testnet" / "local_clean_wallet_passphrase.local.txt"
+DEFAULT_LOCAL_PASSPHRASE = (
+    ROOT_DIR / "files" / "testnet" / "local_clean_wallet_passphrase.local.txt"
+)
 DEFAULT_REMOTE_METADATA = ROOT_DIR / "files" / "testnet" / "vps_testnet_wallet.local.json"
-DEFAULT_REMOTE_PASSPHRASE = ROOT_DIR / "files" / "testnet" / "vps_testnet_wallet_passphrase.local.txt"
+DEFAULT_REMOTE_PASSPHRASE = (
+    ROOT_DIR / "files" / "testnet" / "vps_testnet_wallet_passphrase.local.txt"
+)
 DEFAULT_SUMMARY = ROOT_DIR / "files" / "testnet" / "latest_smoke_summary.local.json"
 
 
+# Raised when the smoke test cannot continue safely.
 class SmokeError(RuntimeError):
-    """Raised when the smoke test cannot continue safely."""
+    pass
 
 
 @contextlib.contextmanager
@@ -86,7 +94,9 @@ def write_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
     os.replace(tmp, path)
 
 
@@ -222,7 +232,9 @@ def validate_wallet_lines(address, lines):
     private_key = lines[1].strip()
     public_key = lines[2].strip()
     if wallet_address != address:
-        raise SmokeError(f"wallet metadata address {address} does not match unlocked wallet {wallet_address}")
+        raise SmokeError(
+            f"wallet metadata address {address} does not match unlocked wallet {wallet_address}"
+        )
     if not private_key or not public_key:
         raise SmokeError(f"wallet {address} unlocked without signing keys")
     if not ind_token.public_key_matches_address(public_key, address):
@@ -239,7 +251,7 @@ def unlock_local_wallet(address, passphrase):
 
 
 def create_local_wallet(passphrase, metadata_path):
-    address, private_key, public_key = address_generation.generate_keypair()
+    address, private_key, public_key = address_generation.generate_legacy_keypair()
     runtime_json.write_wallet_generation(address, private_key, public_key)
     wallet_encryption.wallet_encrypt(passphrase)
     lines = unlock_local_wallet(address, passphrase)
@@ -264,7 +276,9 @@ def prepare_local_wallet(args):
     if not address and args.create_local_wallet:
         return create_local_wallet(passphrase, args.local_wallet_metadata_file)
     if not address:
-        raise SmokeError("local wallet address is required; pass --local-wallet-address or --create-local-wallet")
+        raise SmokeError(
+            "local wallet address is required; pass --local-wallet-address or --create-local-wallet"
+        )
     ind_token.validate_address(address, "local wallet address")
     return address, unlock_local_wallet(address, passphrase)
 
@@ -323,7 +337,7 @@ def unlock(address, passphrase):
 
 
 def create_wallet(passphrase):
-    address, private_key, public_key = address_generation.generate_keypair()
+    address, private_key, public_key = address_generation.generate_legacy_keypair()
     runtime_json.write_wallet_generation(address, private_key, public_key)
     wallet_encryption.wallet_encrypt(passphrase)
     return address, public_key
@@ -604,7 +618,9 @@ def run_ssh_python(args, payload):
     except (IndexError, json.JSONDecodeError) as exc:
         raise SmokeError(f"remote action {payload.get('action')} returned non-JSON output") from exc
     if not result.get("ok"):
-        raise SmokeError(f"remote action {payload.get('action')} refused: {result.get('error', 'unknown error')}")
+        raise SmokeError(
+            f"remote action {payload.get('action')} refused: {result.get('error', 'unknown error')}"
+        )
     return result
 
 
@@ -698,8 +714,15 @@ def receive_locally(local_address, local_lines, args):
             result = store.ingest_message(message)
             if result.get("conflict_proof"):
                 continue
-            if message.get("type") in {ind_token.TRANSFER_ANNOUNCEMENT_TYPE, ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE}:
-                bill = message["bill"] if message.get("type") == ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE else message["token"]
+            if message.get("type") in {
+                ind_token.TRANSFER_ANNOUNCEMENT_TYPE,
+                ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE,
+            }:
+                bill = (
+                    message["bill"]
+                    if message.get("type") == ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE
+                    else message["token"]
+                )
                 state = ind_token.verify_token(bill)
                 if state.owner_address == local_address:
                     receipt = ind_token.create_receipt_announcement(bill, private_key, public_key)
@@ -774,14 +797,25 @@ def parse_args():
         action="append",
         help="seed/node to use; repeatable and comma-separated; default uses testnet/testnet.json",
     )
-    parser.add_argument("--faucet-private-key-file", default=str(ROOT_DIR / "files" / "testnet" / "faucet_private_key.local.json"))
-    parser.add_argument("--faucet-public-key-file", default=str(ROOT_DIR / "files" / "testnet" / "faucet_public_key.local.json"))
-    parser.add_argument("--resume-display-id", help="resume an already issued bill instead of minting a new faucet bill")
+    parser.add_argument(
+        "--faucet-private-key-file",
+        default=str(ROOT_DIR / "files" / "testnet" / "faucet_private_key.local.json"),
+    )
+    parser.add_argument(
+        "--faucet-public-key-file",
+        default=str(ROOT_DIR / "files" / "testnet" / "faucet_public_key.local.json"),
+    )
+    parser.add_argument(
+        "--resume-display-id",
+        help="resume an already issued bill instead of minting a new faucet bill",
+    )
     parser.add_argument("--local-wallet-address")
     parser.add_argument("--local-wallet-metadata-file", default=str(DEFAULT_LOCAL_METADATA))
     parser.add_argument("--local-wallet-passphrase-file", default=str(DEFAULT_LOCAL_PASSPHRASE))
     parser.add_argument("--create-local-wallet", action="store_true")
-    parser.add_argument("--remote-wallet-address", help="encrypted testnet wallet address on the VPS")
+    parser.add_argument(
+        "--remote-wallet-address", help="encrypted testnet wallet address on the VPS"
+    )
     parser.add_argument("--remote-wallet-metadata-file", default=str(DEFAULT_REMOTE_METADATA))
     parser.add_argument("--remote-wallet-passphrase-file", default=str(DEFAULT_REMOTE_PASSPHRASE))
     parser.add_argument("--generate-remote-wallet-passphrase-if-missing", action="store_true")
@@ -811,14 +845,23 @@ def parse_args():
     parser.add_argument("--remote-store-only", action="store_true")
     parser.add_argument("--remote-skip-peer-gossip", action="store_true")
     parser.add_argument("--remote-visibility-timeout-seconds", type=int, default=60)
-    parser.add_argument("--finality-buffer-seconds", type=int, default=ind_settings.finality_buffer_seconds())
-    parser.add_argument("--no-wait", action="store_true", help="skip sleep delays; useful only for local/dev tests")
+    parser.add_argument(
+        "--finality-buffer-seconds", type=int, default=ind_settings.finality_buffer_seconds()
+    )
+    parser.add_argument(
+        "--no-wait", action="store_true", help="skip sleep delays; useful only for local/dev tests"
+    )
     parser.add_argument("--summary-file", default=str(DEFAULT_SUMMARY))
     parser.add_argument("--no-summary-file", action="store_true")
     return parser.parse_args()
 
 
 def main():
+    raise SystemExit(
+        protocol_policy.legacy_disabled_message(
+            "legacy testnet smoke; use tools/v3_testnet_smoke.py"
+        )
+    )
     os.environ.setdefault("IND_NETWORK", "testnet")
     args = parse_args()
     args.peers = testnet_peers.parse_peer_args(args.peer)
@@ -841,7 +884,9 @@ def main():
     if not args.remote_wallet_address:
         metadata = read_json(args.remote_wallet_metadata_file)
         args.remote_wallet_address = str(metadata.get("address", "")).strip()
-    if not args.remote_wallet_address and not (args.create_remote_wallet or args.migrate_remote_legacy_wallet):
+    if not args.remote_wallet_address and not (
+        args.create_remote_wallet or args.migrate_remote_legacy_wallet
+    ):
         raise SystemExit(
             "remote wallet address is required unless --create-remote-wallet or --migrate-remote-legacy-wallet is set"
         )
@@ -859,7 +904,9 @@ def main():
         runtime_json.ensure_runtime_files()
         remote_prepare = prepare_remote_wallet(args, remote_passphrase)
         if args.prepare_remote_wallet_only:
-            print(json.dumps({"ok": True, "remote_wallet": remote_prepare}, sort_keys=True, indent=2))
+            print(
+                json.dumps({"ok": True, "remote_wallet": remote_prepare}, sort_keys=True, indent=2)
+            )
             return
 
         local_address, local_lines = prepare_local_wallet(args)

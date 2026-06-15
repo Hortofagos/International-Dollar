@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report public-testnet bill status from a remote node without reading wallet keys."""
+# Report public-testnet bill status from a remote node without reading wallet keys.
 
 import argparse
 import contextlib
@@ -14,7 +14,6 @@ if str(ROOT_DIR) not in sys.path:
 
 import ind_token
 from ind import sender_node
-
 
 DEFAULT_REFS = ("1x0", "1x1", "1x2")
 DEFAULT_PEER = "testnet-seed.international-dollar.com"
@@ -35,9 +34,8 @@ def testnet_network():
             os.environ["IND_NETWORK"] = previous
 
 
+# Parse the node status endpoint's compact line protocol.
 def parse_status_response(raw):
-    """Parse the node status endpoint's compact line protocol."""
-
     lines = [line.strip() for line in str(raw or "").splitlines() if line.strip()]
     records = []
     index = 0
@@ -88,6 +86,7 @@ def parse_status_response(raw):
     return records
 
 
+# Query one node's public status endpoint for display IDs or bill IDs.
 def query_peer_status(
     refs,
     peer=DEFAULT_PEER,
@@ -95,8 +94,6 @@ def query_peer_status(
     timeout_seconds=DEFAULT_STATUS_REQUEST_TIMEOUT_SECONDS,
     max_duration_seconds=DEFAULT_STATUS_REQUEST_BUDGET_SECONDS,
 ):
-    """Query one node's public status endpoint for display IDs or bill IDs."""
-
     refs = [str(ref).strip() for ref in refs if str(ref).strip()]
     if not refs:
         return []
@@ -125,9 +122,8 @@ def query_peer_status(
     return parse_status_response(raw)
 
 
+# Read local testnet store status without touching any wallet files.
 def local_status(refs, finalize=True):
-    """Read local testnet store status without touching any wallet files."""
-
     with testnet_network():
         store = ind_token.INDLocalStore()
         if finalize:

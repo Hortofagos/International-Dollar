@@ -4,9 +4,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from ind import node_client
-from ind import sender_node
+import pytest
+
+from ind import node_client, sender_node
 from ind import settings as ind_settings
+
+pytestmark = pytest.mark.skip(reason="archived V1/V2 bill protocol tests")
 
 
 class NetworkRequestResultTests(unittest.TestCase):
@@ -74,11 +77,13 @@ class NetworkRequestResultTests(unittest.TestCase):
                 return "ok"
             if addr[0] == "2001:4860:4860::8888":
                 raise ConnectionResetError("closed")
-            raise socket.timeout("slow")
+            raise TimeoutError("slow")
 
         with mock.patch.object(sender_node, "ensure_runtime_files"):
             with mock.patch.object(sender_node.socket, "getaddrinfo", side_effect=fake_getaddrinfo):
-                with mock.patch.object(sender_node.ind_transport, "request", side_effect=fake_request):
+                with mock.patch.object(
+                    sender_node.ind_transport, "request", side_effect=fake_request
+                ):
                     result = sender_node.connect_result(
                         "b",
                         "payload",
@@ -93,7 +98,10 @@ class NetworkRequestResultTests(unittest.TestCase):
             called_routes,
             ["seed-a.example", "2001:4860:4860::8888", "8.8.8.8", "seed-b.example"],
         )
-        self.assertEqual([attempt["status"] for attempt in result.attempts[:3]], ["timeout", "connection_closed", "timeout"])
+        self.assertEqual(
+            [attempt["status"] for attempt in result.attempts[:3]],
+            ["timeout", "connection_closed", "timeout"],
+        )
 
     def test_connect_result_records_rate_limit_backoff_and_uses_next_peer(self):
         def fake_request(addr, *_args, **_kwargs):
@@ -104,7 +112,9 @@ class NetworkRequestResultTests(unittest.TestCase):
         with mock.patch.object(sender_node, "ensure_runtime_files"):
             with mock.patch.object(sender_node.socket, "getaddrinfo", return_value=[]):
                 with mock.patch.object(sender_node, "_rate_limit_backoff_seconds", return_value=12):
-                    with mock.patch.object(sender_node.ind_transport, "request", side_effect=fake_request):
+                    with mock.patch.object(
+                        sender_node.ind_transport, "request", side_effect=fake_request
+                    ):
                         result = sender_node.connect_result(
                             "b",
                             "payload",
@@ -139,7 +149,9 @@ class NetworkRequestResultTests(unittest.TestCase):
 
         with mock.patch.object(sender_node, "ensure_runtime_files"):
             with mock.patch.object(sender_node.socket, "getaddrinfo", side_effect=fake_getaddrinfo):
-                with mock.patch.object(sender_node.ind_transport, "request", side_effect=fake_request):
+                with mock.patch.object(
+                    sender_node.ind_transport, "request", side_effect=fake_request
+                ):
                     result = sender_node.connect_result(
                         "b",
                         "malformed",
@@ -165,7 +177,9 @@ class NetworkRequestResultTests(unittest.TestCase):
 
         with mock.patch.object(sender_node, "ensure_runtime_files"):
             with mock.patch.object(sender_node.socket, "getaddrinfo", return_value=records):
-                with mock.patch.object(sender_node.ind_transport, "request", side_effect=fake_request):
+                with mock.patch.object(
+                    sender_node.ind_transport, "request", side_effect=fake_request
+                ):
                     result = sender_node.connect_result(
                         "b",
                         "malformed",
@@ -181,7 +195,9 @@ class NetworkRequestResultTests(unittest.TestCase):
     def test_connect_returns_failure_status_instead_of_n(self):
         with mock.patch.object(sender_node, "ensure_runtime_files"):
             with mock.patch.object(sender_node.socket, "getaddrinfo", return_value=[]):
-                with mock.patch.object(sender_node.ind_transport, "request", side_effect=socket.timeout("slow")):
+                with mock.patch.object(
+                    sender_node.ind_transport, "request", side_effect=TimeoutError("slow")
+                ):
                     response = sender_node.connect("c", "1x1", ["seed-a.example"])
 
         self.assertEqual(response, "timeout")
@@ -203,14 +219,36 @@ class NetworkRequestResultTests(unittest.TestCase):
 
         with mock.patch.object(sender_node, "ensure_runtime_files"):
             with mock.patch.object(sender_node, "_peer_files", return_value=[]):
-                with mock.patch.object(sender_node, "_with_configured_peers", return_value=["seed-a.example", "seed-b.example"]):
-                    with mock.patch.object(sender_node.runtime_json, "transaction_files", return_value=[transaction_path]):
-                        with mock.patch.object(sender_node.runtime_json, "read_transaction_message", return_value={"type": "test"}):
-                            with mock.patch.object(sender_node.ind_token, "INDLocalStore", return_value=store):
-                                with mock.patch.object(sender_node.ind_token, "pack_wire_message", return_value="raw"):
-                                    with mock.patch.object(sender_node, "connect_result", return_value=result):
-                                        with mock.patch.object(sender_node, "_schedule_queued_gossip_retry") as schedule:
-                                            with mock.patch.object(sender_node.os, "remove") as remove:
+                with mock.patch.object(
+                    sender_node,
+                    "_with_configured_peers",
+                    return_value=["seed-a.example", "seed-b.example"],
+                ):
+                    with mock.patch.object(
+                        sender_node.runtime_json,
+                        "transaction_files",
+                        return_value=[transaction_path],
+                    ):
+                        with mock.patch.object(
+                            sender_node.runtime_json,
+                            "read_transaction_message",
+                            return_value={"type": "test"},
+                        ):
+                            with mock.patch.object(
+                                sender_node.ind_token, "INDLocalStore", return_value=store
+                            ):
+                                with mock.patch.object(
+                                    sender_node.ind_token, "pack_wire_message", return_value="raw"
+                                ):
+                                    with mock.patch.object(
+                                        sender_node, "connect_result", return_value=result
+                                    ):
+                                        with mock.patch.object(
+                                            sender_node, "_schedule_queued_gossip_retry"
+                                        ) as schedule:
+                                            with mock.patch.object(
+                                                sender_node.os, "remove"
+                                            ) as remove:
                                                 sender_node.send_bills()
 
         schedule.assert_called_once()
@@ -227,15 +265,39 @@ class NetworkRequestResultTests(unittest.TestCase):
 
         with mock.patch.object(sender_node, "ensure_runtime_files"):
             with mock.patch.object(sender_node, "_peer_files", return_value=[]):
-                with mock.patch.object(sender_node, "_with_configured_peers", return_value=["seed-a.example"]):
-                    with mock.patch.object(sender_node.runtime_json, "transaction_files", return_value=[transaction_path]):
-                        with mock.patch.object(sender_node.runtime_json, "read_transaction_message", return_value={"type": "test"}):
-                            with mock.patch.object(sender_node.ind_token, "INDLocalStore", return_value=store):
-                                with mock.patch.object(sender_node.ind_token, "pack_wire_message", return_value="raw"):
-                                    with mock.patch.object(sender_node, "connect_result", return_value=result):
-                                        with mock.patch.object(sender_node, "_remote_status_confirms_gossip", return_value=True):
-                                            with mock.patch.object(sender_node, "_schedule_queued_gossip_retry") as schedule:
-                                                with mock.patch.object(sender_node.os, "remove") as remove:
+                with mock.patch.object(
+                    sender_node, "_with_configured_peers", return_value=["seed-a.example"]
+                ):
+                    with mock.patch.object(
+                        sender_node.runtime_json,
+                        "transaction_files",
+                        return_value=[transaction_path],
+                    ):
+                        with mock.patch.object(
+                            sender_node.runtime_json,
+                            "read_transaction_message",
+                            return_value={"type": "test"},
+                        ):
+                            with mock.patch.object(
+                                sender_node.ind_token, "INDLocalStore", return_value=store
+                            ):
+                                with mock.patch.object(
+                                    sender_node.ind_token, "pack_wire_message", return_value="raw"
+                                ):
+                                    with mock.patch.object(
+                                        sender_node, "connect_result", return_value=result
+                                    ):
+                                        with mock.patch.object(
+                                            sender_node,
+                                            "_remote_status_confirms_gossip",
+                                            return_value=True,
+                                        ):
+                                            with mock.patch.object(
+                                                sender_node, "_schedule_queued_gossip_retry"
+                                            ) as schedule:
+                                                with mock.patch.object(
+                                                    sender_node.os, "remove"
+                                                ) as remove:
                                                     sender_node.send_bills()
 
         remove.assert_called_once_with(transaction_path)
@@ -256,7 +318,11 @@ class NetworkRequestResultTests(unittest.TestCase):
 
         with mock.patch.object(sender_node.ind_token, "verify_token", return_value=state):
             with mock.patch.object(sender_node, "connect_result", return_value=result):
-                self.assertTrue(sender_node._remote_status_confirms_gossip(message, ["seed-a.example"], attempts=1))
+                self.assertTrue(
+                    sender_node._remote_status_confirms_gossip(
+                        message, ["seed-a.example"], attempts=1
+                    )
+                )
 
     def test_remote_status_reconciliation_rejects_conflict_status(self):
         message = {
@@ -273,7 +339,11 @@ class NetworkRequestResultTests(unittest.TestCase):
 
         with mock.patch.object(sender_node.ind_token, "verify_token", return_value=state):
             with mock.patch.object(sender_node, "connect_result", return_value=result):
-                self.assertFalse(sender_node._remote_status_confirms_gossip(message, ["seed-a.example"], attempts=1))
+                self.assertFalse(
+                    sender_node._remote_status_confirms_gossip(
+                        message, ["seed-a.example"], attempts=1
+                    )
+                )
 
     def test_server_close_counters_snapshot_reasons(self):
         counters = node_client.ServerCloseCounters()

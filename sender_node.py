@@ -1,4 +1,4 @@
-"""Compatibility wrapper for wallet-side IND node communication."""
+# Compatibility wrapper for wallet-side IND node communication.
 
 from ind import sender_node as _impl
 

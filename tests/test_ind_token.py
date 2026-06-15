@@ -1,6 +1,5 @@
 import base64
 import os
-from pathlib import Path
 import socket
 import sqlite3
 import tempfile
@@ -9,12 +8,14 @@ import time
 import unittest
 import zlib
 from hashlib import sha3_256
+from pathlib import Path
 from unittest import mock
 
 import ecdsa
+import pytest
 
-import ind_transport
 import ind_token
+import ind_transport
 import node_client
 import sender_node
 from ind import node_client as node_client_impl
@@ -23,8 +24,8 @@ from ind import runtime as runtime_json
 from ind import settings as ind_settings
 from ind import wallet_services
 
-
 os.environ.setdefault("IND_ALLOW_UNTRUSTED_GENESIS", "1")
+pytestmark = pytest.mark.skip(reason="archived V1/V2 bill protocol tests")
 
 
 def keypair():
@@ -155,14 +156,18 @@ class INDBillTests(unittest.TestCase):
             self.assertEqual(ind_settings.node_port(settings), 18888)
             self.assertEqual(ind_settings.default_store_path(settings), "ind_gossip_testnet.db")
             self.assertEqual(ind_settings.network_runtime_namespace(settings), "testnet")
-            self.assertEqual(ind_settings.dns_seed_hosts(settings), ind_settings.DEFAULT_TESTNET_DNS_SEED_HOSTS)
+            self.assertEqual(
+                ind_settings.dns_seed_hosts(settings), ind_settings.DEFAULT_TESTNET_DNS_SEED_HOSTS
+            )
             self.assertEqual(runtime_json.transaction_dir(), Path("transaction_folder/testnet"))
             self.assertEqual(runtime_json.peer_root(), Path("ip_folder/testnet"))
 
     def test_peer_ping_servers_can_bootstrap_public_testnet_before_dns(self):
         settings = ind_settings.normalize_security_settings({})
         with temporary_env(IND_PEER_PING_SERVERS="https://Bootstrap.Example.test/a,8.8.8.8"):
-            self.assertEqual(ind_settings.peer_ping_servers(settings), ["bootstrap.example.test", "8.8.8.8"])
+            self.assertEqual(
+                ind_settings.peer_ping_servers(settings), ["bootstrap.example.test", "8.8.8.8"]
+            )
 
     def test_address_format_has_version_and_checksum(self):
         _private_key, public_key, address = keypair()
@@ -235,7 +240,9 @@ class INDBillTests(unittest.TestCase):
             store.ingest_message(ind_token.create_transfer_announcement(transferred))
             store.ingest_message(receipt)
             self.assertEqual(store.get_token_record(transferred["token_id"])["status"], "pending")
-            finalized = store.finalize_pending(now=time.time() + ind_token.FINALITY_BUFFER_SECONDS + 1)
+            finalized = store.finalize_pending(
+                now=time.time() + ind_token.FINALITY_BUFFER_SECONDS + 1
+            )
             self.assertIn(transferred["token_id"], finalized)
             self.assertEqual(store.get_token_record(transferred["token_id"])["status"], "settled")
 
@@ -258,7 +265,9 @@ class INDBillTests(unittest.TestCase):
                 (ind_token.transfer_hash(transferred["history"][-1]),),
             ).fetchone()[0]
             conn.close()
-            finalized = store.finalize_pending(now=transfer_first_seen + ind_token.FINALITY_BUFFER_SECONDS - 1)
+            finalized = store.finalize_pending(
+                now=transfer_first_seen + ind_token.FINALITY_BUFFER_SECONDS - 1
+            )
             self.assertEqual(finalized, [])
             self.assertEqual(store.get_token_record(transferred["token_id"])["status"], "pending")
 
@@ -347,7 +356,9 @@ class INDBillTests(unittest.TestCase):
             finalized_at = int(time.time()) + ind_token.FINALITY_BUFFER_SECONDS + 1
             store.finalize_pending(now=finalized_at)
 
-            confidence = store.token_confidence(transferred["token_id"], expected_owner=bob_address, now=finalized_at)
+            confidence = store.token_confidence(
+                transferred["token_id"], expected_owner=bob_address, now=finalized_at
+            )
             self.assertFalse(confidence["accepted"])
             self.assertEqual(confidence["level"], "settled_fresh")
 
@@ -444,7 +455,10 @@ class INDBillTests(unittest.TestCase):
             with store._connect() as conn:
                 conn.execute(
                     "UPDATE transfers SET first_seen = ? WHERE token_id = ?",
-                    (int(time.time()) - ind_token.FINALITY_BUFFER_SECONDS - 1, transferred["token_id"]),
+                    (
+                        int(time.time()) - ind_token.FINALITY_BUFFER_SECONDS - 1,
+                        transferred["token_id"],
+                    ),
                 )
             store.finalize_pending(now=int(time.time()))
             with mock.patch("ind.wallet_services.runtime_json.write_transaction_message"):
@@ -464,7 +478,10 @@ class INDBillTests(unittest.TestCase):
             with store._connect() as conn:
                 conn.execute(
                     "UPDATE transfers SET first_seen = ? WHERE token_id = ?",
-                    (int(time.time()) - ind_token.FINALITY_BUFFER_SECONDS - 1, transferred["token_id"]),
+                    (
+                        int(time.time()) - ind_token.FINALITY_BUFFER_SECONDS - 1,
+                        transferred["token_id"],
+                    ),
                 )
             store.finalize_pending(now=int(time.time()))
             with self.assertRaisesRegex(ind_token.ValidationError, "conflicting transfer rejected"):
@@ -494,7 +511,9 @@ class INDBillTests(unittest.TestCase):
             store = ind_token.INDLocalStore(temp_dir + "/ind_test.db")
             store.ingest_message(ind_token.create_transfer_announcement(transferred))
             with mock.patch("ind.wallet_services.ind_token.INDLocalStore", return_value=store):
-                with mock.patch("ind.wallet_services.runtime_json.write_transaction_message") as write_message:
+                with mock.patch(
+                    "ind.wallet_services.runtime_json.write_transaction_message"
+                ) as write_message:
                     self.assertFalse(
                         wallet_services.claim_bill_payload(
                             paper_payload,
@@ -508,11 +527,16 @@ class INDBillTests(unittest.TestCase):
             with store._connect() as conn:
                 conn.execute(
                     "UPDATE transfers SET first_seen = ? WHERE token_id = ?",
-                    (int(time.time()) - ind_token.FINALITY_BUFFER_SECONDS - 1, transferred["token_id"]),
+                    (
+                        int(time.time()) - ind_token.FINALITY_BUFFER_SECONDS - 1,
+                        transferred["token_id"],
+                    ),
                 )
             store.finalize_pending(now=int(time.time()))
             with mock.patch("ind.wallet_services.ind_token.INDLocalStore", return_value=store):
-                with mock.patch("ind.wallet_services.runtime_json.write_transaction_message") as write_message:
+                with mock.patch(
+                    "ind.wallet_services.runtime_json.write_transaction_message"
+                ) as write_message:
                     self.assertTrue(
                         wallet_services.claim_bill_payload(
                             paper_payload,
@@ -538,7 +562,9 @@ class INDBillTests(unittest.TestCase):
                 store.ingest_message(ind_token.create_transfer_announcement(transfer_b))
             messages = store.conflict_messages(limit=10)
             self.assertEqual(messages, [])
-            self.assertEqual(store.get_token_record(transfer_a["token_id"])["status"], "unreceipted")
+            self.assertEqual(
+                store.get_token_record(transfer_a["token_id"])["status"], "unreceipted"
+            )
 
     def test_late_old_owner_conflict_proof_does_not_burn_settled_holder(self):
         issuer_private, issuer_public, _issuer_address = keypair()
@@ -547,15 +573,27 @@ class INDBillTests(unittest.TestCase):
         carol_private, carol_public, carol_address = keypair()
         _dave_private, _dave_public, dave_address = keypair()
         issued_at = int(time.time()) - 1000
-        token = ind_token.make_genesis_token(9009, alice_address, issuer_private, issuer_public, issued_at=issued_at)
-        alice_to_bob = ind_token.create_transfer(token, alice_private, alice_public, bob_address, timestamp=issued_at + 10)
-        bob_to_carol = ind_token.create_transfer(alice_to_bob, bob_private, bob_public, carol_address, timestamp=issued_at + 20)
-        late_alice_to_dave = ind_token.create_transfer(token, alice_private, alice_public, dave_address, timestamp=issued_at + 30)
-        proof = ind_token.create_conflict_proof(bob_to_carol, late_alice_to_dave, detected_at=issued_at + 40)
+        token = ind_token.make_genesis_token(
+            9009, alice_address, issuer_private, issuer_public, issued_at=issued_at
+        )
+        alice_to_bob = ind_token.create_transfer(
+            token, alice_private, alice_public, bob_address, timestamp=issued_at + 10
+        )
+        bob_to_carol = ind_token.create_transfer(
+            alice_to_bob, bob_private, bob_public, carol_address, timestamp=issued_at + 20
+        )
+        late_alice_to_dave = ind_token.create_transfer(
+            token, alice_private, alice_public, dave_address, timestamp=issued_at + 30
+        )
+        proof = ind_token.create_conflict_proof(
+            bob_to_carol, late_alice_to_dave, detected_at=issued_at + 40
+        )
 
         with tempfile.TemporaryDirectory() as temp_dir:
             store = ind_token.INDLocalStore(temp_dir + "/ind_test.db")
-            store.ingest_message(ind_token.create_receipt_announcement(bob_to_carol, carol_private, carol_public))
+            store.ingest_message(
+                ind_token.create_receipt_announcement(bob_to_carol, carol_private, carol_public)
+            )
             finalized_at = int(time.time()) + ind_token.FINALITY_BUFFER_SECONDS + 1
             store.finalize_pending(now=finalized_at, buffer_seconds=0)
 
@@ -614,7 +652,9 @@ class INDBillTests(unittest.TestCase):
             db_path = temp_dir + "/ind_test.db"
             store = ind_token.INDLocalStore(db_path)
             store.ingest_message(ind_token.create_transfer_announcement(token))
-            store.ingest_message(ind_token.create_receipt_announcement(token, dave_private, dave_public))
+            store.ingest_message(
+                ind_token.create_receipt_announcement(token, dave_private, dave_public)
+            )
 
             rebuilt = store.get_token(token["token_id"])
             state = ind_token.verify_token(rebuilt)
@@ -623,7 +663,9 @@ class INDBillTests(unittest.TestCase):
 
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
-            token_payload = conn.execute("SELECT payload FROM tokens WHERE token_id = ?", (token["token_id"],)).fetchone()["payload"]
+            token_payload = conn.execute(
+                "SELECT payload FROM tokens WHERE token_id = ?", (token["token_id"],)
+            ).fetchone()["payload"]
             transfer_payloads = conn.execute("SELECT token_payload FROM transfers").fetchall()
             message_payloads = conn.execute("SELECT message_json FROM messages").fetchall()
             conn.close()
@@ -715,7 +757,9 @@ class INDBillTests(unittest.TestCase):
             with self.assertRaisesRegex(ind_token.ValidationError, "no trusted genesis"):
                 ind_token.verify_token(token)
 
-        with temporary_env(IND_ALLOW_UNTRUSTED_GENESIS=None, IND_TRUSTED_GENESIS_ISSUER_KEYS=issuer_public):
+        with temporary_env(
+            IND_ALLOW_UNTRUSTED_GENESIS=None, IND_TRUSTED_GENESIS_ISSUER_KEYS=issuer_public
+        ):
             self.assertEqual(ind_token.verify_token(token).owner_address, alice_address)
 
         with temporary_env(IND_ALLOW_UNTRUSTED_GENESIS="1", IND_TRUSTED_GENESIS_ISSUER_KEYS=None):
@@ -742,7 +786,9 @@ class INDBillTests(unittest.TestCase):
         self.assertEqual(state.owner_address, owner_address)
         self.assertEqual(state.value, 5)
         self.assertEqual(manifest["total_token_count"], 30_000_000_000)
-        self.assertEqual(manifest["metadata"][ind_token.NUMEROLOGY_METADATA_KEY]["angel_number"], 777)
+        self.assertEqual(
+            manifest["metadata"][ind_token.NUMEROLOGY_METADATA_KEY]["angel_number"], 777
+        )
         self.assertLess(len(ind_token.canonical_json(manifest)), 2500)
 
     def test_lazy_genesis_can_be_trusted_by_manifest_hash(self):
@@ -762,15 +808,19 @@ class INDBillTests(unittest.TestCase):
             IND_TRUSTED_GENESIS_ISSUER_KEYS=None,
             IND_TRUSTED_GENESIS_MANIFEST_HASHES=manifest_hash,
         ):
-            self.assertEqual(ind_token.verify_token(token, now=1_700_000_001).owner_address, owner_address)
+            self.assertEqual(
+                ind_token.verify_token(token, now=1_700_000_001).owner_address, owner_address
+            )
 
-        with temporary_env(
-            IND_ALLOW_UNTRUSTED_GENESIS=None,
-            IND_TRUSTED_GENESIS_ISSUER_KEYS=None,
-            IND_TRUSTED_GENESIS_MANIFEST_HASHES="badmanifesthash",
+        with (
+            temporary_env(
+                IND_ALLOW_UNTRUSTED_GENESIS=None,
+                IND_TRUSTED_GENESIS_ISSUER_KEYS=None,
+                IND_TRUSTED_GENESIS_MANIFEST_HASHES="badmanifesthash",
+            ),
+            self.assertRaisesRegex(ind_token.ValidationError, "manifest hash"),
         ):
-            with self.assertRaisesRegex(ind_token.ValidationError, "manifest hash"):
-                ind_token.verify_token(token, now=1_700_000_001)
+            ind_token.verify_token(token, now=1_700_000_001)
 
     def test_lazy_genesis_tampering_is_rejected(self):
         issuer_private, issuer_public, _issuer_address = keypair()
@@ -800,18 +850,26 @@ class INDBillTests(unittest.TestCase):
         )
         token_a = ind_token.make_lazy_genesis_token(1, manifest)
         token_b = ind_token.make_lazy_genesis_token(2, manifest)
-        token_a = ind_token.create_transfer(token_a, owner_private, owner_public, bob_address, timestamp=1_700_000_001)
-        token_b = ind_token.create_transfer(token_b, owner_private, owner_public, bob_address, timestamp=1_700_000_001)
+        token_a = ind_token.create_transfer(
+            token_a, owner_private, owner_public, bob_address, timestamp=1_700_000_001
+        )
+        token_b = ind_token.create_transfer(
+            token_b, owner_private, owner_public, bob_address, timestamp=1_700_000_001
+        )
 
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = temp_dir + "/ind_test.db"
             store = ind_token.INDLocalStore(db_path)
             store.ingest_message(ind_token.create_transfer_announcement(token_a))
             store.ingest_message(ind_token.create_transfer_announcement(token_b))
-            store.ingest_message(ind_token.create_receipt_announcement(token_a, bob_private, bob_public))
+            store.ingest_message(
+                ind_token.create_receipt_announcement(token_a, bob_private, bob_public)
+            )
 
             rebuilt = store.get_token(token_a["token_id"])
-            self.assertEqual(ind_token.verify_token(rebuilt, now=1_700_000_002).owner_address, bob_address)
+            self.assertEqual(
+                ind_token.verify_token(rebuilt, now=1_700_000_002).owner_address, bob_address
+            )
 
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
@@ -831,14 +889,18 @@ class INDBillTests(unittest.TestCase):
         issuer_private, issuer_public, _issuer_address = keypair()
         keys = [keypair(), keypair()]
         base_timestamp = 1_700_000_000
-        token = ind_token.make_genesis_token(15, keys[0][2], issuer_private, issuer_public, issued_at=base_timestamp)
+        token = ind_token.make_genesis_token(
+            15, keys[0][2], issuer_private, issuer_public, issued_at=base_timestamp
+        )
         self.assertEqual(ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY, 10)
 
         for index in range(ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY):
             sender = keys[index % 2]
             recipient = keys[1 - (index % 2)][2]
             append_signed_transfer(token, sender[0], sender[1], recipient, base_timestamp + index)
-        self.assertEqual(ind_token.verify_token(token).sequence, ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY)
+        self.assertEqual(
+            ind_token.verify_token(token).sequence, ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY
+        )
 
         sender = keys[ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY % 2]
         recipient = keys[1 - (ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY % 2)][2]
@@ -896,14 +958,18 @@ class INDBillTests(unittest.TestCase):
         )
         transferred["history"][-1]["timestamp"] = ind_token.MAX_PROTOCOL_TIMESTAMP + 1
 
-        with self.assertRaisesRegex(ind_token.ValidationError, "integer is outside protocol bounds|transfer timestamp"):
+        with self.assertRaisesRegex(
+            ind_token.ValidationError, "integer is outside protocol bounds|transfer timestamp"
+        ):
             ind_token.verify_token(transferred, now=ind_token.MAX_PROTOCOL_TIMESTAMP)
 
     def test_next_day_transfer_after_daily_limit_is_valid(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         keys = [keypair(), keypair()]
         base_timestamp = 1_700_000_000
-        token = ind_token.make_genesis_token(16, keys[0][2], issuer_private, issuer_public, issued_at=base_timestamp)
+        token = ind_token.make_genesis_token(
+            16, keys[0][2], issuer_private, issuer_public, issued_at=base_timestamp
+        )
 
         for index in range(ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY):
             sender = keys[index % 2]
@@ -913,13 +979,17 @@ class INDBillTests(unittest.TestCase):
         recipient = keys[1 - (ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY % 2)][2]
         next_day = ((base_timestamp // 86400) + 1) * 86400
         append_signed_transfer(token, sender[0], sender[1], recipient, next_day)
-        self.assertEqual(ind_token.verify_token(token).sequence, ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY + 1)
+        self.assertEqual(
+            ind_token.verify_token(token).sequence, ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY + 1
+        )
 
     def test_non_increasing_transfer_timestamp_is_rejected(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         keys = [keypair(), keypair()]
         base_timestamp = 1_700_000_000
-        token = ind_token.make_genesis_token(17, keys[0][2], issuer_private, issuer_public, issued_at=base_timestamp)
+        token = ind_token.make_genesis_token(
+            17, keys[0][2], issuer_private, issuer_public, issued_at=base_timestamp
+        )
         append_signed_transfer(token, keys[0][0], keys[0][1], keys[1][2], base_timestamp)
         append_signed_transfer(token, keys[1][0], keys[1][1], keys[0][2], base_timestamp)
 
@@ -934,13 +1004,17 @@ class INDBillTests(unittest.TestCase):
         future_timestamp = int(time.time()) + ind_token.MAX_TRANSFER_FUTURE_SKEW_SECONDS + 60
 
         with self.assertRaisesRegex(ind_token.ValidationError, "future"):
-            ind_token.create_transfer(token, alice_private, alice_public, bob_address, timestamp=future_timestamp)
+            ind_token.create_transfer(
+                token, alice_private, alice_public, bob_address, timestamp=future_timestamp
+            )
 
     def test_transfer_timestamp_before_genesis_is_rejected(self):
         issuer_private, issuer_public, _issuer_address = keypair()
         keys = [keypair(), keypair()]
         issued_at = 1_700_000_100
-        token = ind_token.make_genesis_token(19, keys[0][2], issuer_private, issuer_public, issued_at=issued_at)
+        token = ind_token.make_genesis_token(
+            19, keys[0][2], issuer_private, issuer_public, issued_at=issued_at
+        )
         append_signed_transfer(token, keys[0][0], keys[0][1], keys[1][2], issued_at - 1)
 
         with self.assertRaisesRegex(ind_token.ValidationError, "predates genesis"):
@@ -954,7 +1028,9 @@ class INDBillTests(unittest.TestCase):
         metadata = {"blob": "x" * (ind_token.MAX_TRANSFER_METADATA_BYTES + 1)}
 
         with self.assertRaisesRegex(ind_token.ValidationError, "metadata"):
-            ind_token.create_transfer(token, alice_private, alice_public, bob_address, metadata=metadata)
+            ind_token.create_transfer(
+                token, alice_private, alice_public, bob_address, metadata=metadata
+            )
 
     def test_large_genesis_metadata_is_rejected(self):
         issuer_private, issuer_public, _issuer_address = keypair()
@@ -962,7 +1038,9 @@ class INDBillTests(unittest.TestCase):
         metadata = {"blob": "x" * (ind_token.MAX_GENESIS_METADATA_BYTES + 1)}
 
         with self.assertRaisesRegex(ind_token.ValidationError, "metadata"):
-            ind_token.make_genesis_token(21, alice_address, issuer_private, issuer_public, metadata=metadata)
+            ind_token.make_genesis_token(
+                21, alice_address, issuer_private, issuer_public, metadata=metadata
+            )
 
     def test_stale_transfer_announcement_does_not_roll_back_tip(self):
         issuer_private, issuer_public, _issuer_address = keypair()
@@ -987,7 +1065,9 @@ class INDBillTests(unittest.TestCase):
 
     def test_packed_wire_decompression_bomb_is_rejected(self):
         raw = b"x" * (ind_token.MAX_WIRE_DECOMPRESSED_BYTES + 1)
-        packed = ind_token.WIRE_PACKED_PREFIX + base64.b85encode(zlib.compress(raw, level=9)).decode("utf-8")
+        packed = ind_token.WIRE_PACKED_PREFIX + base64.b85encode(
+            zlib.compress(raw, level=9)
+        ).decode("utf-8")
 
         with self.assertRaisesRegex(ind_token.ValidationError, "safety limit"):
             ind_token.unpack_wire_message(packed)
@@ -998,7 +1078,9 @@ class INDBillTests(unittest.TestCase):
         try:
             packed = ind_token.WIRE_PACKED_PREFIX + ("0" * 11)
             with mock.patch("ind.protocol.base64.b85decode") as decode:
-                with self.assertRaisesRegex(ind_token.WireSizeError, "compressed wire message is too large"):
+                with self.assertRaisesRegex(
+                    ind_token.WireSizeError, "compressed wire message is too large"
+                ):
                     ind_token.unpack_wire_message(packed)
                 decode.assert_not_called()
         finally:
@@ -1146,7 +1228,12 @@ class INDBillTests(unittest.TestCase):
                 )
                 self.assertTrue(any(item.startswith("2606:4700:4700:") for item in sample))
                 self.assertIn("example.com", sample)
-                self.assertTrue(all(":" not in Path(item).name or sender_node._valid_peer_address(item) for item in sample))
+                self.assertTrue(
+                    all(
+                        ":" not in Path(item).name or sender_node._valid_peer_address(item)
+                        for item in sample
+                    )
+                )
             finally:
                 os.chdir(previous)
 

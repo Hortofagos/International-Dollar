@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Operator staged update rollout helper for signed IND update manifests."""
+# Operator staged update rollout helper for signed IND update manifests.
 
 import argparse
 import json
@@ -16,8 +16,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from ind import auto_update
-from ind import update_manifest
+from ind import auto_update, update_manifest
 
 
 def read_json(path):
@@ -28,7 +27,9 @@ def write_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
     os.replace(tmp, path)
 
 
@@ -128,7 +129,9 @@ def restart_units(units):
     for unit in units:
         results.append(run_command([systemctl, "restart", unit], timeout=120))
         if not results[-1]["ok"]:
-            raise RuntimeError(f"failed to restart {unit}: {results[-1]['stderr'] or results[-1]['stdout']}")
+            raise RuntimeError(
+                f"failed to restart {unit}: {results[-1]['stderr'] or results[-1]['stdout']}"
+            )
     return results
 
 
@@ -153,11 +156,23 @@ def command_install_canary(args):
     if info.error:
         raise RuntimeError(info.error)
     if not info.available:
-        print(json.dumps({"ok": True, "installed": False, "update": safe_update_info(info)}, sort_keys=True, indent=2))
+        print(
+            json.dumps(
+                {"ok": True, "installed": False, "update": safe_update_info(info)},
+                sort_keys=True,
+                indent=2,
+            )
+        )
         return 0
     if info.channel != "operator-canary":
-        raise RuntimeError(f"install-canary requires an operator-canary manifest, got {info.channel!r}")
-    backup = encrypted_backup(args.backup_path, args.backup_output, args.backup_passphrase_env) if args.backup_path else None
+        raise RuntimeError(
+            f"install-canary requires an operator-canary manifest, got {info.channel!r}"
+        )
+    backup = (
+        encrypted_backup(args.backup_path, args.backup_output, args.backup_passphrase_env)
+        if args.backup_path
+        else None
+    )
     result = auto_update.install_update(args.repo, info)
     if not result.success:
         raise RuntimeError(result.error or "canary install failed")
@@ -205,7 +220,9 @@ def promotion_matches_update(promotion, manifest):
     if int(promotion.get("sequence", -1)) != int(manifest.get("sequence", -2)):
         raise RuntimeError("promotion sequence does not match install manifest")
     promoted_hashes = list(promotion.get("artifact_hashes", []))
-    manifest_hashes = [str(item.get("sha3_256", "")).lower() for item in manifest.get("artifacts", [])]
+    manifest_hashes = [
+        str(item.get("sha3_256", "")).lower() for item in manifest.get("artifacts", [])
+    ]
     if promoted_hashes != manifest_hashes:
         raise RuntimeError("promotion artifact hashes do not match install manifest")
     return True
@@ -222,12 +239,24 @@ def command_install_promoted(args):
     if info.error:
         raise RuntimeError(info.error)
     if not info.available:
-        print(json.dumps({"ok": True, "installed": False, "update": safe_update_info(info)}, sort_keys=True, indent=2))
+        print(
+            json.dumps(
+                {"ok": True, "installed": False, "update": safe_update_info(info)},
+                sort_keys=True,
+                indent=2,
+            )
+        )
         return 0
     if info.channel != str(promotion.get("channel", "")):
-        raise RuntimeError(f"promotion channel {promotion.get('channel')!r} does not match update channel {info.channel!r}")
+        raise RuntimeError(
+            f"promotion channel {promotion.get('channel')!r} does not match update channel {info.channel!r}"
+        )
     promotion_matches_update(promotion, info.manifest or {})
-    backup = encrypted_backup(args.backup_path, args.backup_output, args.backup_passphrase_env) if args.backup_path else None
+    backup = (
+        encrypted_backup(args.backup_path, args.backup_output, args.backup_passphrase_env)
+        if args.backup_path
+        else None
+    )
     result = auto_update.install_update(args.repo, info)
     if not result.success:
         raise RuntimeError(result.error or "promoted install failed")
@@ -254,13 +283,19 @@ def command_install_promoted(args):
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Staged signed update rollout helper for IND operators")
+    parser = argparse.ArgumentParser(
+        description="Staged signed update rollout helper for IND operators"
+    )
     parser.add_argument("--repo", default=str(ROOT_DIR), help="IND checkout/install root")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("check", help="check the configured signed update endpoint").set_defaults(func=command_check)
+    sub.add_parser("check", help="check the configured signed update endpoint").set_defaults(
+        func=command_check
+    )
 
-    canary = sub.add_parser("install-canary", help="install an operator-canary release and run checks")
+    canary = sub.add_parser(
+        "install-canary", help="install an operator-canary release and run checks"
+    )
     canary.add_argument("--backup-path", action="append", default=[])
     canary.add_argument("--backup-output", default="files/operator_update_backup.tar.gz.enc")
     canary.add_argument("--backup-passphrase-env", default="IND_OPERATOR_BACKUP_PASSPHRASE")
@@ -279,7 +314,9 @@ def parse_args(argv=None):
     promote.add_argument("--output", default="")
     promote.set_defaults(func=command_promote)
 
-    promoted = sub.add_parser("install-promoted", help="install a release only after a signed promotion")
+    promoted = sub.add_parser(
+        "install-promoted", help="install a release only after a signed promotion"
+    )
     promoted.add_argument("--promotion", required=True)
     promoted.add_argument("--canary-manifest", required=True)
     promoted.add_argument("--trusted-signing-key", action="append", default=[])
@@ -298,7 +335,9 @@ def main(argv=None):
     try:
         return args.func(args)
     except Exception as exc:  # noqa: BLE001 - operator CLI should return clean JSON.
-        print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True, indent=2), file=sys.stderr)
+        print(
+            json.dumps({"ok": False, "error": str(exc)}, sort_keys=True, indent=2), file=sys.stderr
+        )
         return 1
 
 

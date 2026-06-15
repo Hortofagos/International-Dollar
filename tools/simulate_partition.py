@@ -2,11 +2,11 @@
 import base64
 import json
 import os
+import sys
 import tempfile
 import time
 from hashlib import sha3_256
 from pathlib import Path
-import sys
 
 import ecdsa
 
@@ -15,7 +15,6 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 import ind_token
-
 
 os.environ.setdefault("IND_ALLOW_UNTRUSTED_GENESIS", "1")
 
@@ -43,9 +42,13 @@ def main():
         node_b = ind_token.INDLocalStore(str(Path(temp_dir) / "node_b.db"))
 
         node_a.ingest_message(ind_token.create_transfer_announcement(branch_a))
-        node_a.ingest_message(ind_token.create_receipt_announcement(branch_a, bob_private, bob_public))
+        node_a.ingest_message(
+            ind_token.create_receipt_announcement(branch_a, bob_private, bob_public)
+        )
         node_b.ingest_message(ind_token.create_transfer_announcement(branch_b))
-        node_b.ingest_message(ind_token.create_receipt_announcement(branch_b, carol_private, carol_public))
+        node_b.ingest_message(
+            ind_token.create_receipt_announcement(branch_b, carol_private, carol_public)
+        )
 
         now = int(time.time()) + ind_token.FINALITY_BUFFER_SECONDS + 1
         settled_a = node_a.finalize_pending(now=now)

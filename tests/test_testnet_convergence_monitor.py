@@ -17,7 +17,9 @@ class TestnetConvergenceMonitorTests(unittest.TestCase):
                 }
             ]
 
-        with mock.patch.object(testnet_convergence_monitor.testnet_report, "query_peer_status", side_effect=fake_query):
+        with mock.patch.object(
+            testnet_convergence_monitor.testnet_report, "query_peer_status", side_effect=fake_query
+        ):
             report = testnet_convergence_monitor.build_report(["seed-a", "seed-b"], ["1x5"])
 
         self.assertTrue(report["ok"])
@@ -36,7 +38,9 @@ class TestnetConvergenceMonitorTests(unittest.TestCase):
                 }
             ]
 
-        with mock.patch.object(testnet_convergence_monitor.testnet_report, "query_peer_status", side_effect=fake_query):
+        with mock.patch.object(
+            testnet_convergence_monitor.testnet_report, "query_peer_status", side_effect=fake_query
+        ):
             report = testnet_convergence_monitor.build_report(["seed-a", "seed-b"], ["1x5"])
 
         self.assertFalse(report["ok"])
@@ -56,7 +60,9 @@ class TestnetConvergenceMonitorTests(unittest.TestCase):
                 }
             ]
 
-        with mock.patch.object(testnet_convergence_monitor.testnet_report, "query_peer_status", side_effect=fake_query):
+        with mock.patch.object(
+            testnet_convergence_monitor.testnet_report, "query_peer_status", side_effect=fake_query
+        ):
             report = testnet_convergence_monitor.build_report(["seed-a", "seed-b"], ["1x11"])
 
         self.assertTrue(report["ok"])
@@ -75,7 +81,9 @@ class TestnetConvergenceMonitorTests(unittest.TestCase):
                 }
             ]
 
-        with mock.patch.object(testnet_convergence_monitor.testnet_report, "query_peer_status", side_effect=fake_query):
+        with mock.patch.object(
+            testnet_convergence_monitor.testnet_report, "query_peer_status", side_effect=fake_query
+        ):
             report = testnet_convergence_monitor.build_report(["seed-a", "seed-b"], ["1x11"])
 
         self.assertFalse(report["ok"])
@@ -93,7 +101,9 @@ class TestnetConvergenceMonitorTests(unittest.TestCase):
                 }
             ]
 
-        with mock.patch.object(testnet_convergence_monitor.testnet_report, "query_peer_status", side_effect=fake_query):
+        with mock.patch.object(
+            testnet_convergence_monitor.testnet_report, "query_peer_status", side_effect=fake_query
+        ):
             report = testnet_convergence_monitor.build_report(["seed-a"], ["1x5"])
 
         self.assertFalse(report["ok"])
@@ -125,8 +135,12 @@ class TestnetConvergenceMonitorTests(unittest.TestCase):
             ]
 
         addrinfo = [(0, 0, 0, "", ("203.0.113.10", 0))]
-        with mock.patch.object(testnet_convergence_monitor.testnet_report, "query_peer_status", side_effect=fake_query):
-            with mock.patch.object(testnet_convergence_monitor.socket, "getaddrinfo", return_value=addrinfo):
+        with mock.patch.object(
+            testnet_convergence_monitor.testnet_report, "query_peer_status", side_effect=fake_query
+        ):
+            with mock.patch.object(
+                testnet_convergence_monitor.socket, "getaddrinfo", return_value=addrinfo
+            ):
                 report = testnet_convergence_monitor.build_report(["seed-a"], ["1x5"])
 
         self.assertTrue(report["ok"])
