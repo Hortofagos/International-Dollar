@@ -161,7 +161,9 @@ def verify_or_pin_peer_key(peer_ip, public_key_bytes):
         _write_key_json(key_path, "public_key", encoded)
         return
     if previous != encoded:
-        raise PeerKeyMismatch("peer transport key changed")
+        if ind_settings.reject_peer_key_changes():
+            raise PeerKeyMismatch("peer transport key changed")
+        _write_key_json(key_path, "public_key", encoded)
 
 
 def _read_line(conn, initial=b"", limit=MAX_HANDSHAKE_LINE_BYTES):

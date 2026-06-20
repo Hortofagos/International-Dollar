@@ -1,11 +1,13 @@
 import ipaddress
 import json
 import logging
+import math
 import os
 import random
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +21,20 @@ from . import transport as ind_transport
 logger = logging.getLogger(__name__)
 already_tried = []
 PORT = 8888
+
+
+def _env_int(name, default, minimum=None, maximum=None):
+    try:
+        result = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        result = int(default)
+    if minimum is not None:
+        result = max(int(minimum), result)
+    if maximum is not None:
+        result = min(int(maximum), result)
+    return result
+
+
 MAX_PEERS_PER_IPV4_C_BLOCK = 3
 MAX_PEERS_PER_ADDRESS_BLOCK = MAX_PEERS_PER_IPV4_C_BLOCK
 DEFAULT_DIVERSE_PEER_SAMPLE = 12
@@ -30,9 +46,37 @@ REQUEST_RATE_LIMIT_MAX_BACKOFF_SECONDS = 30
 BROADCAST_RECONCILE_ATTEMPTS = 2
 BROADCAST_RECONCILE_RETRY_DELAY_SECONDS = 1.5
 BROADCAST_RECONCILE_BUDGET_SECONDS = 20
+WALLET_SYNC_MAX_PEERS = 12
+WALLET_SYNC_WORKERS = 4
+WALLET_SYNC_REQUEST_TIMEOUT_SECONDS = 6
+WALLET_SYNC_REQUEST_BUDGET_SECONDS = 8
+WALLET_SYNC_FETCH_BUDGET_SECONDS = 30
+WALLET_SYNC_TOKEN_CURSOR_LIMIT = 5000
+WALLET_SEND_WINDOW_SECONDS = _env_int("IND_WALLET_SEND_WINDOW_SECONDS", 5, minimum=1)
+WALLET_MAX_GOSSIP_PER_PEER_WINDOW = _env_int(
+    "IND_WALLET_MAX_GOSSIP_PER_PEER_WINDOW", 100, minimum=1
+)
+WALLET_BROADCAST_MIN_PEER_ACKS = _env_int("IND_WALLET_BROADCAST_MIN_PEER_ACKS", 2, minimum=1)
+WALLET_BROADCAST_PEER_FANOUT = _env_int("IND_WALLET_BROADCAST_PEER_FANOUT", 2, minimum=1)
+WALLET_BROADCAST_PEER_TIMEOUT_SECONDS = _env_int(
+    "IND_WALLET_BROADCAST_PEER_TIMEOUT_SECONDS", 4, minimum=1, maximum=30
+)
+WALLET_BROADCAST_ROUTE_BUDGET_SECONDS = _env_int(
+    "IND_WALLET_BROADCAST_ROUTE_BUDGET_SECONDS", 6, minimum=1, maximum=45
+)
+WALLET_BROADCAST_BILL_BUDGET_SECONDS = _env_int(
+    "IND_WALLET_BROADCAST_BILL_BUDGET_SECONDS", 12, minimum=1, maximum=120
+)
+WALLET_QUEUED_RETRY_MAX_ATTEMPTS = _env_int(
+    "IND_WALLET_QUEUED_RETRY_MAX_ATTEMPTS", 12, minimum=1
+)
+WALLET_QUEUED_RETRY_MAX_DELAY_SECONDS = _env_int(
+    "IND_WALLET_QUEUED_RETRY_MAX_DELAY_SECONDS", 30, minimum=1
+)
+WALLET_SEND_MIN_OBSERVED_ETA_SENT = 3
 BROADCAST_RECONCILED_STATUSES = {
-    "unreceipted",
     "pending",
+    "verified",
     "settled",
     "settled_fresh",
     "strong_local",
@@ -45,18 +89,22 @@ REQUEST_HANDSHAKE_FAILED = "handshake_failed"
 REQUEST_PEER_KEY_MISMATCH = "peer_key_mismatch"
 REQUEST_INVALID = "invalid"
 REQUEST_OK = "ok"
+REQUEST_PARTIAL_ACK = "partial_ack"
 REQUEST_RETRYABLE_STATUSES = {
     REQUEST_TIMEOUT,
     REQUEST_RATE_LIMITED,
     REQUEST_CONNECTION_CLOSED,
     REQUEST_HANDSHAKE_FAILED,
+    REQUEST_PARTIAL_ACK,
 }
 REQUEST_FAILURE_STATUSES = REQUEST_RETRYABLE_STATUSES | {REQUEST_PEER_KEY_MISMATCH, REQUEST_INVALID}
+MISSING_TRANSPARENCY_VERIFIER = "transparency log verification is required but not configured"
 
 RUNTIME_DIRS = runtime_json.RUNTIME_DIRS
 _last_dns_seed_refresh = 0
 _peer_backoff_until = {}
 _peer_backoff_lock = threading.Lock()
+_paced_send_lock = threading.Lock()
 _queued_gossip_retries = set()
 _queued_gossip_retry_lock = threading.Lock()
 
@@ -71,6 +119,7 @@ class PeerRequestResult:
     attempts: tuple = ()
     retry_after_seconds: float = 0.0
     error: str = ""
+    acked_peers: tuple = ()
 
     @property
     def ok(self):
@@ -79,6 +128,40 @@ class PeerRequestResult:
 
 def node_port():
     return ind_settings.node_port()
+
+
+def _env_enabled(name):
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _allow_development_transparency_fallback():
+    if _env_enabled("IND_REQUIRE_TRANSPARENCY_LOG"):
+        return False
+    try:
+        settings = ind_settings.load_security_settings(validate_production=False)
+    except Exception:
+        return False
+    return not ind_settings.production_mode(settings)
+
+
+def wallet_sync_store(db_path=None):
+    kwargs = {"db_path": db_path} if db_path is not None else {}
+    if _allow_development_transparency_fallback():
+        logger.info(
+            "strict transparency verifier is not configured; "
+            "wallet sync is using development local-proof mode"
+        )
+        return ind_token.INDLocalStore(require_transparency=False, **kwargs)
+    try:
+        return ind_token.INDLocalStore(**kwargs)
+    except ind_token.ValidationError as exc:
+        if MISSING_TRANSPARENCY_VERIFIER in str(exc) and _allow_development_transparency_fallback():
+            logger.info(
+                "strict transparency verifier is not configured; "
+                "wallet sync is using development local-proof mode"
+            )
+            return ind_token.INDLocalStore(require_transparency=False, **kwargs)
+        raise
 
 
 def _runtime_path(path):
@@ -483,15 +566,44 @@ def _peer_backoff_remaining(peer, now=None):
         return remaining
 
 
-def _note_rate_limited(peer, route):
-    delay = _rate_limit_backoff_seconds()
+def _retry_after_from_response(response):
+    response = str(response or "").strip()
+    if response.startswith(REQUEST_RATE_LIMITED + ":"):
+        try:
+            return max(0.0, float(response.split(":", 1)[1]))
+        except (TypeError, ValueError):
+            return 0.0
+    try:
+        decoded = json.loads(response)
+    except Exception:
+        return 0.0
+    if isinstance(decoded, dict) and decoded.get("status") == REQUEST_RATE_LIMITED:
+        try:
+            return max(0.0, float(decoded.get("retry_after_seconds") or 0))
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
+def _note_rate_limited(peer, route, delay=None):
+    delay = _rate_limit_backoff_seconds() if delay is None else float(delay)
     return max(_set_peer_backoff(peer, delay), _set_peer_backoff(route, delay))
 
 
 def _response_status(response):
-    response = str(response or "")
-    if response == REQUEST_RATE_LIMITED:
+    response = str(response or "").strip()
+    if response == REQUEST_RATE_LIMITED or response.startswith(REQUEST_RATE_LIMITED + ":"):
         return REQUEST_RATE_LIMITED
+    try:
+        decoded = json.loads(response)
+    except Exception:
+        decoded = None
+    if isinstance(decoded, dict):
+        status = str(decoded.get("status") or "")
+        if status == REQUEST_RATE_LIMITED:
+            return REQUEST_RATE_LIMITED
+        if status in {"invalid", "rejected"}:
+            return REQUEST_INVALID
     if response in {"", "n", REQUEST_INVALID, "too_many_refs"}:
         return REQUEST_INVALID
     return REQUEST_OK
@@ -656,7 +768,11 @@ def connect_result(
             status = _response_status(response)
             retry_after = 0.0
             if status == REQUEST_RATE_LIMITED:
-                retry_after = _note_rate_limited(peer, route)
+                retry_after = _note_rate_limited(
+                    peer,
+                    route,
+                    delay=_retry_after_from_response(response) or None,
+                )
             attempts.append(
                 _attempt_dict(
                     peer,
@@ -748,6 +864,333 @@ def _retry_delay_for_result(result):
     return 0.0
 
 
+class OutboundGossipPacer:
+    def __init__(
+        self,
+        limit=WALLET_MAX_GOSSIP_PER_PEER_WINDOW,
+        window_seconds=WALLET_SEND_WINDOW_SECONDS,
+        now_func=None,
+    ):
+        self.limit = max(1, int(limit))
+        self.window_seconds = max(1.0, float(window_seconds))
+        self.now_func = now_func or time.monotonic
+        self.events = {}
+
+    def _now(self, now=None):
+        return float(self.now_func() if now is None else now)
+
+    def _trim(self, peer, now=None):
+        peer = str(peer or "").strip()
+        if not peer:
+            return []
+        now = self._now(now)
+        cutoff = now - self.window_seconds
+        timestamps = [item for item in self.events.get(peer, []) if item > cutoff]
+        self.events[peer] = timestamps
+        return timestamps
+
+    def available(self, peer, now=None):
+        return len(self._trim(peer, now=now)) < self.limit
+
+    def available_peers(self, peers, now=None):
+        now = self._now(now)
+        return [peer for peer in peers if self.available(peer, now=now)]
+
+    def wait_seconds(self, peers, now=None):
+        now = self._now(now)
+        waits = []
+        for peer in peers:
+            timestamps = self._trim(peer, now=now)
+            if len(timestamps) < self.limit:
+                return 0.0
+            waits.append(timestamps[0] + self.window_seconds - now)
+        if not waits:
+            return 0.0
+        return max(0.0, min(waits))
+
+    def record(self, peer, now=None):
+        peer = str(peer or "").strip()
+        if not peer:
+            return
+        now = self._now(now)
+        timestamps = self._trim(peer, now=now)
+        timestamps.append(now)
+        self.events[peer] = timestamps
+
+    def record_result(self, result, now=None):
+        now = self._now(now)
+        for attempt in result.attempts:
+            status = attempt.get("status", "")
+            if status not in {
+                REQUEST_OK,
+                REQUEST_RATE_LIMITED,
+                REQUEST_TIMEOUT,
+                REQUEST_INVALID,
+            }:
+                continue
+            peer = attempt.get("peer", "")
+            if peer:
+                self.record(peer, now=now)
+
+
+def _is_v3_transfer_announcement(message):
+    return (
+        isinstance(message, dict)
+        and message.get("type")
+        == getattr(ind_token, "TRANSFER_ANNOUNCEMENT_V3_TYPE", "ind.transfer_announcement.v3")
+    )
+
+
+def _validate_v3_transfer_announcement_for_broadcast(store, message):
+    from . import protocol_v3
+
+    _bill, embedded_bundle, _archive_segments = protocol_v3.decode_transfer_announcement(message)
+    trusted_operator_public_key = None
+    trusted_key_getter = getattr(store, "_trusted_operator_key_from_proof_bundle_v3", None)
+    if callable(trusted_key_getter) and embedded_bundle is not None:
+        trusted_operator_public_key = trusted_key_getter(embedded_bundle)
+    protocol_v3.verify_transfer_announcement(
+        message,
+        proof_bundle_resolver=getattr(store, "proof_bundle_resolver_v3", None),
+        transparency_verifier=getattr(store, "transparency_verifier", None),
+        trusted_operator_public_key=trusted_operator_public_key,
+        archive_segment_resolver=getattr(store, "archive_segment_resolver_v3", None),
+    )
+
+
+def _prepare_queued_gossip_for_broadcast(transaction_path, store):
+    message = runtime_json.read_transaction_message(transaction_path)
+    if _is_v3_transfer_announcement(message):
+        _validate_v3_transfer_announcement_for_broadcast(store, message)
+        result = {"accepted": True}
+    else:
+        result = store.ingest_message(message)
+    return message, ind_token.pack_wire_message(message), result
+
+
+def _result_attempts(result):
+    return tuple(getattr(result, "attempts", ()) or ())
+
+
+def _broadcast_gossip_to_peer_quorum(
+    raw,
+    peers,
+    *,
+    pacer=None,
+    min_peer_acks=None,
+    fanout=None,
+    timeout=None,
+    route_budget_seconds=None,
+    bill_budget_seconds=None,
+    deadline=None,
+):
+    peers = _dedupe_preserving_order(str(peer).strip() for peer in peers or [] if str(peer).strip())
+    if not raw or not peers:
+        return PeerRequestResult(
+            status=REQUEST_CONNECTION_CLOSED,
+            error="no peer routes available",
+        )
+
+    min_peer_acks = max(1, int(min_peer_acks or WALLET_BROADCAST_MIN_PEER_ACKS))
+    min_peer_acks = min(min_peer_acks, len(peers))
+    fanout = max(min_peer_acks, int(fanout or WALLET_BROADCAST_PEER_FANOUT))
+    fanout = min(fanout, len(peers))
+    timeout = float(timeout or WALLET_BROADCAST_PEER_TIMEOUT_SECONDS)
+    route_budget_seconds = float(route_budget_seconds or WALLET_BROADCAST_ROUTE_BUDGET_SECONDS)
+    bill_budget_seconds = float(bill_budget_seconds or WALLET_BROADCAST_BILL_BUDGET_SECONDS)
+    local_deadline = time.monotonic() + max(1.0, bill_budget_seconds)
+    if deadline is not None:
+        local_deadline = min(local_deadline, float(deadline))
+
+    attempts = []
+    acked_peers = []
+    tried_peers = set()
+    retry_after = 0.0
+    last_response = ""
+    last_peer = ""
+    last_route = ""
+    statuses = []
+
+    while len(acked_peers) < min_peer_acks:
+        remaining = local_deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        remaining_peers = [peer for peer in peers if peer not in tried_peers]
+        if not remaining_peers:
+            break
+        ready_peers = remaining_peers if pacer is None else pacer.available_peers(remaining_peers)
+        if not ready_peers:
+            delay = max(0.1, pacer.wait_seconds(remaining_peers) if pacer is not None else 0.1)
+            if delay >= remaining or not _can_wait_for(deadline, delay):
+                break
+            time.sleep(delay)
+            continue
+
+        batch = ready_peers[:fanout]
+        for peer in batch:
+            tried_peers.add(peer)
+        request_budget = max(1.0, min(route_budget_seconds, local_deadline - time.monotonic()))
+
+        def send_one(peer, request_budget=request_budget):
+            return peer, connect_result(
+                "b",
+                raw,
+                [peer],
+                timeout=timeout,
+                max_duration_seconds=request_budget,
+            )
+
+        if len(batch) == 1:
+            results = [send_one(batch[0])]
+        else:
+            results = []
+            with ThreadPoolExecutor(max_workers=len(batch)) as executor:
+                futures = [executor.submit(send_one, peer) for peer in batch]
+                for future in as_completed(futures):
+                    results.append(future.result())
+
+        for requested_peer, result in results:
+            if pacer is not None:
+                pacer.record_result(result)
+            retry_after = max(retry_after, float(getattr(result, "retry_after_seconds", 0) or 0))
+            statuses.append(result.status)
+            attempts.extend(_result_attempts(result))
+            last_response = result.response
+            last_peer = result.peer or requested_peer
+            last_route = result.route or requested_peer
+            if result.status == REQUEST_OK:
+                peer_key = result.peer or requested_peer
+                if peer_key not in acked_peers:
+                    acked_peers.append(peer_key)
+            if len(acked_peers) >= min_peer_acks:
+                break
+
+    if len(acked_peers) >= min_peer_acks:
+        status = REQUEST_OK
+        error = ""
+    elif acked_peers:
+        status = REQUEST_PARTIAL_ACK
+        error = f"only {len(acked_peers)} of {min_peer_acks} peer acknowledgements"
+    elif REQUEST_INVALID in statuses:
+        status = REQUEST_INVALID
+        error = "all reachable peers rejected gossip" if statuses else ""
+    elif REQUEST_RATE_LIMITED in statuses:
+        status = REQUEST_RATE_LIMITED
+        error = "peer quorum rate limited"
+    elif statuses:
+        status = statuses[-1]
+        error = "peer quorum not reached"
+    else:
+        status = REQUEST_TIMEOUT
+        error = "peer quorum budget exhausted"
+
+    return PeerRequestResult(
+        status=status,
+        response=last_response,
+        peer=last_peer,
+        route=last_route,
+        attempts=tuple(attempts),
+        retry_after_seconds=retry_after,
+        error=error,
+        acked_peers=tuple(acked_peers),
+    )
+
+
+def _send_progress_payload(
+    event,
+    *,
+    total,
+    sent,
+    queued_remaining,
+    rate_limited_peers=None,
+    eta_seconds=0,
+    message="",
+    **extra,
+):
+    payload = {
+        "event": str(event),
+        "total": int(total or 0),
+        "sent": int(sent or 0),
+        "queued_remaining": int(queued_remaining or 0),
+        "rate_limited_peers": int(rate_limited_peers or 0),
+        "eta_seconds": max(0, int(math.ceil(float(eta_seconds or 0)))),
+        "message": str(message or ""),
+    }
+    payload.update(extra)
+    return payload
+
+
+def _emit_send_progress(progress_callback, event, **details):
+    if not callable(progress_callback):
+        return
+    try:
+        progress_callback(_send_progress_payload(event, **details))
+    except Exception:
+        logger.debug("wallet send progress callback failed", exc_info=True)
+
+
+def _transaction_file_count():
+    try:
+        return len(runtime_json.transaction_files())
+    except Exception:
+        return 0
+
+
+def _queued_send_peers():
+    ipnl1 = diverse_peer_sample(_peer_files('ip_folder/1'), limit=6)
+    ipnl2 = _with_configured_peers(diverse_peer_sample(_peer_files('ip_folder/2'), limit=12))
+    return _dedupe_preserving_order(ipnl1 + ipnl2)
+
+
+def _rate_limited_attempt_peers(result):
+    peers = set()
+    for attempt in result.attempts:
+        if attempt.get("status") == REQUEST_RATE_LIMITED:
+            peer = attempt.get("peer") or attempt.get("route")
+            if peer:
+                peers.add(peer)
+    return peers
+
+
+def _estimate_send_eta(sent, queued_remaining, started_at, peer_count, now=None):
+    queued_remaining = int(queued_remaining or 0)
+    if queued_remaining <= 0:
+        return 0
+    now = time.monotonic() if now is None else float(now)
+    elapsed = max(0.0, now - float(started_at))
+    observed_rate = 0.0
+    if sent >= WALLET_SEND_MIN_OBSERVED_ETA_SENT and elapsed > 0:
+        observed_rate = float(sent) / elapsed
+    configured_rate = (
+        max(1, int(peer_count or 0))
+        * float(WALLET_MAX_GOSSIP_PER_PEER_WINDOW)
+        / float(WALLET_SEND_WINDOW_SECONDS)
+    )
+    rate = observed_rate or configured_rate
+    if rate <= 0:
+        return 0
+    return int(math.ceil(queued_remaining / rate))
+
+
+def _remaining_deadline_seconds(deadline):
+    if deadline is None:
+        return None
+    return max(0.0, float(deadline) - time.monotonic())
+
+
+def _can_wait_for(deadline, delay_seconds):
+    remaining = _remaining_deadline_seconds(deadline)
+    return remaining is None or remaining >= float(delay_seconds)
+
+
+def _remove_transaction_file(transaction_path):
+    try:
+        os.remove(transaction_path)
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def _parse_status_response(raw):
     lines = [line.strip() for line in str(raw or "").splitlines() if line.strip()]
     records = []
@@ -814,8 +1257,6 @@ def _gossip_bill(message):
             return bill
         except Exception:
             return None
-    if message_type == protocol_v3.RECEIPT_ANNOUNCEMENT_TYPE:
-        return message.get("bill")
     return None
 
 
@@ -827,7 +1268,7 @@ def _broadcast_status_expectation(message):
         return None
     try:
         if isinstance(bill, dict) and bill.get("type") == protocol_v3.BILL_TYPE:
-            store = ind_token.INDLocalStore()
+            store = wallet_sync_store()
             state = protocol_v3.verify_bill(
                 bill,
                 proof_bundle_resolver=store.proof_bundle_resolver_v3,
@@ -901,6 +1342,83 @@ def _remote_status_confirms_gossip(message, peers, *, attempts=BROADCAST_RECONCI
     return False
 
 
+def _queued_retry_delay_seconds(result=None, fallback=None):
+    if fallback is not None:
+        return max(
+            0.0,
+            min(float(WALLET_QUEUED_RETRY_MAX_DELAY_SECONDS), float(fallback)),
+        )
+    elif result is not None:
+        delay = _retry_delay_for_result(result)
+    else:
+        delay = _rate_limit_backoff_seconds()
+    if delay <= 0:
+        delay = _rate_limit_backoff_seconds()
+    return max(0.1, min(float(WALLET_QUEUED_RETRY_MAX_DELAY_SECONDS), float(delay)))
+
+
+def _run_queued_gossip_retry(transaction_path, raw, peers, *, initial_delay_seconds=None):
+    transaction_path = Path(transaction_path)
+    delay = _queued_retry_delay_seconds(fallback=initial_delay_seconds)
+    max_attempts = max(1, int(WALLET_QUEUED_RETRY_MAX_ATTEMPTS))
+
+    for attempt in range(1, max_attempts + 1):
+        if delay > 0:
+            time.sleep(delay)
+        if not transaction_path.exists():
+            return True
+
+        result = _broadcast_gossip_to_peer_quorum(
+            raw,
+            peers,
+            pacer=OutboundGossipPacer(),
+        )
+        if result.status == REQUEST_OK:
+            if _remove_transaction_file(transaction_path):
+                logger.info("queued gossip %s accepted after background retry", transaction_path)
+            return True
+
+        try:
+            queued_message = runtime_json.read_transaction_message(transaction_path)
+        except FileNotFoundError:
+            return True
+        except Exception as exc:
+            queued_message = None
+            logger.debug(
+                "could not read queued gossip %s for reconciliation: %s",
+                transaction_path,
+                exc,
+            )
+
+        if queued_message and _remote_status_confirms_gossip(queued_message, peers):
+            if _remove_transaction_file(transaction_path):
+                logger.info(
+                    "queued gossip %s confirmed by status after background retry",
+                    transaction_path,
+                )
+            return True
+
+        if attempt >= max_attempts:
+            break
+
+        delay = _queued_retry_delay_seconds(result)
+        logger.info(
+            "queued gossip %s retry %s/%s failed as %s; retrying in %.1fs",
+            transaction_path,
+            attempt,
+            max_attempts,
+            result.status,
+            delay,
+        )
+
+    logger.info(
+        "queued gossip %s remains pending after %s retry attempts",
+        transaction_path,
+        max_attempts,
+    )
+    return False
+
+
 def _schedule_raw_gossip_retry(raw, peers, *, delay_seconds=None):
     peers = _ordered_peer_candidates(peers)
     if not raw or not peers:
@@ -910,7 +1428,12 @@ def _schedule_raw_gossip_retry(raw, peers, *, delay_seconds=None):
         delay = float(_rate_limit_backoff_seconds() if delay_seconds is None else delay_seconds)
         if delay > 0:
             time.sleep(delay)
-        result = connect_result("b", raw, peers)
+        result = _broadcast_gossip_to_peer_quorum(
+            raw,
+            peers,
+            pacer=OutboundGossipPacer(),
+            min_peer_acks=1,
+        )
         if result.status != REQUEST_OK:
             logger.info(
                 "background gossip retry kept failing with %s for peers %s", result.status, peers
@@ -933,45 +1456,12 @@ def _schedule_queued_gossip_retry(transaction_path, raw, peers, *, delay_seconds
 
     def retry():
         try:
-            delay = float(_rate_limit_backoff_seconds() if delay_seconds is None else delay_seconds)
-            if delay > 0:
-                time.sleep(delay)
-            result = connect_result("b", raw, peers)
-            if result.status == REQUEST_OK:
-                try:
-                    os.remove(transaction_path)
-                    logger.info(
-                        "queued gossip %s accepted after background retry", transaction_path
-                    )
-                except FileNotFoundError:
-                    pass
-            else:
-                try:
-                    queued_message = runtime_json.read_transaction_message(transaction_path)
-                except FileNotFoundError:
-                    return
-                except Exception as exc:
-                    queued_message = None
-                    logger.debug(
-                        "could not read queued gossip %s for reconciliation: %s",
-                        transaction_path,
-                        exc,
-                    )
-                if queued_message and _remote_status_confirms_gossip(queued_message, peers):
-                    try:
-                        os.remove(transaction_path)
-                        logger.info(
-                            "queued gossip %s confirmed by status after background retry",
-                            transaction_path,
-                        )
-                    except FileNotFoundError:
-                        pass
-                    return
-                logger.info(
-                    "queued gossip %s remains pending after %s retry",
-                    transaction_path,
-                    result.status,
-                )
+            _run_queued_gossip_retry(
+                transaction_path,
+                raw,
+                peers,
+                initial_delay_seconds=delay_seconds,
+            )
         finally:
             with _queued_gossip_retry_lock:
                 _queued_gossip_retries.discard(key)
@@ -1003,75 +1493,251 @@ def public_ip():
     return None
 
 
-# Validate queued wallet gossip locally, then broadcast it to sampled peers.
-def send_bills():
-    ensure_runtime_files()
-    ipnl1 = diverse_peer_sample(_peer_files('ip_folder/1'), limit=6)
-    ipnl2 = _with_configured_peers(diverse_peer_sample(_peer_files('ip_folder/2'), limit=12))
-    store = ind_token.INDLocalStore()
-    for transaction_path in runtime_json.transaction_files():
-        tm = runtime_json.read_transaction_message(transaction_path)
-        try:
-            result = store.ingest_message(tm)
-            proof = result.get("conflict_proof")
-            if proof:
-                broadcast_message(proof)
-        except Exception as exc:
-            logger.debug("dropping invalid queued transaction %s: %s", transaction_path, exc)
-            os.remove(transaction_path)
-            continue
-        wire_message = ind_token.pack_wire_message(tm)
-        peers = _dedupe_preserving_order(ipnl1 + ipnl2)
-        result = connect_result('b', wire_message, peers)
-        if result.status == REQUEST_OK:
-            failed_peers = _failed_peers_before_success(result)
-            if failed_peers:
-                _schedule_queued_gossip_retry(
-                    transaction_path,
-                    wire_message,
-                    failed_peers,
-                    delay_seconds=_retry_delay_for_result(result),
-                )
-                logger.info(
-                    "queued gossip %s accepted by %s; retrying failed peers %s in background",
-                    transaction_path,
-                    result.route or result.peer,
-                    failed_peers,
-                )
-            else:
-                os.remove(transaction_path)
-            continue
-        if result.status == REQUEST_INVALID:
-            logger.warning("dropping remotely invalid queued transaction %s", transaction_path)
-            os.remove(transaction_path)
-            continue
-        if result.status in REQUEST_RETRYABLE_STATUSES and _remote_status_confirms_gossip(
-            tm, peers
-        ):
-            os.remove(transaction_path)
-            logger.info(
-                "removed queued transaction %s after status reconciliation", transaction_path
+# Validate queued wallet gossip locally, then broadcast it to sampled peers at a polite pace.
+def send_queued_bills_paced(progress_callback=None, max_duration_seconds=None):
+    if not _paced_send_lock.acquire(blocking=False):
+        queued = _transaction_file_count()
+        _emit_send_progress(
+            progress_callback,
+            "waiting",
+            total=queued,
+            sent=0,
+            queued_remaining=queued,
+            eta_seconds=0,
+            message="Outgoing sends are already running; new bills will stay in the queue.",
+        )
+        return {
+            "status": "running",
+            "total": queued,
+            "sent": 0,
+            "dropped": 0,
+            "queued_remaining": queued,
+            "rate_limited_peers": 0,
+        }
+
+    try:
+        ensure_runtime_files()
+        started_at = time.monotonic()
+        deadline = (
+            None
+            if max_duration_seconds is None
+            else started_at + max(0.0, float(max_duration_seconds))
+        )
+        initial_total = _transaction_file_count()
+        sent = 0
+        dropped = 0
+        deferred_paths = set()
+        rate_limited_peers = set()
+        pacer = OutboundGossipPacer()
+        peer_count = 0
+
+        def emit(event, message="", **extra):
+            queued_remaining = _transaction_file_count()
+            total = max(initial_total, sent + dropped + queued_remaining)
+            eta_seconds = _estimate_send_eta(
+                sent,
+                queued_remaining,
+                started_at,
+                peer_count,
             )
-            continue
-        _schedule_queued_gossip_retry(
-            transaction_path,
-            wire_message,
-            peers,
-            delay_seconds=_retry_delay_for_result(result),
-        )
-        logger.info(
-            "kept queued transaction %s after %s network result", transaction_path, result.status
-        )
+            _emit_send_progress(
+                progress_callback,
+                event,
+                total=total,
+                sent=sent,
+                queued_remaining=queued_remaining,
+                rate_limited_peers=len(rate_limited_peers),
+                eta_seconds=eta_seconds,
+                message=message,
+                dropped=dropped,
+                **extra,
+            )
+
+        emit("preparing", "Preparing queued bills.")
+        if initial_total <= 0:
+            emit("complete", "No queued bills to send.")
+            return {
+                "status": "complete",
+                "total": 0,
+                "sent": 0,
+                "dropped": 0,
+                "queued_remaining": 0,
+                "rate_limited_peers": 0,
+            }
+
+        peers = _queued_send_peers()
+        peer_count = len(peers)
+        if not peers:
+            emit("partial", "No peers are available. Bills will stay queued.")
+            return {
+                "status": "partial",
+                "total": initial_total,
+                "sent": sent,
+                "dropped": dropped,
+                "queued_remaining": _transaction_file_count(),
+                "rate_limited_peers": 0,
+            }
+
+        store = wallet_sync_store()
+        stop_reason = ""
+
+        while True:
+            if deadline is not None and _remaining_deadline_seconds(deadline) <= 0:
+                stop_reason = "send time budget exhausted"
+                break
+
+            all_paths = runtime_json.transaction_files()
+            process_paths = [path for path in all_paths if str(path) not in deferred_paths]
+            if not all_paths:
+                stop_reason = "complete"
+                break
+            if not process_paths:
+                stop_reason = "deferred"
+                break
+
+            for transaction_path in process_paths:
+                if deadline is not None and _remaining_deadline_seconds(deadline) <= 0:
+                    stop_reason = "send time budget exhausted"
+                    break
+
+                transaction_key = str(transaction_path)
+                try:
+                    tm, wire_message, local_result = _prepare_queued_gossip_for_broadcast(
+                        transaction_path,
+                        store,
+                    )
+                    proof = local_result.get("conflict_proof")
+                    if proof:
+                        broadcast_message(proof)
+                except Exception as exc:
+                    logger.debug("dropping invalid queued transaction %s: %s", transaction_path, exc)
+                    _remove_transaction_file(transaction_path)
+                    dropped += 1
+                    emit("error", "Dropped one invalid queued bill.")
+                    continue
+
+                while True:
+                    result = _broadcast_gossip_to_peer_quorum(
+                        wire_message,
+                        peers,
+                        pacer=pacer,
+                        deadline=deadline,
+                    )
+                    rate_limited_peers.update(_rate_limited_attempt_peers(result))
+
+                    if result.status == REQUEST_OK:
+                        failed_peers = _failed_peers_before_success(result)
+                        if failed_peers:
+                            _schedule_raw_gossip_retry(
+                                wire_message,
+                                failed_peers,
+                                delay_seconds=_retry_delay_for_result(result),
+                            )
+                            logger.info(
+                                "queued gossip %s accepted by %s; retrying failed peers %s in background",
+                                transaction_path,
+                                result.route or result.peer,
+                                failed_peers,
+                            )
+                        _remove_transaction_file(transaction_path)
+                        sent += 1
+                        emit(
+                            "sending",
+                            f"Broadcasted {sent} queued bill(s).",
+                            acked_peers=len(result.acked_peers),
+                            required_peer_acks=min(WALLET_BROADCAST_MIN_PEER_ACKS, len(peers)),
+                        )
+                        break
+
+                    if result.status == REQUEST_INVALID:
+                        logger.warning("dropping remotely invalid queued transaction %s", transaction_path)
+                        _remove_transaction_file(transaction_path)
+                        dropped += 1
+                        emit("error", "Dropped one rejected queued bill.")
+                        break
+
+                    if result.status == REQUEST_RATE_LIMITED:
+                        delay = max(0.1, _retry_delay_for_result(result))
+                        emit(
+                            "rate_limited",
+                            f"Peers are busy. One bill will retry in about {math.ceil(delay)}s.",
+                            retry_after_seconds=delay,
+                        )
+                        _schedule_queued_gossip_retry(
+                            transaction_path,
+                            wire_message,
+                            peers,
+                            delay_seconds=delay,
+                        )
+                        deferred_paths.add(transaction_key)
+                        break
+
+                    _schedule_queued_gossip_retry(
+                        transaction_path,
+                        wire_message,
+                        peers,
+                        delay_seconds=_retry_delay_for_result(result),
+                    )
+                    deferred_paths.add(transaction_key)
+                    logger.info(
+                        "kept queued transaction %s after %s network result",
+                        transaction_path,
+                        result.status,
+                    )
+                    if result.status == REQUEST_TIMEOUT:
+                        emit("waiting", "Peer response timed out. One bill will retry automatically.")
+                    else:
+                        emit("waiting", "One bill is queued for automatic retry.")
+                    break
+
+                if stop_reason:
+                    break
+
+            if stop_reason and stop_reason != "complete":
+                break
+
+        queued_remaining = _transaction_file_count()
+        status = "complete" if queued_remaining == 0 else "partial"
+        if status == "complete":
+            emit("complete", f"Sent {sent} queued bill(s).")
+        else:
+            message = f"{queued_remaining} bill(s) still queued. Retrying automatically."
+            if stop_reason == "send time budget exhausted":
+                message = "Send time budget ended; " + message
+            elif stop_reason == "rate limited":
+                message = "Network is busy; " + message
+            emit("partial", message)
+        return {
+            "status": status,
+            "total": max(initial_total, sent + dropped + queued_remaining),
+            "sent": sent,
+            "dropped": dropped,
+            "queued_remaining": queued_remaining,
+            "rate_limited_peers": len(rate_limited_peers),
+        }
+    finally:
+        _paced_send_lock.release()
+
+
+# Compatibility entry point for callers that do not need progress events.
+def send_bills():
+    return send_queued_bills_paced()
 
 
 # Broadcast a protocol message after converting it to the current wire format.
-def broadcast_message(message):
+def broadcast_message(message, *, timeout=None, max_duration_seconds=DEFAULT_CONNECT_ATTEMPT_BUDGET_SECONDS):
     ensure_runtime_files()
     raw = ind_token.pack_wire_message(message)
     ipnl1 = diverse_peer_sample(_peer_files('ip_folder/1'), limit=6)
     ipnl2 = _with_configured_peers(diverse_peer_sample(_peer_files('ip_folder/2'), limit=12))
     peers = _dedupe_preserving_order(ipnl1 + ipnl2)
-    result = connect_result('b', raw, peers)
+    result = connect_result(
+        'b',
+        raw,
+        peers,
+        timeout=timeout,
+        max_duration_seconds=max_duration_seconds,
+    )
     if result.status == REQUEST_OK:
         failed_peers = _failed_peers_before_success(result)
         if failed_peers:
@@ -1099,11 +1765,178 @@ def _parse_peer_messages(raw):
     return []
 
 
+def _parse_wallet_sync_response(raw):
+    empty = {"records": [], "messages": []}
+    if not raw or raw == 'n':
+        return empty
+    try:
+        decoded = json.loads(raw)
+    except Exception:
+        return empty
+    if isinstance(decoded, dict):
+        records = decoded.get("records")
+        messages = decoded.get("messages")
+        result = {"records": [], "messages": []}
+        if isinstance(records, list):
+            result["records"] = records
+        if isinstance(messages, list):
+            result["messages"] = messages
+        elif decoded.get("type") != "ind.wallet_bill_sync_response.v3":
+            result["messages"] = [decoded]
+        return result
+    if isinstance(decoded, list):
+        return {"records": [], "messages": decoded}
+    return empty
+
+
+def _wallet_sync_record_identity(record):
+    if not isinstance(record, dict):
+        return ""
+    token_id = str(record.get("token_id") or "").strip()
+    display_id = str(record.get("display_id") or "").strip()
+    sequence = str(record.get("sequence") or "").strip()
+    if token_id or display_id:
+        return "|".join((token_id, display_id, sequence))
+    try:
+        return json.dumps(record, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        return ""
+
+
+def _wallet_sync_request_for_address(store, address):
+    request_builder = getattr(store, "wallet_delta_sync_request", None)
+    if not callable(request_builder):
+        return None
+    try:
+        return request_builder(
+            address,
+            token_limit=WALLET_SYNC_TOKEN_CURSOR_LIMIT,
+            response_limit=100,
+        )
+    except Exception as exc:
+        logger.debug("could not build wallet delta sync request for %s: %s", address, exc)
+        return None
+
+
+def _wallet_sync_peer_candidates():
+    peers = _with_configured_peers(_peer_files('ip_folder/1') + _peer_files('ip_folder/2'))
+    peers = _ordered_peer_candidates(peers)
+    if len(peers) <= WALLET_SYNC_MAX_PEERS:
+        return peers
+    configured = _ordered_peer_candidates(_configured_peer_servers())
+    selected = []
+    for peer in configured + diverse_peer_sample(peers, limit=WALLET_SYNC_MAX_PEERS):
+        if peer not in selected:
+            selected.append(peer)
+        if len(selected) >= WALLET_SYNC_MAX_PEERS:
+            break
+    return selected
+
+
+def _fetch_wallet_messages_from_peer(peer, address, sync_request=None):
+    if sync_request:
+        result = connect_result(
+            'R',
+            json.dumps(sync_request, sort_keys=True),
+            [peer],
+            timeout=WALLET_SYNC_REQUEST_TIMEOUT_SECONDS,
+            max_duration_seconds=WALLET_SYNC_REQUEST_BUDGET_SECONDS,
+        )
+        if result.status == REQUEST_OK:
+            parsed = _parse_wallet_sync_response(result.response)
+            return {
+                "peer": result.route or result.peer or peer,
+                "status": result.status,
+                "messages": parsed["messages"],
+                "records": parsed["records"],
+                "delta": True,
+            }
+        if result.status != REQUEST_INVALID:
+            logger.debug(
+                "wallet delta sync request for %s via %s failed as %s",
+                address,
+                result.route or result.peer or peer,
+                result.status,
+            )
+            return {
+                "peer": result.route or result.peer or peer,
+                "status": result.status,
+                "messages": [],
+                "records": [],
+                "delta": True,
+            }
+
+    result = connect_result(
+        'r',
+        address,
+        [peer],
+        timeout=WALLET_SYNC_REQUEST_TIMEOUT_SECONDS,
+        max_duration_seconds=WALLET_SYNC_REQUEST_BUDGET_SECONDS,
+    )
+    if result.status != REQUEST_OK:
+        logger.debug(
+            "wallet sync request for %s via %s failed as %s",
+            address,
+            result.route or result.peer or peer,
+            result.status,
+        )
+        return {
+            "peer": result.route or result.peer or peer,
+            "status": result.status,
+            "messages": [],
+            "records": [],
+        }
+    parsed = _parse_wallet_sync_response(result.response)
+    return {
+        "peer": result.route or result.peer or peer,
+        "status": result.status,
+        "messages": parsed["messages"],
+        "records": parsed["records"],
+        "delta": False,
+    }
+
+
+def iter_wallet_message_reports(address, peers=None, sync_request=None):
+    peers = _ordered_peer_candidates(peers or _wallet_sync_peer_candidates())
+    if not peers:
+        return
+    workers = max(1, min(WALLET_SYNC_WORKERS, len(peers)))
+    executor = ThreadPoolExecutor(max_workers=workers)
+    futures = [
+        executor.submit(_fetch_wallet_messages_from_peer, peer, address, sync_request)
+        for peer in peers
+    ]
+    try:
+        for future in as_completed(futures, timeout=WALLET_SYNC_FETCH_BUDGET_SECONDS):
+            try:
+                yield future.result()
+            except Exception as exc:
+                logger.debug("wallet sync peer worker failed for %s: %s", address, exc)
+                yield {"peer": "", "status": REQUEST_INVALID, "messages": []}
+    except FuturesTimeoutError:
+        for future in futures:
+            if not future.done():
+                future.cancel()
+                yield {"peer": "", "status": REQUEST_TIMEOUT, "messages": []}
+        logger.debug("wallet sync fetch timed out for %s", address)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def fetch_wallet_messages(address, peers=None, return_report=False):
+    messages = []
+    reports = []
+    for report in iter_wallet_message_reports(address, peers=peers):
+        reports.append(report)
+        messages.extend(report["messages"])
+    return (messages, reports) if return_report else messages
+
+
 # Return locally settled bill records for wallet display ids or protocol bill ids.
 def check_validity(serial_num_list):
     from . import protocol_v3
 
-    store = ind_token.INDLocalStore()
+    store = wallet_sync_store()
     store.finalize_pending(buffer_seconds=ind_settings.finality_buffer_seconds())
     verified = []
     for item in serial_num_list:
@@ -1159,80 +1992,288 @@ def update_ip_list():
         add_peer(str(ip), '2')
 
 
-# Pull wallet-addressed gossip, sign receipts, and import settled bills.
-def receive_bills():
-    from . import keys_v3, protocol_v3
+def _wallet_sync_summary_snapshot(summary):
+    snapshot = dict(summary)
+    snapshot["errors"] = list(summary.get("errors") or [])
+    return snapshot
+
+
+def _emit_wallet_sync_progress(progress_callback, event, summary, **details):
+    if not callable(progress_callback):
+        return
+    payload = {
+        "event": event,
+        "summary": _wallet_sync_summary_snapshot(summary),
+    }
+    payload.update(details)
+    try:
+        progress_callback(payload)
+    except Exception:
+        logger.debug("wallet sync progress callback failed", exc_info=True)
+
+
+# Pull owner-addressed bill records and import spendable bills.
+def receive_bills(progress_callback=None):
+    from . import keys_v3
 
     ensure_runtime_files()
-    ipnl = _with_configured_peers(_peer_files('ip_folder/1') + _peer_files('ip_folder/2'))
-    store = ind_token.INDLocalStore()
+    store = wallet_sync_store()
+    summary = {
+        "wallets": 0,
+        "local_messages": 0,
+        "fetched_messages": 0,
+        "fetched_records": 0,
+        "fetched_unique_records": 0,
+        "fetched_duplicate_records": 0,
+        "processed_messages": 0,
+        "processed_records": 0,
+        "accepted_messages": 0,
+        "accepted_records": 0,
+        "finalized": 0,
+        "settled": 0,
+        "pending": 0,
+        "peer_failures": 0,
+        "peer_timeouts": 0,
+        "wallet_bills_added": 0,
+        "skipped_known_messages": 0,
+        "errors": [],
+    }
     for wallet_path in runtime_json.iter_decrypted_wallet_files():
         if wallet_path.name.startswith('wallet_decrypted'):
             wallet = runtime_json.read_decrypted_wallet_lines(wallet_path)
             address = wallet[0].strip()
-            private_key = wallet[1].strip()
-            public_key = wallet[2].strip()
-            full_messages = store.messages_for_recipient(address)
-
-            def thrd_recv(address=address, full_messages=full_messages):
-                msg = connect('r', address, ipnl)
-                full_messages.extend(_parse_peer_messages(msg))
-
-            for _iteration in range(5):
-                threading.Thread(target=thrd_recv).start()
-            time.sleep(5)
-
-            for message in full_messages:
-                try:
-                    result = store.ingest_message(message)
-                    proof = result.get("conflict_proof")
-                    if proof:
-                        broadcast_message(proof)
-                    if message.get("type") == protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE:
-                        decoded = protocol_v3.decode_transfer_announcement(message)
-                        bill = decoded[0]
-                        state = protocol_v3.verify_bill(
-                            bill,
-                            proof_bundle_resolver=store.proof_bundle_resolver_v3,
-                            transparency_verifier=getattr(store, "transparency_verifier", None),
-                            archive_segment_resolver=store.archive_segment_resolver_v3,
-                        )
-                        if state.owner_address == address and keys_v3.is_address(address):
-                            receipt = protocol_v3.create_receipt_announcement(
-                                bill,
-                                private_key,
-                                public_key,
-                                proof_bundle_resolver=store.proof_bundle_resolver_v3,
-                                transparency_verifier=getattr(store, "transparency_verifier", None),
-                                archive_segment_resolver=store.archive_segment_resolver_v3,
-                            )
-                            store.ingest_message(receipt)
-                            broadcast_message(receipt)
-                except Exception as exc:
-                    logger.debug("could not create or broadcast receipt for %s: %s", address, exc)
-
-            store.finalize_pending(buffer_seconds=ind_settings.finality_buffer_seconds())
+            summary["wallets"] += 1
+            _emit_wallet_sync_progress(
+                progress_callback,
+                "wallet_started",
+                summary,
+                address=address,
+            )
             wallet_ids = {
                 line.split()[0].lstrip('-')
                 for line in runtime_json.wallet_bill_lines(wallet)
                 if line.split()
             }
-            settled = store.token_records_for_owner(address, settled_only=True)
-            if keys_v3.is_address(address):
-                settled = store.bill_v3_records_for_owner(
-                    address,
-                    statuses=("settled", "verified"),
-                )
-            updated_wallet = list(wallet)
-            for record in settled:
-                if record["display_id"] not in wallet_ids:
-                    updated_wallet.append(
-                        record["display_id"]
-                        + ' '
-                        + str(record["sequence"])
-                        + ' '
-                        + str(int(time.time()))
-                        + '\n'
+            wallet_context = {
+                "address": address,
+                "wallet": wallet,
+                "wallet_ids": wallet_ids,
+                "wallet_path": wallet_path,
+            }
+
+            def add_new_settled_bills(reason, context=wallet_context):
+                current_address = context["address"]
+                settled_records = store.token_records_for_owner(current_address, settled_only=True)
+                if keys_v3.is_address(current_address):
+                    settled_records = store.bill_v3_records_for_owner(
+                        current_address,
+                        statuses=("settled", "verified"),
                     )
-                    wallet_ids.add(record["display_id"])
-            runtime_json.write_decrypted_wallet_lines(wallet_path, updated_wallet)
+                updated_wallet = list(context["wallet"])
+                added_records = []
+                for record in settled_records:
+                    if record["display_id"] not in context["wallet_ids"]:
+                        updated_wallet.append(
+                            record["display_id"]
+                            + ' '
+                            + str(record["sequence"])
+                            + ' '
+                            + str(int(time.time()))
+                            + '\n'
+                        )
+                        context["wallet_ids"].add(record["display_id"])
+                        added_records.append(record)
+                if added_records:
+                    runtime_json.write_decrypted_wallet_lines(context["wallet_path"], updated_wallet)
+                    context["wallet"] = updated_wallet
+                    summary["wallet_bills_added"] += len(added_records)
+                    _emit_wallet_sync_progress(
+                        progress_callback,
+                        "bills_added",
+                        summary,
+                        address=current_address,
+                        count=len(added_records),
+                        display_id=added_records[-1]["display_id"],
+                        sequence=int(added_records[-1]["sequence"]),
+                        reason=reason,
+                    )
+                return settled_records
+
+            def finalize_ready_bills(reason, context=wallet_context):
+                finalized = store.finalize_pending(
+                    buffer_seconds=ind_settings.finality_buffer_seconds()
+                )
+                if finalized:
+                    summary["finalized"] += len(finalized)
+                    _emit_wallet_sync_progress(
+                        progress_callback,
+                        "finalized",
+                        summary,
+                        address=context["address"],
+                        count=len(finalized),
+                        reason=reason,
+                    )
+                    add_new_settled_bills(reason)
+                return finalized
+
+            add_new_settled_bills("startup")
+            sync_request = _wallet_sync_request_for_address(store, address)
+            known_message_hashes = set()
+            known_record_identities = set()
+            local_messages = []
+            summary["local_messages"] += len(local_messages)
+            _emit_wallet_sync_progress(
+                progress_callback,
+                "local_messages",
+                summary,
+                address=address,
+                message_count=len(local_messages),
+            )
+
+            def process_messages(
+                messages,
+                source,
+                peer="",
+                context=wallet_context,
+                known_message_hashes=known_message_hashes,
+            ):
+                current_address = context["address"]
+                for message in messages:
+                    try:
+                        current_message_hash = ind_token.message_hash(message)
+                    except Exception:
+                        current_message_hash = ""
+                    if current_message_hash and current_message_hash in known_message_hashes:
+                        summary["skipped_known_messages"] += 1
+                        continue
+                    try:
+                        result = store.ingest_message(message)
+                        summary["processed_messages"] += 1
+                        if result.get("accepted"):
+                            summary["accepted_messages"] += 1
+                            _emit_wallet_sync_progress(
+                                progress_callback,
+                                "message_accepted",
+                                summary,
+                                address=current_address,
+                                source=source,
+                                peer=peer,
+                                status=result.get("status", ""),
+                            )
+                        proof = result.get("conflict_proof")
+                        if proof:
+                            broadcast_message(proof)
+                        if current_message_hash:
+                            known_message_hashes.add(current_message_hash)
+                        finalize_ready_bills("message")
+                    except Exception as exc:
+                        logger.debug(
+                            "could not process wallet sync message for %s: %s",
+                            current_address,
+                            exc,
+                        )
+                        if len(summary["errors"]) < 5:
+                            summary["errors"].append(str(exc))
+                        _emit_wallet_sync_progress(
+                            progress_callback,
+                            "message_error",
+                            summary,
+                            address=current_address,
+                            source=source,
+                            peer=peer,
+                            error=str(exc),
+                        )
+
+            def process_records(records, source, peer="", context=wallet_context):
+                current_address = context["address"]
+                for record in records:
+                    try:
+                        result = store.ingest_wallet_bill_sync_record(record)
+                        summary["processed_records"] += 1
+                        if result.get("accepted"):
+                            summary["accepted_records"] += 1
+                            state = result.get("state")
+                            _emit_wallet_sync_progress(
+                                progress_callback,
+                                "record_accepted",
+                                summary,
+                                address=current_address,
+                                source=source,
+                                peer=peer,
+                                status=result.get("status", ""),
+                                display_id=getattr(state, "display_id", ""),
+                                sequence=int(getattr(state, "sequence", 0) or 0),
+                            )
+                    except Exception as exc:
+                        logger.debug(
+                            "could not process wallet sync record for %s: %s",
+                            current_address,
+                            exc,
+                        )
+                        if len(summary["errors"]) < 5:
+                            summary["errors"].append(str(exc))
+                        _emit_wallet_sync_progress(
+                            progress_callback,
+                            "message_error",
+                            summary,
+                            address=current_address,
+                            source=source,
+                            peer=peer,
+                            error=str(exc),
+                        )
+
+            process_messages(local_messages, "local")
+            sync_request = _wallet_sync_request_for_address(store, address) or sync_request
+
+            for report in iter_wallet_message_reports(address, sync_request=sync_request):
+                messages = report.get("messages") or []
+                records = report.get("records") or []
+                summary["fetched_messages"] += len(messages)
+                summary["fetched_records"] += len(records)
+                duplicate_records = 0
+                for record in records:
+                    identity = _wallet_sync_record_identity(record)
+                    if identity and identity in known_record_identities:
+                        duplicate_records += 1
+                        continue
+                    if identity:
+                        known_record_identities.add(identity)
+                summary["fetched_unique_records"] = len(known_record_identities)
+                summary["fetched_duplicate_records"] += duplicate_records
+                if report.get("status") != REQUEST_OK:
+                    summary["peer_failures"] += 1
+                    if report.get("status") == REQUEST_TIMEOUT:
+                        summary["peer_timeouts"] += 1
+                _emit_wallet_sync_progress(
+                    progress_callback,
+                    "peer_report",
+                    summary,
+                    address=address,
+                    peer=report.get("peer", ""),
+                    status=report.get("status", ""),
+                    message_count=len(messages) + len(records),
+                )
+                process_records(records, "peer", peer=report.get("peer", ""))
+                process_messages(messages, "peer", peer=report.get("peer", ""))
+
+            finalize_ready_bills("wallet_complete")
+            settled = add_new_settled_bills("wallet_complete")
+            if keys_v3.is_address(address):
+                waiting = store.bill_v3_records_for_owner(
+                    address,
+                    statuses=("pending",),
+                )
+                for record in waiting:
+                    if record["status"] == "pending":
+                        summary["pending"] += 1
+                summary["settled"] += len(settled)
+            _emit_wallet_sync_progress(
+                progress_callback,
+                "wallet_complete",
+                summary,
+                address=address,
+            )
+    if summary["wallets"] == 0:
+        summary["errors"].append("No unlocked wallet.")
+    _emit_wallet_sync_progress(progress_callback, "complete", summary)
+    return summary

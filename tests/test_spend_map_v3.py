@@ -1,18 +1,14 @@
-import base64
-import os
 from hashlib import sha3_256
 
-import ecdsa
 import pytest
 
-from ind import spend_map_v3
-from ind import token as ind_token
+from ind import keys_v3, protocol_v3, spend_map_v3
 from ind import transparency_client as log_client
 
 BASE_TIMESTAMP = 1_700_000_000
 
 
-def test_compressed_spend_map_proof_matches_v2_root_semantics():
+def test_compressed_spend_map_proof_matches_sparse_root_semantics():
     fixture = _spend_map_fixture()
     compressed = spend_map_v3.build_compressed_spend_map_proof(
         fixture["claims"],
@@ -126,79 +122,55 @@ def test_compressed_spend_map_proof_rejects_network_mismatch():
 
 
 def _spend_map_fixture():
-    previous = os.environ.get("IND_ALLOW_UNTRUSTED_GENESIS")
-    os.environ["IND_ALLOW_UNTRUSTED_GENESIS"] = "1"
-    try:
-        issuer_private, issuer_public, _issuer_address = _keypair("issuer")
-        alice_private, alice_public, alice_address = _keypair("alice")
-        _bob_private, _bob_public, bob_address = _keypair("bob")
-        carol_private, carol_public, carol_address = _keypair("carol")
-        operator_private, operator_public, _operator_address = _keypair("operator")
-
-        bill_a = ind_token.make_genesis_token(
-            90,
-            alice_address,
-            issuer_private,
-            issuer_public,
-            value=1,
-            nonce=ind_token.sha3_hex("spend-map-v3-a"),
-            issued_at=BASE_TIMESTAMP,
-        )
-        bill_b = ind_token.make_genesis_token(
-            91,
-            carol_address,
-            issuer_private,
-            issuer_public,
-            value=1,
-            nonce=ind_token.sha3_hex("spend-map-v3-b"),
-            issued_at=BASE_TIMESTAMP,
-        )
-        bill_a = ind_token.create_transfer(
-            bill_a,
-            alice_private,
-            alice_public,
-            bob_address,
-            timestamp=BASE_TIMESTAMP + 10,
-        )
-        bill_b = ind_token.create_transfer(
-            bill_b,
-            carol_private,
-            carol_public,
-            bob_address,
-            timestamp=BASE_TIMESTAMP + 20,
-        )
-        transfer_a = bill_a["history"][-1]
-        transfer_b = bill_b["history"][-1]
-        log_id = log_client.log_id_from_public_key(operator_public)
-        claims = [
-            log_client.spend_claim_for_transfer(transfer_a, log_id, 0, BASE_TIMESTAMP + 30),
-            log_client.spend_claim_for_transfer(transfer_b, log_id, 1, BASE_TIMESTAMP + 31),
-        ]
-        target_spend_key = log_client.spend_key_for_transfer(transfer_a)
-        tree_size = 2
-        spend_root = log_client.spend_map_root(claims)
-        root = log_client.make_signed_root(
-            tree_size,
-            ind_token.sha3_hex("spend-map-v3-root"),
-            BASE_TIMESTAMP + 40,
-            operator_private,
-            operator_public,
-            spend_map_root=spend_root,
-            spend_map_size=len(claims),
-        )
-        full_proof = log_client.build_spend_map_proof(claims, target_spend_key, tree_size)
-        return {
-            "claims": claims,
-            "target_spend_key": target_spend_key,
-            "tree_size": tree_size,
-            "root": root,
-            "full_proof": full_proof,
-        }
-    finally:
-        if previous is None:
-            os.environ.pop("IND_ALLOW_UNTRUSTED_GENESIS", None)
-        else:
-            os.environ["IND_ALLOW_UNTRUSTED_GENESIS"] = previous
+    alice_address, alice_private, alice_public = keys_v3.generate_keypair(b"\x41" * 32)
+    bob_address, _bob_private, _bob_public = keys_v3.generate_keypair(b"\x42" * 32)
+    carol_address, carol_private, carol_public = keys_v3.generate_keypair(b"\x43" * 32)
+    operator_private, operator_public = _operator_keypair("operator")
+    state_a = _base_state(alice_address, "1x90", "spend-map-v3-a")
+    state_b = _base_state(carol_address, "1x91", "spend-map-v3-b")
+    token_a = sha3_256(b"spend-map-v3-token-a").hexdigest()
+    token_b = sha3_256(b"spend-map-v3-token-b").hexdigest()
+    transfer_a = protocol_v3.create_transfer_from_state(
+        token_a,
+        state_a,
+        alice_private,
+        alice_public,
+        bob_address,
+        timestamp=BASE_TIMESTAMP + 10,
+    )
+    transfer_b = protocol_v3.create_transfer_from_state(
+        token_b,
+        state_b,
+        carol_private,
+        carol_public,
+        bob_address,
+        timestamp=BASE_TIMESTAMP + 20,
+    )
+    log_id = log_client.log_id_from_public_key(operator_public)
+    claims = [
+        protocol_v3.spend_claim_for_transfer(transfer_a, log_id, 0, BASE_TIMESTAMP + 30),
+        protocol_v3.spend_claim_for_transfer(transfer_b, log_id, 1, BASE_TIMESTAMP + 31),
+    ]
+    target_spend_key = protocol_v3.spend_key_for_transfer(transfer_a)
+    tree_size = 2
+    spend_root = log_client.spend_map_root(claims)
+    root = log_client.make_signed_root(
+        tree_size,
+        sha3_256(b"spend-map-v3-root").hexdigest(),
+        BASE_TIMESTAMP + 40,
+        operator_private,
+        operator_public,
+        spend_map_root=spend_root,
+        spend_map_size=len(claims),
+    )
+    full_proof = log_client.build_spend_map_proof(claims, target_spend_key, tree_size)
+    return {
+        "claims": claims,
+        "target_spend_key": target_spend_key,
+        "tree_size": tree_size,
+        "root": root,
+        "full_proof": full_proof,
+    }
 
 
 def _valid_extra_sibling(spend_key, depth):
@@ -210,11 +182,20 @@ def _valid_extra_sibling(spend_key, depth):
     }
 
 
-def _keypair(label):
-    order = ecdsa.SECP256k1.order
-    seed = int.from_bytes(sha3_256(f"spend-map-v3:{label}".encode("ascii")).digest(), "big")
-    secret = ((seed % (order - 1)) + 1).to_bytes(32, "big")
-    signing_key = ecdsa.SigningKey.from_string(secret, curve=ecdsa.SECP256k1, hashfunc=sha3_256)
-    public_key = base64.b85encode(signing_key.get_verifying_key().to_string()).decode("ascii")
-    private_key = base64.b85encode(signing_key.to_string()).decode("ascii")
-    return private_key, public_key, ind_token.address_from_public_key(public_key)
+def _base_state(owner_address, display_id, label):
+    return {
+        "sequence": 0,
+        "owner_address": owner_address,
+        "last_transfer_hash": sha3_256(label.encode("ascii")).hexdigest(),
+        "last_transfer_timestamp": BASE_TIMESTAMP,
+        "last_transfer_day": BASE_TIMESTAMP // 86400,
+        "transfers_in_last_day": 0,
+        "display_id": display_id,
+        "value": 1,
+    }
+
+
+def _operator_keypair(label):
+    seed = sha3_256(f"spend-map-v3:{label}".encode("ascii")).digest()
+    _address, private_key, public_key = keys_v3.generate_keypair(seed)
+    return private_key, public_key

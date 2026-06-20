@@ -69,40 +69,108 @@ def _unsigned_segment(segment):
     return unsigned
 
 
-# Encode an ArchiveSegmentV3 dict in a canonical V3 binary envelope.
-def encode_archive_segment(segment, include_hash=True):
-    if not isinstance(segment, dict):
-        raise ArchiveSegmentV3Error("archive segment must be a dict")
-    network_id = _require_int(segment.get("network_id"), "archive segment network id", minimum=0)
-    payload = segment if include_hash else _unsigned_segment(segment)
+def _encode_envelope(network_id, body):
     return b"".join(
         (
             ARCHIVE_SEGMENT_MAGIC,
             binary_v3.encode_uvarint(ARCHIVE_SEGMENT_VERSION),
-            binary_v3.encode_uvarint(network_id),
-            binary_v3.encode_bytes(_canonical_payload_bytes(payload)),
+            binary_v3.encode_uvarint(int(network_id)),
+            body,
         )
     )
 
 
-# Decode a canonical ArchiveSegmentV3 binary envelope.
-def decode_archive_segment(data):
-    reader = binary_v3.Reader(data)
+def _read_envelope(reader):
     magic = reader.read(len(ARCHIVE_SEGMENT_MAGIC), "archive segment magic")
     if magic != ARCHIVE_SEGMENT_MAGIC:
         raise ArchiveSegmentV3Error("invalid archive segment magic")
     version = reader.read_uvarint("archive segment version")
     if version != ARCHIVE_SEGMENT_VERSION:
         raise ArchiveSegmentV3Error("unsupported archive segment version")
-    network_id = reader.read_uvarint("archive segment network id")
-    payload = reader.read_bytes("archive segment payload")
+    return reader.read_uvarint("archive segment network id")
+
+
+def encode_archive_segment_body(segment, include_hash=True):
+    segment_for_validation = copy.deepcopy(segment)
+    if not include_hash:
+        segment_for_validation["segment_hash"] = "00" * 32
+    _require_exact_fields(segment_for_validation, ARCHIVE_SEGMENT_FIELDS, "archive segment")
+    _require_int(
+        segment_for_validation.get("network_id"), "archive segment network id", minimum=0
+    )
+    segment_hash = segment["segment_hash"] if include_hash else "00" * 32
+    transfer_count = _require_int(segment["transfer_count"], "archive segment transfer count")
+    if transfer_count != len(segment["transfers"]):
+        raise ArchiveSegmentV3Error("archive segment transfer count mismatch")
+    return b"".join(
+        (
+            binary_v3.encode_hash_hex(segment["token_id"]),
+            binary_v3.encode_uvarint(int(segment["value"])),
+            binary_v3.encode_ascii(segment["display_id"], max_length=64),
+            protocol_v3.encode_genesis_ref_body(segment["genesis_ref"]),
+            protocol_v3.encode_base_state_body(segment["base_state"]),
+            binary_v3.encode_uvarint(int(segment["start_sequence"])),
+            binary_v3.encode_uvarint(int(segment["end_sequence"])),
+            binary_v3.encode_hash_hex_nullable(segment["previous_segment_hash"]),
+            binary_v3.encode_hash_hex_nullable(segment["previous_checkpoint_hash"]),
+            binary_v3.encode_hash_hex(segment["checkpoint_hash"]),
+            binary_v3.encode_uvarint(transfer_count),
+            *[
+                protocol_v3.encode_transfer_body(transfer, include_signature=True)
+                for transfer in segment["transfers"]
+            ],
+            binary_v3.encode_hash_hex(segment_hash),
+        )
+    )
+
+
+def decode_archive_segment_body(reader, network_id):
+    segment = {
+        "type": ARCHIVE_SEGMENT_TYPE,
+        "version": ARCHIVE_SEGMENT_VERSION,
+        "network_id": int(network_id),
+        "token_id": reader.read_hash_hex("archive segment token id"),
+        "value": reader.read_uvarint("archive segment value"),
+        "display_id": reader.read_ascii("archive segment display id", max_length=64),
+        "genesis_ref": protocol_v3.decode_genesis_ref_body(reader, network_id),
+        "base_state": protocol_v3.decode_base_state_body(reader),
+        "start_sequence": reader.read_uvarint("archive segment start sequence"),
+        "end_sequence": reader.read_uvarint("archive segment end sequence"),
+        "previous_segment_hash": reader.read_nullable_hash_hex(
+            "previous archive segment hash"
+        ),
+        "previous_checkpoint_hash": reader.read_nullable_hash_hex("previous checkpoint hash"),
+        "checkpoint_hash": reader.read_hash_hex("archive segment checkpoint hash"),
+        "transfer_count": 0,
+        "transfers": [],
+        "segment_hash": "",
+    }
+    count = reader.read_uvarint("archive segment transfer count")
+    segment["transfers"] = [
+        protocol_v3.decode_transfer_body(reader, network_id, require_signature=True)
+        for _ in range(count)
+    ]
+    segment["transfer_count"] = len(segment["transfers"])
+    segment["segment_hash"] = reader.read_hash_hex("archive segment hash")
+    return segment
+
+
+# Encode an ArchiveSegmentV3 dict in a canonical V3 binary envelope.
+def encode_archive_segment(segment, include_hash=True):
+    if not isinstance(segment, dict):
+        raise ArchiveSegmentV3Error("archive segment must be a dict")
+    network_id = _require_int(segment.get("network_id"), "archive segment network id", minimum=0)
+    return _encode_envelope(
+        network_id, encode_archive_segment_body(segment, include_hash=include_hash)
+    )
+
+
+# Decode a canonical ArchiveSegmentV3 binary envelope.
+def decode_archive_segment(data):
+    reader = binary_v3.Reader(data)
+    network_id = _read_envelope(reader)
+    segment = decode_archive_segment_body(reader, network_id)
     reader.require_eof()
-    segment = ind_token._load_json(payload.decode("utf-8"))
-    if (
-        _require_int(segment.get("network_id"), "archive segment network id", minimum=0)
-        != network_id
-    ):
-        raise ArchiveSegmentV3Error("archive segment network id mismatch")
     return segment
 
 
@@ -142,12 +210,19 @@ def make_archive_segment(
         raise ArchiveSegmentV3Error("previous checkpoint requires a previous segment")
     if previous_segment_hash is not None and previous_checkpoint_hash is None:
         raise ArchiveSegmentV3Error("previous segment requires a previous checkpoint")
+    protocol_v3._validate_genesis_ref(genesis_ref, int(network_id))
     base_state = copy.deepcopy(base_state)
     final_state = protocol_v3.verify_transfer_sequence_from_state(
         token_id,
         base_state,
         transfers,
         network_id=network_id,
+    )
+    protocol_v3._validate_display_id_issue_index(
+        final_state["display_id"],
+        final_state["value"],
+        genesis_ref["issue_index"],
+        "archive segment display id",
     )
     checkpoint_core = protocol_v3.checkpoint_core_from_state(
         token_id,
@@ -227,30 +302,48 @@ def verify_archive_segment(
     expected_network_id=DEFAULT_NETWORK_ID,
     previous_segment=None,
     previous_segment_resolver=None,
+    previous_checkpoint_resolver=None,
     now=None,
 ):
     if isinstance(segment, bytes):
         segment = decode_archive_segment(segment)
     network_id = _validate_header(segment, expected_network_id=expected_network_id)
     protocol_v3._validate_genesis_ref(segment["genesis_ref"], network_id)
+    protocol_v3._validate_display_id_issue_index(
+        segment["display_id"],
+        segment["value"],
+        segment["genesis_ref"]["issue_index"],
+        "archive segment display id",
+    )
     base_state = copy.deepcopy(segment["base_state"])
+    if (
+        segment["previous_segment_hash"] is not None
+        and previous_segment is None
+        and previous_segment_resolver is not None
+    ):
+        previous_segment = previous_segment_resolver(segment["previous_segment_hash"])
     if segment["previous_segment_hash"] is not None:
-        if previous_segment is None:
-            if previous_segment_resolver is None:
+        if previous_segment is not None:
+            previous_core = verify_archive_segment(
+                previous_segment,
+                expected_network_id=network_id,
+                previous_segment_resolver=previous_segment_resolver,
+                previous_checkpoint_resolver=previous_checkpoint_resolver,
+                now=now,
+            )
+            if segment["previous_segment_hash"] != archive_segment_hash_hex(previous_segment):
+                raise ArchiveSegmentV3Error("previous archive segment hash mismatch")
+            if segment["previous_checkpoint_hash"] != previous_core["checkpoint_hash"]:
+                raise ArchiveSegmentV3Error("previous checkpoint hash mismatch")
+        else:
+            if previous_checkpoint_resolver is None:
                 raise ArchiveSegmentV3Error("previous archive segment resolver is required")
-            previous_segment = previous_segment_resolver(segment["previous_segment_hash"])
-        if previous_segment is None:
-            raise ArchiveSegmentV3Error("previous archive segment is required")
-        previous_core = verify_archive_segment(
-            previous_segment,
-            expected_network_id=network_id,
-            previous_segment_resolver=previous_segment_resolver,
-            now=now,
-        )
-        if segment["previous_segment_hash"] != archive_segment_hash_hex(previous_segment):
-            raise ArchiveSegmentV3Error("previous archive segment hash mismatch")
-        if segment["previous_checkpoint_hash"] != previous_core["checkpoint_hash"]:
-            raise ArchiveSegmentV3Error("previous checkpoint hash mismatch")
+            previous_core = previous_checkpoint_resolver(segment["previous_checkpoint_hash"])
+            if previous_core is None:
+                raise ArchiveSegmentV3Error("previous checkpoint is required")
+            protocol_v3._validate_checkpoint_core(previous_core, network_id)
+            if segment["previous_checkpoint_hash"] != previous_core["checkpoint_hash"]:
+                raise ArchiveSegmentV3Error("previous checkpoint hash mismatch")
         if base_state != _state_from_checkpoint_core(previous_core):
             raise ArchiveSegmentV3Error("archive segment does not connect to previous segment")
     else:

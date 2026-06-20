@@ -19,9 +19,9 @@ DEFAULT_PAGE_SIZE = 10000
 DEFAULT_POLL_SECONDS = 300
 DEFAULT_PRIVATE_KEY_PATH = "files/log_operator_private_key.json"
 DEFAULT_PUBLIC_KEY_PATH = "files/log_operator_public_key.json"
-ARCHIVE_MANIFEST_TYPE = "ind.transparency_hash_log_archive_manifest.v1"
+ARCHIVE_MANIFEST_TYPE = "ind.transparency_hash_log_archive_manifest.v3"
 SEGMENT_HASH_ALGORITHM = "sha3_256"
-ARCHIVE_MANIFEST_SIGNATURE_DOMAIN = "IND_TRANSPARENCY_HASH_LOG_ARCHIVE_MANIFEST_V1"
+ARCHIVE_MANIFEST_SIGNATURE_DOMAIN = "IND_TRANSPARENCY_HASH_LOG_ARCHIVE_MANIFEST_V3"
 SUPPORTED_SEGMENT_HASH_ALGORITHMS = {SEGMENT_HASH_ALGORITHM}
 
 
@@ -70,14 +70,14 @@ class OperatorEntrySource:
 
     def entries(self, start, end, limit):
         query = urllib.parse.urlencode({"start": int(start), "end": int(end), "limit": int(limit)})
-        url = f"{self.operator_url}/v1/entries?{query}"
+        url = f"{self.operator_url}/v3/entries?{query}"
         with urllib.request.urlopen(url, timeout=self.timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
         return payload.get("entries", []), int(payload.get("tree_size", 0))
 
     def latest_root(self):
         with urllib.request.urlopen(
-            f"{self.operator_url}/v1/root", timeout=self.timeout
+            f"{self.operator_url}/v3/root", timeout=self.timeout
         ) as response:
             return json.loads(response.read().decode("utf-8"))
 
@@ -98,7 +98,7 @@ def sign_manifest(manifest, operator_private_key):
     if not operator_private_key:
         raise HashLogExportError("operator private key is required to sign archive manifest")
     signed = dict(manifest)
-    signed["signature"] = ind_token.b85_sign(
+    signed["signature"] = log_client._sign_operator_payload(
         operator_private_key, manifest_signature_payload(signed)
     )
     return signed
@@ -146,7 +146,7 @@ def verify_manifest_signature(manifest, operator_public_key=None):
         raise HashLogExportError("unsupported hash-log archive manifest version")
     if manifest["segment_hash_algorithm"] not in SUPPORTED_SEGMENT_HASH_ALGORITHMS:
         raise HashLogExportError("unsupported segment hash algorithm")
-    if manifest["signature_algorithm"] != log_client.LOG_SIGNATURE_ALGORITHM:
+    if manifest["signature_algorithm"] not in log_client._signature_algorithms_for_verification():
         raise HashLogExportError("unsupported manifest signature algorithm")
 
     public_key = manifest["operator_public_key"].strip()
@@ -198,8 +198,11 @@ def verify_manifest_signature(manifest, operator_public_key=None):
         raise HashLogExportError(
             "archive manifest archive_id does not match signed root and segments"
         )
-    if not ind_token.b85_verify(
-        public_key, manifest["signature"], manifest_signature_payload(manifest)
+    if not log_client._verify_operator_payload(
+        public_key,
+        manifest["signature"],
+        manifest_signature_payload(manifest),
+        manifest["signature_algorithm"],
     ):
         raise HashLogExportError("invalid archive manifest signature")
     return True

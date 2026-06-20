@@ -10,8 +10,8 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 
-FORMAT = "INDW2"
-VERSION = 2
+FORMAT = "INDW3"
+VERSION = 3
 MWK_BYTES = 32
 SALT_BYTES = 16
 NONCE_BYTES = 12

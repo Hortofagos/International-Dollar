@@ -34,6 +34,14 @@ def root_filename(root):
     return f"root_{int(root['timestamp'])}_{int(root['tree_size'])}_{root['root_hash'][:16]}.json"
 
 
+def root_state_key(root):
+    return (
+        int(root["tree_size"]),
+        str(root["root_hash"]),
+        str(root.get("spend_map_root") or ""),
+    )
+
+
 def atomic_write_text(path, text):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +69,7 @@ class OperatorRootSource:
 
     def roots(self, limit=1000):
         query = urllib.parse.urlencode({"limit": int(limit)})
-        url = f"{self.operator_url}/v1/roots?{query}"
+        url = f"{self.operator_url}/v3/roots?{query}"
         with urllib.request.urlopen(url, timeout=self.timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
         return payload.get("roots", [])
@@ -84,19 +92,39 @@ class StaticRootMirrorWriter:
     def __init__(self, mirror_dir):
         self.mirror_dir = Path(mirror_dir)
 
-    def publish_root(self, root):
-        self.mirror_dir.mkdir(parents=True, exist_ok=True)
+    def _historical_roots(self):
+        roots_jsonl = self.mirror_dir / "roots.jsonl"
+        if not roots_jsonl.exists():
+            return []
+        roots = []
+        for line in roots_jsonl.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                roots.append(json.loads(line))
+        return roots
+
+    def _write_historical_root(self, root):
         roots_dir = self.mirror_dir / "roots"
         roots_dir.mkdir(parents=True, exist_ok=True)
-
-        root_name = root_filename(root)
-        root_path = roots_dir / root_name
+        root_path = roots_dir / root_filename(root)
         line = _canonical_line(root)
-        changed = False
-
         if not root_path.exists():
             atomic_write_text(root_path, line)
-            changed = True
+        with (self.mirror_dir / "roots.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(line)
+
+    def _should_append_historical_root(self, root, historical_roots, force_historical=False):
+        current_id = root_id(root)
+        if any(root_id(item) == current_id for item in historical_roots):
+            return False
+        if force_historical:
+            return True
+        current_state = root_state_key(root)
+        return not any(root_state_key(item) == current_state for item in historical_roots)
+
+    def publish_root(self, root, force_historical=False):
+        self.mirror_dir.mkdir(parents=True, exist_ok=True)
+        line = _canonical_line(root)
+        changed = False
 
         latest_path = self.mirror_dir / "latest.json"
         current_latest = None
@@ -119,15 +147,11 @@ class StaticRootMirrorWriter:
             atomic_write_text(latest_path, line)
             changed = True
 
-        roots_jsonl = self.mirror_dir / "roots.jsonl"
-        existing_ids = set()
-        if roots_jsonl.exists():
-            for existing_line in roots_jsonl.read_text(encoding="utf-8").splitlines():
-                if existing_line.strip():
-                    existing_ids.add(root_id(json.loads(existing_line)))
-        if root_id(root) not in existing_ids:
-            with roots_jsonl.open("a", encoding="utf-8") as handle:
-                handle.write(line)
+        historical_roots = self._historical_roots()
+        if self._should_append_historical_root(
+            root, historical_roots, force_historical=force_historical
+        ):
+            self._write_historical_root(root)
             changed = True
 
         manifest = self._manifest()
@@ -137,17 +161,92 @@ class StaticRootMirrorWriter:
         return changed
 
     def _manifest(self):
-        roots = log_client.DirectoryRootMirror(self.mirror_dir).roots()
+        roots = self._historical_roots()
         roots = sorted(roots, key=lambda item: (int(item["timestamp"]), int(item["tree_size"])))
-        latest = roots[-1] if roots else None
+        latest = None
+        latest_path = self.mirror_dir / "latest.json"
+        if latest_path.exists():
+            try:
+                latest = json.loads(latest_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                latest = None
+        if latest is None:
+            latest = roots[-1] if roots else None
         return {
-            "type": "ind.transparency_root_mirror_manifest.v1",
+            "type": "ind.transparency_root_mirror_manifest.v3",
             "version": 1,
             "root_count": len(roots),
             "latest_root_id": root_id(latest) if latest else None,
             "latest_timestamp": int(latest["timestamp"]) if latest else None,
             "latest_tree_size": int(latest["tree_size"]) if latest else None,
         }
+
+
+def compact_static_mirror(mirror_dir, keep_root_ids=None):
+    mirror_dir = Path(mirror_dir)
+    keep_root_ids = {str(item) for item in (keep_root_ids or [])}
+    roots = []
+    seen_ids = set()
+    roots_jsonl = mirror_dir / "roots.jsonl"
+    if roots_jsonl.exists():
+        for line in roots_jsonl.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            root = json.loads(line)
+            current_id = root_id(root)
+            if current_id in seen_ids:
+                continue
+            seen_ids.add(current_id)
+            roots.append(root)
+    else:
+        roots = log_client.DirectoryRootMirror(mirror_dir).roots()
+
+    by_state = {}
+    for root in roots:
+        current_id = root_id(root)
+        state_key = root_state_key(root)
+        current = by_state.get(state_key)
+        if current is None or (int(root["timestamp"]), int(root["tree_size"])) < (
+            int(current["timestamp"]),
+            int(current["tree_size"]),
+        ):
+            by_state[state_key] = root
+
+    compacted = {root_id(root): root for root in by_state.values()}
+    for root in roots:
+        current_id = root_id(root)
+        if current_id in keep_root_ids:
+            compacted[current_id] = root
+
+    latest = None
+    latest_path = mirror_dir / "latest.json"
+    if latest_path.exists():
+        try:
+            latest = json.loads(latest_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            latest = None
+    if latest is not None:
+        compacted[root_id(latest)] = latest
+
+    keep = sorted(
+        compacted.values(),
+        key=lambda item: (int(item["timestamp"]), int(item["tree_size"]), root_id(item)),
+    )
+    roots_dir = mirror_dir / "roots"
+    if roots_dir.exists():
+        shutil.rmtree(roots_dir)
+    roots_dir.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for root in keep:
+        line = _canonical_line(root)
+        atomic_write_text(roots_dir / root_filename(root), line)
+        lines.append(line)
+    atomic_write_text(mirror_dir / "roots.jsonl", "".join(lines))
+    if latest is not None:
+        atomic_write_text(latest_path, _canonical_line(latest))
+    manifest = StaticRootMirrorWriter(mirror_dir)._manifest()
+    atomic_write_text(mirror_dir / "manifest.json", log_client.canonical_json(manifest) + "\n")
+    return {"before": len(roots), "after": len(keep)}
 
 
 # Write roots to a git mirror and optionally commit/push changes.
@@ -341,7 +440,26 @@ def main():
     )
     parser.add_argument("--timeout", type=int, default=10)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument(
+        "--compact-existing",
+        action="store_true",
+        help="rewrite the static mirror history to one root per tree state",
+    )
+    parser.add_argument(
+        "--keep-root-id",
+        action="append",
+        default=[],
+        help="signed root id to retain when compacting; repeatable",
+    )
     args = parser.parse_args()
+
+    if args.compact_existing:
+        result = compact_static_mirror(args.website_mirror_dir, keep_root_ids=args.keep_root_id)
+        print(
+            "compacted static mirror from "
+            f"{result['before']} to {result['after']} historical root(s)"
+        )
+        return
 
     source = build_source(args)
     writers = build_writers(args)

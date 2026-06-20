@@ -37,6 +37,35 @@ def write_bytes(path, data):
     path.write_bytes(data)
 
 
+def copy_root_files(source_url, transparency_dir):
+    latest = None
+    for name in ("latest.json", "manifest.json", "roots.jsonl"):
+        data = fetch_bytes(f"{source_url}/{name}")
+        write_bytes(transparency_dir / name, data)
+        if name == "latest.json":
+            latest = json.loads(data.decode("utf-8"))
+    return latest
+
+
+def copy_archive(source_url, transparency_dir):
+    archive_manifest = fetch_json(f"{source_url}/archive/manifest.json")
+    archive_dir = transparency_dir / "archive"
+    if archive_dir.exists():
+        shutil.rmtree(archive_dir)
+    write_bytes(
+        archive_dir / "manifest.json",
+        (json.dumps(archive_manifest, sort_keys=True, separators=(",", ":")) + "\n").encode(
+            "utf-8"
+        ),
+    )
+    for segment in archive_manifest.get("segments", []):
+        relative = str(segment.get("path", "")).strip()
+        if not relative or relative.startswith("/") or ".." in Path(relative).parts:
+            raise MirrorPublishError(f"unsafe archive segment path: {relative}")
+        write_bytes(archive_dir / relative, fetch_bytes(f"{source_url}/archive/{relative}"))
+    return archive_manifest
+
+
 def run_git(cwd, args):
     process = subprocess.run(
         ["git", *args],
@@ -50,28 +79,35 @@ def run_git(cwd, args):
     return process.stdout.strip()
 
 
-def copy_public_transparency(source_url, target_dir, include_archive=True):
+def copy_public_transparency(
+    source_url,
+    target_dir,
+    include_archive=True,
+    allow_missing_archive=False,
+):
     source_url = source_url.rstrip("/")
     target_dir = Path(target_dir)
     transparency_dir = target_dir / "transparency"
-    for name in ("latest.json", "manifest.json", "roots.jsonl"):
-        write_bytes(transparency_dir / name, fetch_bytes(f"{source_url}/{name}"))
+    transparency_dir.mkdir(parents=True, exist_ok=True)
+    latest = copy_root_files(source_url, transparency_dir)
 
+    archive_ok = not include_archive
+    archive_error = ""
     if include_archive:
-        archive_manifest = fetch_json(f"{source_url}/archive/manifest.json")
-        archive_dir = transparency_dir / "archive"
-        write_bytes(
-            archive_dir / "manifest.json",
-            (json.dumps(archive_manifest, sort_keys=True, separators=(",", ":")) + "\n").encode(
-                "utf-8"
-            ),
-        )
-        for segment in archive_manifest.get("segments", []):
-            relative = str(segment.get("path", "")).strip()
-            if not relative or relative.startswith("/") or ".." in Path(relative).parts:
-                raise MirrorPublishError(f"unsafe archive segment path: {relative}")
-            write_bytes(archive_dir / relative, fetch_bytes(f"{source_url}/archive/{relative}"))
-    return transparency_dir
+        try:
+            copy_archive(source_url, transparency_dir)
+            archive_ok = True
+        except Exception as exc:  # noqa: BLE001 - root freshness must not depend on archive sync.
+            archive_error = str(exc)
+            if not allow_missing_archive:
+                raise
+    return {
+        "transparency_dir": str(transparency_dir),
+        "latest": latest,
+        "archive_requested": bool(include_archive),
+        "archive_ok": bool(archive_ok),
+        "archive_error": archive_error,
+    }
 
 
 def publish_git_branch(workdir, remote, branch, message):
@@ -101,6 +137,14 @@ def parse_args():
     parser.add_argument("--git-remote", default=DEFAULT_REMOTE)
     parser.add_argument("--branch", default=DEFAULT_BRANCH)
     parser.add_argument("--no-archive", action="store_true")
+    parser.add_argument(
+        "--allow-missing-archive",
+        action="store_true",
+        help=(
+            "publish root mirror files even when archive/manifest.json or archive "
+            "segments are unavailable; existing archive files are preserved"
+        ),
+    )
     parser.add_argument("--keep-workdir", default="")
     parser.add_argument(
         "--local-only",
@@ -120,15 +164,23 @@ def main():
             shutil.rmtree(workdir)
         workdir.mkdir(parents=True, exist_ok=True)
         transparency_dir = workdir / "transparency"
-        if transparency_dir.exists():
+        if transparency_dir.exists() and not args.allow_missing_archive:
             shutil.rmtree(transparency_dir)
-        copy_public_transparency(args.source_url, workdir, include_archive=not args.no_archive)
-        latest = fetch_json(f"{args.source_url.rstrip('/')}/latest.json")
+        result = copy_public_transparency(
+            args.source_url,
+            workdir,
+            include_archive=not args.no_archive,
+            allow_missing_archive=args.allow_missing_archive,
+        )
+        latest = result["latest"]
         if args.local_only:
             print(
                 json.dumps(
                     {
                         "ok": True,
+                        "archive_error": result["archive_error"],
+                        "archive_ok": result["archive_ok"],
+                        "archive_requested": result["archive_requested"],
                         "local_only": True,
                         "workdir": str(workdir),
                         "tree_size": int(latest["tree_size"]),
@@ -149,6 +201,9 @@ def main():
             json.dumps(
                 {
                     "ok": True,
+                    "archive_error": result["archive_error"],
+                    "archive_ok": result["archive_ok"],
+                    "archive_requested": result["archive_requested"],
                     "changed": changed,
                     "branch": args.branch,
                     "raw_base": raw_base,

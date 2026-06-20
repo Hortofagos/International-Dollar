@@ -21,12 +21,18 @@ if str(ROOT_DIR) not in sys.path:
 DEFAULT_STATUS_FILE = os.environ.get(
     "IND_TESTNET_MONITOR_STATUS_FILE", "files/testnet/monitor_status.json"
 )
-DEFAULT_OPERATOR_ROOT_URL = "http://127.0.0.1:8890/v1/root"
+DEFAULT_OPERATOR_ROOT_URL = "http://127.0.0.1:8890/v3/root"
 DEFAULT_STATIC_ROOT = os.environ.get("IND_TESTNET_MONITOR_STATIC_ROOT", "")
 DEFAULT_ARCHIVE_MANIFEST = os.environ.get("IND_TESTNET_MONITOR_ARCHIVE_MANIFEST", "")
 DEFAULT_PEER_DIR = os.environ.get("IND_TESTNET_MONITOR_PEER_DIR", "ip_folder")
 DEFAULT_CERT_FILE = os.environ.get("IND_TESTNET_MONITOR_CERT_FILE", "")
 USER_AGENT = "International-Dollar-testnet-monitor/1"
+
+DEFAULT_MIRROR_ROOT_URLS = [
+    item.strip()
+    for item in os.environ.get("IND_TESTNET_MONITOR_MIRROR_ROOT_URLS", "").split(",")
+    if item.strip()
+]
 
 DEFAULT_SYSTEMD_UNITS = [
     item.strip()
@@ -95,6 +101,25 @@ def add_issue(report, level, code, message):
     report["issues"].append({"level": level, "code": code, "message": message})
 
 
+def normalize_root_url(url):
+    url = str(url).strip()
+    if url.endswith(".json"):
+        return url
+    return url.rstrip("/") + "/latest.json"
+
+
+def root_status(root, now, freshness_warn_seconds):
+    timestamp = int(root.get("timestamp", 0))
+    return {
+        "ok": now - timestamp <= freshness_warn_seconds,
+        "tree_size": int(root.get("tree_size", 0)),
+        "timestamp": timestamp,
+        "age_seconds": now - timestamp,
+        "root_hash": root.get("root_hash", ""),
+        "log_id": root.get("log_id", ""),
+    }
+
+
 def service_status(unit):
     active = run_command(["systemctl", "is-active", unit])
     enabled = run_command(["systemctl", "is-enabled", unit])
@@ -141,45 +166,102 @@ def collect_disk(report, paths, warn_percent):
     report["disk"] = disks
 
 
+def collect_mirror_roots(
+    report,
+    transparency,
+    operator_root,
+    mirror_root_urls,
+    freshness_warn_seconds,
+):
+    if not mirror_root_urls:
+        return
+    now = int(report["timestamp"])
+    operator_tree_size = int(operator_root.get("tree_size", 0)) if operator_root else None
+    operator_root_hash = str(operator_root.get("root_hash", "")) if operator_root else ""
+    mirrors = []
+    for raw_url in mirror_root_urls:
+        url = normalize_root_url(raw_url)
+        try:
+            root = fetch_json(url)
+            status = root_status(root, now, freshness_warn_seconds)
+            status["url"] = url
+            if not status["ok"]:
+                add_issue(
+                    report,
+                    "error",
+                    "mirror_root_stale",
+                    f"{url} root is {status['age_seconds']}s old",
+                )
+            if operator_tree_size is not None:
+                if status["tree_size"] < operator_tree_size:
+                    status["ok"] = False
+                    add_issue(
+                        report,
+                        "error",
+                        "mirror_root_behind_operator",
+                        f"{url} tree_size {status['tree_size']} is behind operator tree_size {operator_tree_size}",
+                    )
+                elif status["tree_size"] == operator_tree_size and (
+                    operator_root_hash and status["root_hash"] != operator_root_hash
+                ):
+                    status["ok"] = False
+                    add_issue(
+                        report,
+                        "error",
+                        "mirror_root_hash_mismatch",
+                        f"{url} root hash does not match the operator at tree_size {operator_tree_size}",
+                    )
+            mirrors.append(status)
+        except Exception as exc:  # noqa: BLE001 - this is a monitor probe.
+            mirrors.append({"ok": False, "url": url, "error": str(exc)})
+            add_issue(report, "error", "mirror_root_unavailable", f"{url} unavailable: {exc}")
+    transparency["mirror_roots"] = mirrors
+
+
 def collect_transparency(
-    report, operator_root_url, static_root_path, archive_manifest_path, freshness_warn_seconds
+    report,
+    operator_root_url,
+    static_root_path,
+    archive_manifest_path,
+    freshness_warn_seconds,
+    mirror_root_urls=(),
 ):
     transparency = {}
     now = int(report["timestamp"])
+    operator_root = None
 
     try:
         root = fetch_json(operator_root_url)
-        timestamp = int(root["timestamp"])
-        transparency["operator_root"] = {
-            "ok": now - timestamp <= freshness_warn_seconds,
-            "tree_size": int(root["tree_size"]),
-            "timestamp": timestamp,
-            "age_seconds": now - timestamp,
-            "root_hash": root.get("root_hash", ""),
-            "log_id": root.get("log_id", ""),
-        }
-        if now - timestamp > freshness_warn_seconds:
+        operator_root = root
+        transparency["operator_root"] = root_status(root, now, freshness_warn_seconds)
+        if not transparency["operator_root"]["ok"]:
             add_issue(
-                report, "warning", "operator_root_stale", f"operator root is {now - timestamp}s old"
+                report,
+                "warning",
+                "operator_root_stale",
+                f"operator root is {transparency['operator_root']['age_seconds']}s old",
             )
     except Exception as exc:  # noqa: BLE001 - this is an operator health probe.
         transparency["operator_root"] = {"ok": False, "error": str(exc)}
         add_issue(report, "error", "operator_root_unavailable", f"operator root unavailable: {exc}")
 
+    collect_mirror_roots(
+        report,
+        transparency,
+        operator_root,
+        mirror_root_urls,
+        freshness_warn_seconds,
+    )
+
     static_root, static_error = load_json_file(static_root_path)
     if static_root:
-        timestamp = int(static_root.get("timestamp", 0))
-        transparency["static_root"] = {
-            "ok": now - timestamp <= freshness_warn_seconds,
-            "tree_size": int(static_root.get("tree_size", 0)),
-            "timestamp": timestamp,
-            "age_seconds": now - timestamp,
-            "root_hash": static_root.get("root_hash", ""),
-            "log_id": static_root.get("log_id", ""),
-        }
-        if now - timestamp > freshness_warn_seconds:
+        transparency["static_root"] = root_status(static_root, now, freshness_warn_seconds)
+        if not transparency["static_root"]["ok"]:
             add_issue(
-                report, "warning", "static_root_stale", f"static root is {now - timestamp}s old"
+                report,
+                "warning",
+                "static_root_stale",
+                f"static root is {transparency['static_root']['age_seconds']}s old",
             )
     else:
         transparency["static_root"] = {"ok": False, "error": static_error}
@@ -364,7 +446,7 @@ def collect_convergence(report, peers, refs, ref_files, finality_buffer_seconds)
 
 def build_report(args):
     report = {
-        "type": "ind.testnet_monitor_status.v1",
+        "type": "ind.testnet_monitor_status.v3",
         "version": 1,
         "timestamp": int(time.time()),
         "ok": True,
@@ -378,6 +460,7 @@ def build_report(args):
         args.static_root,
         args.archive_manifest,
         args.root_freshness_warn_seconds,
+        args.mirror_root_url,
     )
     collect_peers(report, args.peer_dir)
     collect_cert(report, args.cert_file, args.cert_warn_days)
@@ -401,6 +484,12 @@ def parse_args(argv=None):
     parser.add_argument("--status-file", default=DEFAULT_STATUS_FILE)
     parser.add_argument("--operator-root-url", default=DEFAULT_OPERATOR_ROOT_URL)
     parser.add_argument("--static-root", default=DEFAULT_STATIC_ROOT)
+    parser.add_argument(
+        "--mirror-root-url",
+        action="append",
+        default=list(DEFAULT_MIRROR_ROOT_URLS),
+        help="public root mirror base URL or latest.json URL required for strict verification",
+    )
     parser.add_argument("--archive-manifest", default=DEFAULT_ARCHIVE_MANIFEST)
     parser.add_argument("--peer-dir", default=DEFAULT_PEER_DIR)
     parser.add_argument("--cert-file", default=DEFAULT_CERT_FILE)

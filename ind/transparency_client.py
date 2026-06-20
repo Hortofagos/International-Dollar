@@ -1,6 +1,7 @@
 # Client and local-operator helpers for IND transparency log verification.
 
 import contextlib
+import base64
 import copy
 import json
 import logging
@@ -21,31 +22,36 @@ from pymerkle.core import InvalidChallenge
 from pymerkle.hasher import MerkleHasher
 from pymerkle.proof import InvalidProof, MerkleProof
 
-from . import token as ind_token
+from . import keys_v3
+from . import protocol as ind_token
 from .transparency_policy import TransparencyVerifierPolicy
 
 logger = logging.getLogger(__name__)
-LOG_ROOT_TYPE = "ind.transparency_root.v1"
-LOG_INCLUSION_PROOF_TYPE = "ind.transparency_inclusion_proof.v1"
-LOG_CONSISTENCY_PROOF_TYPE = "ind.transparency_consistency_proof.v1"
-LOG_ROOT_ANNOUNCEMENT_TYPE = "ind.transparency_root_announcement.v1"
-LOG_EQUIVOCATION_PROOF_TYPE = "ind.transparency_equivocation_proof.v1"
-LOG_OPERATOR_POLICY_VIOLATION_TYPE = "ind.transparency_operator_policy_violation.v1"
-LOG_KEY_ROTATION_TYPE = "ind.transparency_operator_key_rotation.v1"
-LOG_KEY_REVOCATION_TYPE = "ind.transparency_operator_key_revocation.v1"
-LOG_SPEND_MAP_PROOF_TYPE = "ind.transparency_spend_map_proof.v1"
-LOG_PROOF_ARCHIVE_TYPE = "ind.transparency_proof_archive.v1"
-LOG_VERSION = 1
+LOG_ROOT_TYPE = "ind.transparency_root.v3"
+LOG_INCLUSION_PROOF_TYPE = "ind.transparency_inclusion_proof.v3"
+LOG_CONSISTENCY_PROOF_TYPE = "ind.transparency_consistency_proof.v3"
+LOG_ROOT_ANNOUNCEMENT_TYPE = "ind.transparency_root_announcement.v3"
+LOG_EQUIVOCATION_PROOF_TYPE = "ind.transparency_equivocation_proof.v3"
+LOG_OPERATOR_POLICY_VIOLATION_TYPE = "ind.transparency_operator_policy_violation.v3"
+LOG_KEY_ROTATION_TYPE = "ind.transparency_operator_key_rotation.v3"
+LOG_KEY_REVOCATION_TYPE = "ind.transparency_operator_key_revocation.v3"
+LOG_SPEND_MAP_PROOF_TYPE = "ind.transparency_spend_map_proof.v3"
+LOG_PROOF_ARCHIVE_TYPE = "ind.transparency_proof_archive.v3"
+LOG_RECOVERY_WITNESS_TYPE = "ind.operator_recovery_witness.v3"
+LOG_VERSION = 3
 LOG_HASH_ALGORITHM = "sha3_256"
-LOG_EMPTY_ROOT_HASH = sha3_256(b"IND-TRANSPARENCY-EMPTY-LOG-V1").hexdigest()
-LOG_TREE_ALGORITHM = "CT_STYLE_SHA3_256_V1"
-LOG_SPEND_MAP_ALGORITHM = "IND_SPARSE_SPEND_MAP_SHA3_256_V1"
-LEGACY_LOG_TREE_ALGORITHM = "RFC6962_SHA3_256_PYMERKLE_V1"
-LOG_SIGNATURE_ALGORITHM = "ECDSA_SECP256K1_SHA3_256_BASE85"
-LOG_ROOT_SIGNATURE_DOMAIN = "IND_TRANSPARENCY_ROOT_V1"
-LOG_KEY_ROTATION_SIGNATURE_DOMAIN = "IND_TRANSPARENCY_KEY_ROTATION_V1"
-LOG_KEY_REVOCATION_SIGNATURE_DOMAIN = "IND_TRANSPARENCY_KEY_REVOCATION_V1"
+LOG_EMPTY_ROOT_HASH = sha3_256(b"IND-TRANSPARENCY-EMPTY-LOG-V3").hexdigest()
+LOG_TREE_ALGORITHM = "CT_STYLE_SHA3_256_V3"
+LOG_SPEND_MAP_ALGORITHM = "IND_SPARSE_SPEND_MAP_SHA3_256_V3"
+LEGACY_LOG_TREE_ALGORITHM = "RFC6962_SHA3_256_PYMERKLE_V3"
+LOG_SIGNATURE_ALGORITHM = "ED25519_BASE85"
+LEGACY_LOG_SIGNATURE_ALGORITHM = "ECDSA_SECP256K1_SHA3_256_BASE85"
+LOG_ROOT_SIGNATURE_DOMAIN = "IND_TRANSPARENCY_ROOT_V3"
+LOG_KEY_ROTATION_SIGNATURE_DOMAIN = "IND_TRANSPARENCY_KEY_ROTATION_V3"
+LOG_KEY_REVOCATION_SIGNATURE_DOMAIN = "IND_TRANSPARENCY_KEY_REVOCATION_V3"
+LOG_RECOVERY_WITNESS_SIGNATURE_DOMAIN = "IND_OPERATOR_RECOVERY_WITNESS_V3"
 DEFAULT_MAX_ROOT_LAG_SECONDS = 120
+DEFAULT_OPERATOR_RECOVERY_MIN_FEEDS = 2
 DEFAULT_MAX_CURRENT_ROOT_AGE_SECONDS = 300
 DEFAULT_CURRENT_ROOT_FUTURE_SKEW_SECONDS = 120
 STRICT_MAX_CURRENT_ROOT_AGE_SECONDS = 600
@@ -153,6 +159,14 @@ def _production_security_mode_enabled():
     return ind_settings.production_mode(settings)
 
 
+def _testnet_mode_enabled():
+    ind_settings = _settings_module()
+    if ind_settings is None:
+        return os.environ.get("IND_NETWORK", "").strip().lower() == "testnet"
+    settings = ind_settings.load_security_settings(validate_production=False)
+    return ind_settings.is_testnet(settings)
+
+
 def _env_false(name):
     return os.environ.get(name, "").strip().lower() in {"0", "false", "no", "off"}
 
@@ -172,6 +186,39 @@ def accepted_tree_algorithms():
 # Derive the stable log id from the operator signing key.
 def log_id_from_public_key(public_key_base85):
     return ind_token.sha3_hex(public_key_base85.strip().encode("utf-8"))
+
+
+def _signature_algorithms_for_verification():
+    algorithms = {LOG_SIGNATURE_ALGORITHM}
+    if accept_legacy_algorithm_names():
+        algorithms.add(LEGACY_LOG_SIGNATURE_ALGORITHM)
+    return algorithms
+
+
+def _sign_operator_payload(private_key, payload):
+    private_key = str(private_key).strip()
+    if not private_key.startswith(keys_v3.PRIVATE_KEY_PREFIX):
+        raise TransparencyLogError("operator signing key must be an indsk3 Ed25519 key")
+    signature = keys_v3.sign(private_key, payload)
+    return base64.b85encode(signature).decode("ascii")
+
+
+def _verify_operator_payload(public_key, signature, payload, signature_algorithm):
+    public_key = str(public_key).strip()
+    signature_algorithm = str(signature_algorithm).strip()
+    try:
+        signature_bytes = base64.b85decode(str(signature).strip().encode("ascii"))
+    except Exception:
+        return False
+    if signature_algorithm == LOG_SIGNATURE_ALGORITHM:
+        if not public_key.startswith(keys_v3.PUBLIC_KEY_PREFIX):
+            return False
+        return keys_v3.verify(public_key, signature_bytes, payload)
+    if signature_algorithm == LEGACY_LOG_SIGNATURE_ALGORITHM and accept_legacy_algorithm_names():
+        if public_key.startswith(keys_v3.PUBLIC_KEY_PREFIX):
+            return False
+        return ind_token.b85_verify(public_key, signature, payload)
+    return False
 
 
 # Return the bytes covered by the signed-root signature.
@@ -255,7 +302,7 @@ def _spend_map_empty_hashes():
     if _SPEND_MAP_EMPTY_HASHES is not None:
         return _SPEND_MAP_EMPTY_HASHES
     hashes = [None] * (SPEND_MAP_KEY_BITS + 1)
-    hashes[SPEND_MAP_KEY_BITS] = ind_token.sha3_hex(b"IND-SPEND-MAP-EMPTY-LEAF-V1")
+    hashes[SPEND_MAP_KEY_BITS] = ind_token.sha3_hex(b"IND-SPEND-MAP-EMPTY-LEAF-V3")
     for depth in range(SPEND_MAP_KEY_BITS - 1, -1, -1):
         hashes[depth] = _spend_map_branch_hash(hashes[depth + 1], hashes[depth + 1])
     _SPEND_MAP_EMPTY_HASHES = hashes
@@ -281,7 +328,7 @@ def spend_key_for_transfer(transfer):
 def spend_claim_for_transfer(transfer, log_id, transfer_leaf_index, accepted_at):
     transfer_hash = ind_token.transfer_hash(transfer)
     claim = {
-        "type": "ind.transparency_spend_claim.v1",
+        "type": "ind.transparency_spend_claim.v3",
         "version": LOG_VERSION,
         "log_id": str(log_id),
         "spend_key": spend_key_for_transfer(transfer),
@@ -326,7 +373,7 @@ def _normalize_spend_claim(claim, error_cls=None):
         error_cls=error_cls,
     )
     if (
-        claim["type"] != "ind.transparency_spend_claim.v1"
+        claim["type"] != "ind.transparency_spend_claim.v3"
         or _require_int_for(
             claim["version"],
             "transparency spend claim version",
@@ -336,7 +383,7 @@ def _normalize_spend_claim(claim, error_cls=None):
     ):
         raise error_cls("unsupported transparency spend claim version")
     normalized = {
-        "type": "ind.transparency_spend_claim.v1",
+        "type": "ind.transparency_spend_claim.v3",
         "version": LOG_VERSION,
         "log_id": _require_str(
             claim["log_id"], "transparency spend claim log id", error_cls=error_cls
@@ -375,7 +422,11 @@ def _normalize_spend_claim(claim, error_cls=None):
     if "transfer" in claim:
         transfer = copy.deepcopy(claim["transfer"])
         try:
-            if isinstance(transfer, dict) and transfer.get("type") == "ind.transfer.v3":
+            if (
+                isinstance(transfer, dict)
+                and transfer.get("type") == "ind.transfer.v3"
+                and "network_id" in transfer
+            ):
                 from . import protocol_v3
 
                 protocol_v3._validate_transfer_shape(
@@ -419,13 +470,13 @@ def _spend_map_slot_hash(spend_key, claims):
         "spend_key": str(spend_key),
         "claims": sorted((copy.deepcopy(claim) for claim in claims), key=_spend_claim_sort_key),
     }
-    return ind_token.sha3_hex(b"IND-SPEND-MAP-SLOT-V1:" + key_bytes + canonical_bytes(slot))
+    return ind_token.sha3_hex(b"IND-SPEND-MAP-SLOT-V3:" + key_bytes + canonical_bytes(slot))
 
 
 def _spend_map_branch_hash(left_hash, right_hash):
     left = bytes.fromhex(str(left_hash))
     right = bytes.fromhex(str(right_hash))
-    return ind_token.sha3_hex(b"IND-SPEND-MAP-BRANCH-V1:" + left + right)
+    return ind_token.sha3_hex(b"IND-SPEND-MAP-BRANCH-V3:" + left + right)
 
 
 def _spend_key_position(spend_key):
@@ -686,8 +737,14 @@ def verify_spend_map_proof_for_transfer(
 ):
     verify_signed_root(signed_root, operator_public_key=operator_public_key)
     claims = verify_spend_map_proof(proof, signed_root)
-    expected_spend_key = spend_key_for_transfer(transfer)
-    expected_transfer_hash = ind_token.transfer_hash(transfer)
+    if isinstance(transfer, dict) and transfer.get("type") == "ind.transfer.v3":
+        from . import protocol_v3
+
+        expected_spend_key = protocol_v3.spend_key_for_transfer(transfer)
+        expected_transfer_hash = protocol_v3.transfer_hash(transfer)
+    else:
+        expected_spend_key = spend_key_for_transfer(transfer)
+        expected_transfer_hash = ind_token.transfer_hash(transfer)
     claim = next((item for item in claims if item["transfer_hash"] == expected_transfer_hash), None)
     if claim is None:
         raise InclusionProofError("spend proof does not contain this transfer")
@@ -957,7 +1014,7 @@ def make_signed_root(
         "timestamp": int(timestamp),
         "operator_public_key": public_key_base85,
     }
-    root["signature"] = ind_token.b85_sign(private_key_base85, root_signature_payload(root))
+    root["signature"] = _sign_operator_payload(private_key_base85, root_signature_payload(root))
     return root
 
 
@@ -998,7 +1055,7 @@ def verify_signed_root(root, operator_public_key=None):
         raise RootVerificationError("unsupported transparency tree algorithm")
     if root["hash_algorithm"] != LOG_HASH_ALGORITHM:
         raise RootVerificationError("unsupported transparency hash algorithm")
-    if root["signature_algorithm"] != LOG_SIGNATURE_ALGORITHM:
+    if root["signature_algorithm"] not in _signature_algorithms_for_verification():
         raise RootVerificationError("unsupported transparency root signature algorithm")
     _require_int_for(
         root["tree_size"], "transparency tree size", minimum=0, error_cls=RootVerificationError
@@ -1024,7 +1081,12 @@ def verify_signed_root(root, operator_public_key=None):
         raise RootVerificationError("transparency root was signed by an unexpected operator")
     if root["log_id"] != log_id_from_public_key(root_public_key):
         raise RootVerificationError("transparency root log id does not match operator key")
-    if not ind_token.b85_verify(root_public_key, root["signature"], root_signature_payload(root)):
+    if not _verify_operator_payload(
+        root_public_key,
+        root["signature"],
+        root_signature_payload(root),
+        root["signature_algorithm"],
+    ):
         raise RootVerificationError("invalid transparency root signature")
     return True
 
@@ -1068,6 +1130,146 @@ def verify_root_announcement(message, operator_public_key=None):
         error_cls=RootVerificationError,
     )
     return root
+
+
+def recovery_witness_signature_payload(witness):
+    unsigned = copy.deepcopy(witness)
+    unsigned.pop("signature", None)
+    return ind_token.signature_payload(LOG_RECOVERY_WITNESS_SIGNATURE_DOMAIN, unsigned)
+
+
+def make_recovery_witness(
+    message_hash,
+    feed_id,
+    first_seen,
+    source_segment_hash,
+    feed_private_key,
+    feed_public_key,
+):
+    witness = {
+        "type": LOG_RECOVERY_WITNESS_TYPE,
+        "version": LOG_VERSION,
+        "signature_algorithm": LOG_SIGNATURE_ALGORITHM,
+        "message_hash": _hex32(message_hash, "recovery witness message hash"),
+        "feed_id": str(feed_id),
+        "feed_public_key": str(feed_public_key).strip(),
+        "first_seen": int(first_seen),
+        "source_segment_hash": _hex32(
+            source_segment_hash, "recovery witness source segment hash"
+        ),
+    }
+    witness["signature"] = _sign_operator_payload(
+        feed_private_key, recovery_witness_signature_payload(witness)
+    )
+    return witness
+
+
+def verify_recovery_witness(witness, trusted_feed_public_keys=None):
+    _require_exact_keys(
+        witness,
+        {
+            "type",
+            "version",
+            "signature_algorithm",
+            "message_hash",
+            "feed_id",
+            "feed_public_key",
+            "first_seen",
+            "source_segment_hash",
+            "signature",
+        },
+        "operator recovery witness",
+        error_cls=RootVerificationError,
+    )
+    if witness["type"] != LOG_RECOVERY_WITNESS_TYPE:
+        raise RootVerificationError("not an operator recovery witness")
+    if (
+        _require_int_for(
+            witness["version"],
+            "operator recovery witness version",
+            error_cls=RootVerificationError,
+        )
+        != LOG_VERSION
+    ):
+        raise RootVerificationError("unsupported operator recovery witness version")
+    if witness["signature_algorithm"] not in _signature_algorithms_for_verification():
+        raise RootVerificationError("unsupported operator recovery witness signature algorithm")
+    message_hash = _hex32(witness["message_hash"], "recovery witness message hash")
+    source_segment_hash = _hex32(
+        witness["source_segment_hash"], "recovery witness source segment hash"
+    )
+    feed_id = _require_str(
+        witness["feed_id"], "operator recovery witness feed id", error_cls=RootVerificationError
+    )
+    feed_public_key = _require_str(
+        witness["feed_public_key"],
+        "operator recovery witness feed public key",
+        error_cls=RootVerificationError,
+    )
+    _require_int_for(
+        witness["first_seen"],
+        "operator recovery witness first_seen",
+        minimum=0,
+        error_cls=RootVerificationError,
+    )
+    if trusted_feed_public_keys is not None:
+        trusted = {str(item).strip() for item in trusted_feed_public_keys if str(item).strip()}
+        if feed_public_key not in trusted:
+            raise RootVerificationError("operator recovery witness feed key is not trusted")
+    if not _verify_operator_payload(
+        feed_public_key,
+        witness["signature"],
+        recovery_witness_signature_payload(witness),
+        witness["signature_algorithm"],
+    ):
+        raise RootVerificationError("invalid operator recovery witness signature")
+    normalized = copy.deepcopy(witness)
+    normalized["message_hash"] = message_hash
+    normalized["source_segment_hash"] = source_segment_hash
+    normalized["feed_id"] = feed_id
+    normalized["feed_public_key"] = feed_public_key
+    normalized["first_seen"] = int(witness["first_seen"])
+    return normalized
+
+
+def recovery_witness_quorum(
+    witnesses,
+    message_hash,
+    transfer_timestamp,
+    min_witnesses=DEFAULT_OPERATOR_RECOVERY_MIN_FEEDS,
+    max_root_lag_seconds=DEFAULT_MAX_ROOT_LAG_SECONDS,
+    trusted_feed_public_keys=None,
+):
+    message_hash = _hex32(message_hash, "recovery witness message hash")
+    transfer_timestamp = int(transfer_timestamp)
+    max_root_lag_seconds = int(max_root_lag_seconds)
+    min_witnesses = int(min_witnesses)
+    accepted = {}
+    errors = []
+    for witness in witnesses or []:
+        try:
+            normalized = verify_recovery_witness(
+                witness, trusted_feed_public_keys=trusted_feed_public_keys
+            )
+            if normalized["message_hash"] != message_hash:
+                raise RootVerificationError("operator recovery witness message hash mismatch")
+            first_seen = int(normalized["first_seen"])
+            if first_seen < transfer_timestamp:
+                raise RootVerificationError("operator recovery witness predates transfer")
+            if first_seen - transfer_timestamp > max_root_lag_seconds:
+                raise RootVerificationError("operator recovery witness saw transfer too late")
+            identity = (normalized["feed_id"], normalized["feed_public_key"])
+            accepted.setdefault(identity, normalized)
+        except Exception as exc:
+            errors.append(str(exc))
+    if len(accepted) < min_witnesses:
+        detail = "; ".join(errors) if errors else "not enough recovery witnesses"
+        raise RootVerificationError(
+            f"operator recovery witness quorum not satisfied: {detail}"
+        )
+    return sorted(
+        accepted.values(), key=lambda item: (item["feed_id"], item["feed_public_key"])
+    )
 
 
 # Build the peer-gossip proof that an operator signed conflicting roots.
@@ -1199,8 +1401,8 @@ def make_key_rotation(
         "signature_algorithm": LOG_SIGNATURE_ALGORITHM,
     }
     payload = key_rotation_signature_payload(record)
-    record["signature_by_old_key"] = ind_token.b85_sign(old_private_key, payload)
-    record["signature_by_new_key"] = ind_token.b85_sign(new_private_key, payload)
+    record["signature_by_old_key"] = _sign_operator_payload(old_private_key, payload)
+    record["signature_by_new_key"] = _sign_operator_payload(new_private_key, payload)
     return record
 
 
@@ -1237,7 +1439,7 @@ def verify_key_rotation(record, expected_log_id=None, old_public_key=None, new_p
         != LOG_VERSION
     ):
         raise KeyRotationError("unsupported transparency operator key rotation version")
-    if record["signature_algorithm"] != LOG_SIGNATURE_ALGORITHM:
+    if record["signature_algorithm"] not in _signature_algorithms_for_verification():
         raise KeyRotationError("unsupported transparency operator key rotation signature algorithm")
     if expected_log_id and record["log_id"] != expected_log_id:
         raise KeyRotationError("operator key rotation is for an unexpected log id")
@@ -1271,12 +1473,18 @@ def verify_key_rotation(record, expected_log_id=None, old_public_key=None, new_p
         raise KeyRotationError("operator key rotation overlap ends before rotation timestamp")
     payload = key_rotation_signature_payload(record)
     # Both keys sign the same payload to prove continuity across the rotation.
-    if not ind_token.b85_verify(
-        record["old_public_key"].strip(), record["signature_by_old_key"], payload
+    if not _verify_operator_payload(
+        record["old_public_key"].strip(),
+        record["signature_by_old_key"],
+        payload,
+        record["signature_algorithm"],
     ):
         raise KeyRotationError("invalid operator key rotation old-key signature")
-    if not ind_token.b85_verify(
-        record["new_public_key"].strip(), record["signature_by_new_key"], payload
+    if not _verify_operator_payload(
+        record["new_public_key"].strip(),
+        record["signature_by_new_key"],
+        payload,
+        record["signature_algorithm"],
     ):
         raise KeyRotationError("invalid operator key rotation new-key signature")
     return True
@@ -1311,7 +1519,7 @@ def make_key_revocation(
         "reason": str(reason or "compromise"),
         "signature_algorithm": LOG_SIGNATURE_ALGORITHM,
     }
-    record["signature_by_successor_key"] = ind_token.b85_sign(
+    record["signature_by_successor_key"] = _sign_operator_payload(
         successor_private_key,
         key_revocation_signature_payload(record),
     )
@@ -1348,7 +1556,7 @@ def verify_key_revocation(record, rotation_record=None):
         != LOG_VERSION
     ):
         raise KeyRevocationError("unsupported transparency operator key revocation version")
-    if record["signature_algorithm"] != LOG_SIGNATURE_ALGORITHM:
+    if record["signature_algorithm"] not in _signature_algorithms_for_verification():
         raise KeyRevocationError(
             "unsupported transparency operator key revocation signature algorithm"
         )
@@ -1360,10 +1568,11 @@ def verify_key_revocation(record, rotation_record=None):
     )
     if record["log_id"] != log_id_from_public_key(record["revoked_public_key"].strip()):
         raise KeyRevocationError("operator key revocation log id does not match revoked key")
-    if not ind_token.b85_verify(
+    if not _verify_operator_payload(
         record["successor_public_key"].strip(),
         record["signature_by_successor_key"],
         key_revocation_signature_payload(record),
+        record["signature_algorithm"],
     ):
         raise KeyRevocationError("invalid operator key revocation successor-key signature")
     if rotation_record is not None:
@@ -2177,7 +2386,7 @@ class SQLiteObservedRootStore:
     def save_consistency_failure(self, old_root, new_root, error, detected_at=None):
         detected_at = int(detected_at or time.time())
         evidence = {
-            "type": "ind.transparency_consistency_failure.v1",
+            "type": "ind.transparency_consistency_failure.v3",
             "version": 1,
             "log_id": old_root["log_id"],
             "old_root": old_root,
@@ -2632,7 +2841,7 @@ class InMemoryObservedRootStore:
     def save_consistency_failure(self, old_root, new_root, error, detected_at=None):
         detected_at = int(detected_at or time.time())
         evidence = {
-            "type": "ind.transparency_consistency_failure.v1",
+            "type": "ind.transparency_consistency_failure.v3",
             "version": 1,
             "log_id": old_root["log_id"],
             "old_root": old_root,
@@ -2792,34 +3001,43 @@ class HTTPJSONClient:
 
 # Client for the log operator's proof endpoints.
 class HTTPTransparencyOperator:
-    def __init__(self, base_url, timeout=10):
+    def __init__(self, base_url, timeout=10, operator_public_key=None):
         self.http = HTTPJSONClient(base_url, timeout=timeout)
         self.identity_id = self.http.identity_id
+        self.operator_public_key = str(operator_public_key or "").strip() or None
+        self.log_id = (
+            log_id_from_public_key(self.operator_public_key)
+            if self.operator_public_key
+            else None
+        )
 
     def inclusion_proof(self, entry_hash, tree_size):
         return self.http.get_json(
-            "/v1/proof", {"entry_hash": entry_hash, "tree_size": int(tree_size)}
+            "/v3/proof", {"entry_hash": entry_hash, "tree_size": int(tree_size)}
         )
 
     def consistency_proof(self, first_tree_size, second_tree_size):
         return self.http.get_json(
-            "/v1/consistency",
+            "/v3/consistency",
             {"first": int(first_tree_size), "second": int(second_tree_size)},
         )
 
     def spend_map_proof(self, spend_key, tree_size):
         return self.http.get_json(
-            "/v1/spend-proof", {"spend_key": spend_key, "tree_size": int(tree_size)}
+            "/v3/spend-proof", {"spend_key": spend_key, "tree_size": int(tree_size)}
         )
 
     def submit_transfer_announcement(self, announcement):
-        return self.http.post_json("/v1/append", announcement)
+        return self.http.post_json("/v3/append", announcement)
 
     def submit_checkpoint_announcement(self, announcement):
-        return self.http.post_json("/v1/append", announcement)
+        return self.http.post_json("/v3/append", announcement)
 
     def latest_root(self):
-        return self.http.get_json("/v1/root")
+        return self.http.get_json("/v3/root")
+
+    def status(self):
+        return self.http.get_json("/v3/status")
 
 
 # Client for an HTTP mirror serving signed roots.
@@ -2829,20 +3047,49 @@ class HTTPRootMirror:
         self.identity_id = self.http.identity_id
 
     def root_at(self, timestamp):
-        return self.http.get_json("/v1/root-at", {"timestamp": int(timestamp)})
+        return self.http.get_json("/v3/root-at", {"timestamp": int(timestamp)})
 
     def latest_root(self):
-        return self.http.get_json("/v1/root")
+        return self.http.get_json("/v3/root")
 
     def inclusion_proof(self, entry_hash, tree_size):
         return self.http.get_json(
-            "/v1/proof", {"entry_hash": entry_hash, "tree_size": int(tree_size)}
+            "/v3/proof", {"entry_hash": entry_hash, "tree_size": int(tree_size)}
         )
 
     def spend_map_proof(self, spend_key, tree_size):
         return self.http.get_json(
-            "/v1/spend-proof", {"spend_key": spend_key, "tree_size": int(tree_size)}
+            "/v3/spend-proof", {"spend_key": spend_key, "tree_size": int(tree_size)}
         )
+
+
+class VerifyOnlyTransparencyOperator:
+    def __init__(self, operator_public_key):
+        self.operator_public_key = str(operator_public_key or "").strip()
+        self.log_id = log_id_from_public_key(self.operator_public_key) if self.operator_public_key else ""
+        label = self.operator_public_key or "unconfigured"
+        self.identity_id = ("verify-only-operator", label)
+
+    def _unavailable(self):
+        raise TransparencyLogError("verify-only transparency operator has no append API")
+
+    def latest_root(self):
+        self._unavailable()
+
+    def inclusion_proof(self, entry_hash, tree_size):
+        self._unavailable()
+
+    def consistency_proof(self, first_tree_size, second_tree_size):
+        self._unavailable()
+
+    def spend_map_proof(self, spend_key, tree_size):
+        self._unavailable()
+
+    def submit_transfer_announcement(self, announcement):
+        self._unavailable()
+
+    def submit_checkpoint_announcement(self, announcement):
+        self._unavailable()
 
 
 # Client for a static HTTP root mirror produced by operator_tools.root_streamer.
@@ -2937,6 +3184,11 @@ class DirectoryRootMirror:
         )[0]
 
     def latest_root(self):
+        latest_path = self.path / "latest.json"
+        if latest_path.exists() and latest_path.is_file():
+            data = self._roots_from_file(latest_path)
+            if data:
+                return data[0]
         roots = self.roots()
         if not roots:
             raise RootVerificationError("mirror has no signed roots")
@@ -3014,6 +3266,10 @@ class StaticRootMirror:
 class LocalTransparencyOperator:
     def __init__(self, log):
         self.log = log
+        self.operator_public_key = str(getattr(log, "public_key", "") or "").strip() or None
+        self.log_id = str(getattr(log, "log_id", "") or "").strip()
+        if not self.log_id and self.operator_public_key:
+            self.log_id = log_id_from_public_key(self.operator_public_key)
         self.identity_id = (
             "local-log",
             os.path.normcase(str(Path(log.db_path).resolve(strict=False))),
@@ -3047,19 +3303,150 @@ class LocalTransparencyOperator:
     def root_at(self, timestamp):
         return self.log.root_at(int(timestamp))
 
+    def status(self):
+        status = getattr(self.log, "status", None)
+        if callable(status):
+            return status()
+        return {"state": "active", "tree_size": int(self.log.tree_size())}
+
+
+class MultiTransparencySubmitter:
+    def __init__(self, operators):
+        self.operators = [_coerce_operator(operator) for operator in operators]
+        self.identity_id = ("multi-operator", str(len(self.operators)))
+
+    def operator_identities(self):
+        return [
+            identity
+            for identity in (operator_identity(operator) for operator in self.operators)
+            if identity.get("log_id")
+        ]
+
+    def _active_operators(self):
+        for operator in self.operators:
+            status_method = getattr(operator, "status", None)
+            if callable(status_method):
+                try:
+                    status = status_method()
+                except Exception:
+                    continue
+                state = str(status.get("state", "active")).strip().lower()
+                if state != "active":
+                    continue
+            yield operator
+
+    def _operator_matches(self, operator, operator_public_key=None, log_id=None):
+        if operator_public_key:
+            configured = str(getattr(operator, "operator_public_key", "") or "").strip()
+            return bool(configured and configured == str(operator_public_key).strip())
+        if log_id:
+            configured = str(getattr(operator, "operator_public_key", "") or "").strip()
+            if not configured:
+                return False
+            return log_id_from_public_key(configured) == str(log_id).strip()
+        return True
+
+    def _submit(self, method_name, announcement, *, operator_public_key=None, log_id=None):
+        errors = []
+        for operator in self._active_operators():
+            if not self._operator_matches(
+                operator,
+                operator_public_key=operator_public_key,
+                log_id=log_id,
+            ):
+                continue
+            method = getattr(operator, method_name)
+            try:
+                return method(announcement)
+            except Exception as exc:
+                errors.append(f"{_source_label(operator)}: {exc}")
+        detail = "; ".join(errors) if errors else "no matching active transparency operator"
+        raise TransparencyLogError(f"no active transparency operator accepted append: {detail}")
+
+    def submit_transfer_announcement(self, announcement):
+        return self._submit("submit_transfer_announcement", announcement)
+
+    def submit_transfer_announcement_to_all(self, announcement):
+        results = []
+        for operator in self.operators:
+            identity = operator_identity(operator)
+            result = {
+                "log_id": identity.get("log_id", ""),
+                "operator_public_key": identity.get("operator_public_key", ""),
+                "accepted": False,
+                "response": None,
+                "error": "",
+            }
+            try:
+                status_method = getattr(operator, "status", None)
+                if callable(status_method):
+                    status = status_method()
+                    state = str(status.get("state", "active")).strip().lower()
+                    if state != "active":
+                        raise TransparencyLogError(f"operator is {state or 'not active'}")
+                response = operator.submit_transfer_announcement(announcement)
+                result["response"] = response
+                result["accepted"] = bool(isinstance(response, dict) and response.get("accepted"))
+            except Exception as exc:
+                result["error"] = str(exc)
+            results.append(result)
+        return results
+
+    def submit_transfer_announcement_for_operator(
+        self, announcement, *, operator_public_key=None, log_id=None
+    ):
+        return self._submit(
+            "submit_transfer_announcement",
+            announcement,
+            operator_public_key=operator_public_key,
+            log_id=log_id,
+        )
+
+    def submit_checkpoint_announcement(self, announcement):
+        return self._submit("submit_checkpoint_announcement", announcement)
+
+    def submit_checkpoint_announcement_for_operator(
+        self, announcement, *, operator_public_key=None, log_id=None
+    ):
+        return self._submit(
+            "submit_checkpoint_announcement",
+            announcement,
+            operator_public_key=operator_public_key,
+            log_id=log_id,
+        )
+
 
 def _coerce_operator(operator):
     if isinstance(operator, str):
         return HTTPTransparencyOperator(operator)
+    if isinstance(operator, dict):
+        url = str(operator.get("url", "")).strip()
+        if url:
+            return HTTPTransparencyOperator(
+                url,
+                operator_public_key=str(operator.get("public_key") or "").strip() or None,
+            )
     return operator
+
+
+def operator_identity(operator):
+    public_key = str(getattr(operator, "operator_public_key", "") or "").strip()
+    log_id = str(getattr(operator, "log_id", "") or "").strip()
+    if not public_key and hasattr(operator, "log"):
+        public_key = str(getattr(operator.log, "public_key", "") or "").strip()
+    if not log_id and hasattr(operator, "log"):
+        log_id = str(getattr(operator.log, "log_id", "") or "").strip()
+    if not log_id and public_key:
+        log_id = log_id_from_public_key(public_key)
+    return {"log_id": log_id, "operator_public_key": public_key}
 
 
 def _coerce_mirror(mirror):
     if isinstance(mirror, str) and mirror.startswith(("http://", "https://")):
         parsed = urllib.parse.urlparse(mirror)
-        if parsed.path.rstrip("/").endswith("/transparency") or parsed.path.rstrip("/").endswith(
-            "/roots"
-        ):
+        path = parsed.path.rstrip("/")
+        path_name = path.rsplit("/", 1)[-1]
+        if path_name.endswith("transparency") or path.endswith("/roots"):
             return HTTPStaticRootMirror(mirror)
         return HTTPRootMirror(mirror)
     if isinstance(mirror, str):
@@ -3095,6 +3482,8 @@ class TransparencyVerifier:
         max_current_root_age_seconds=DEFAULT_MAX_CURRENT_ROOT_AGE_SECONDS,
         current_root_future_skew_seconds=DEFAULT_CURRENT_ROOT_FUTURE_SKEW_SECONDS,
         proof_archives=None,
+        operator_recovery_min_feeds=DEFAULT_OPERATOR_RECOVERY_MIN_FEEDS,
+        recovery_feed_public_keys=None,
         start_background_checks=False,
         run_startup_check=True,
     ):
@@ -3121,6 +3510,12 @@ class TransparencyVerifier:
         self.proof_archives = [_coerce_mirror(source) for source in (proof_archives or [])]
         self.operator_public_key = operator_public_key
         self.max_root_lag_seconds = self.policy.max_root_lag_seconds
+        self.operator_recovery_min_feeds = int(operator_recovery_min_feeds)
+        self.recovery_feed_public_keys = (
+            {str(item).strip() for item in recovery_feed_public_keys if str(item).strip()}
+            if recovery_feed_public_keys is not None
+            else None
+        )
         self.max_current_root_age_seconds = self.policy.max_current_root_age_seconds
         self.current_root_future_skew_seconds = self.policy.current_root_future_skew_seconds
         self._validate_current_root_freshness_config()
@@ -3197,7 +3592,11 @@ class TransparencyVerifier:
 
     def _validated_min_mirrors(self, min_mirrors):
         requested = int(min_mirrors)
-        floor = 1 if self.allow_unsafe_single_mirror else DEFAULT_MIN_ROOT_MIRRORS
+        floor = (
+            1
+            if self.allow_unsafe_single_mirror or _testnet_mode_enabled()
+            else DEFAULT_MIN_ROOT_MIRRORS
+        )
         if requested < floor:
             raise TransparencyLogError(
                 f"IND_LOG_MIN_MIRRORS={requested} is below the required floor of {floor} independent root mirrors"
@@ -3607,7 +4006,7 @@ class TransparencyVerifier:
     def _validate_current_root_monotonicity(self, root):
         position = self.observed_root_store.observed_position(root["log_id"])
         if not position:
-            return True
+            return ""
         root_size = int(root["tree_size"])
         root_timestamp = int(root["timestamp"])
         highest_size = int(position["highest_tree_size"])
@@ -3620,16 +4019,16 @@ class TransparencyVerifier:
                     f"already observed tree_size {highest_size}"
                 )
                 self._handle_consistency_failure(previous, root, error)
-            raise RootVerificationError(
-                f"transparency root replayed an older tree for current verification: tree_size "
-                f"{root_size} is below previously observed tree_size {highest_size}"
+            return (
+                f"mirror is lagging current verification: tree_size {root_size} is below "
+                f"previously observed tree_size {highest_size}"
             )
         if root_timestamp < latest_timestamp:
             raise RootVerificationError(
                 f"transparency root replayed an older timestamp for current verification: timestamp "
                 f"{root_timestamp} is below previously observed timestamp {latest_timestamp}"
             )
-        return True
+        return ""
 
     def _current_roots_from_mirrors(self, now=None, error_context="current verification"):
         now = self._current_time(now)
@@ -3688,7 +4087,12 @@ class TransparencyVerifier:
         old_size = int(previous["tree_size"])
         new_size = int(root["tree_size"])
         if old_size == new_size and previous["root_hash"] == root["root_hash"]:
-            self.observed_root_store.record_root(root, source_identity, observed_at=now)
+            self.observed_root_store.record_root(
+                root, source_identity, observed_at=now, consistency_checked_at=now
+            )
+            self.observed_root_store.mark_active(
+                log_id, root["operator_public_key"], checked_at=now
+            )
             self._queue_root_announcement(root)
             self._enforce_consistency_freshness(log_id)
             return root
@@ -3897,9 +4301,34 @@ class TransparencyVerifier:
             candidates, key=lambda root: (int(root["timestamp"]), int(root["tree_size"]))
         )[0]
 
-    def mirrored_root_containing_leaf(self, timestamp, leaf_index):
+    def _recovery_witnesses_allow_late_root(self, witnesses, message_hash, timestamp):
+        if not witnesses or not message_hash:
+            return False
+        try:
+            recovery_witness_quorum(
+                witnesses,
+                message_hash,
+                int(timestamp),
+                min_witnesses=self.operator_recovery_min_feeds,
+                max_root_lag_seconds=self.max_root_lag_seconds,
+                trusted_feed_public_keys=self.recovery_feed_public_keys,
+            )
+            return True
+        except Exception:
+            return False
+
+    def mirrored_root_containing_leaf(
+        self,
+        timestamp,
+        leaf_index,
+        recovery_witnesses=None,
+        recovery_message_hash=None,
+    ):
         timestamp = int(timestamp)
         min_tree_size = int(leaf_index) + 1
+        late_root_allowed = self._recovery_witnesses_allow_late_root(
+            recovery_witnesses, recovery_message_hash, timestamp
+        )
         roots_by_identity = {}
         errors = []
         for mirror, identity in zip(self.mirrors, self.mirror_identities, strict=False):
@@ -3918,7 +4347,11 @@ class TransparencyVerifier:
                         raise RootVerificationError(
                             "mirror returned a root before the requested timestamp"
                         )
-                    if self.max_root_lag_seconds is not None and lag > self.max_root_lag_seconds:
+                    if (
+                        self.max_root_lag_seconds is not None
+                        and lag > self.max_root_lag_seconds
+                        and not late_root_allowed
+                    ):
                         raise RootVerificationError(
                             "no mirrored transparency root close enough to transfer timestamp"
                         )
@@ -3968,11 +4401,38 @@ class TransparencyVerifier:
         raise InclusionProofError(f"could not discover transparency leaf index: {detail}")
 
     # Verify that this transfer was logged in a root close to its timestamp.
-    def verify_transfer_history(self, transfer):
+    def _transfer_recovery_witnesses(self, transfer):
+        transparency = transfer.get("transparency") if isinstance(transfer, dict) else None
+        if isinstance(transparency, dict):
+            return (
+                transparency.get("recovery_witnesses") or [],
+                transparency.get("recovery_message_hash"),
+            )
+        return (
+            transfer.get("recovery_witnesses", []) if isinstance(transfer, dict) else [],
+            transfer.get("recovery_message_hash") if isinstance(transfer, dict) else None,
+        )
+
+    def verify_transfer_history(
+        self,
+        transfer,
+        recovery_witnesses=None,
+        recovery_message_hash=None,
+    ):
         timestamp = int(transfer["timestamp"])
         entry_hash = transfer_entry_hash(transfer)
+        if recovery_witnesses is None and recovery_message_hash is None:
+            recovery_witnesses, recovery_message_hash = self._transfer_recovery_witnesses(
+                transfer
+            )
+        recovery_message_hash = recovery_message_hash or entry_hash
         leaf_index = self._leaf_index_for_entry(entry_hash)
-        root = self.mirrored_root_containing_leaf(timestamp, leaf_index)
+        root = self.mirrored_root_containing_leaf(
+            timestamp,
+            leaf_index,
+            recovery_witnesses=recovery_witnesses,
+            recovery_message_hash=recovery_message_hash,
+        )
         proof = self._first_proof("inclusion_proof", entry_hash, int(root["tree_size"]))
         verify_inclusion_proof(
             entry_hash,
@@ -4135,17 +4595,244 @@ class TransparencyVerifier:
         )
 
 
+class MultiTransparencyVerifier:
+    def __init__(self, verifiers):
+        self.verifiers = [verifier for verifier in verifiers if verifier is not None]
+        if not self.verifiers:
+            raise TransparencyLogError("multi-operator transparency verifier requires operators")
+        self.default_verifier = self.verifiers[0]
+        self.operator = self.default_verifier.operator
+        self.operator_public_key = self.default_verifier.operator_public_key
+        self.identity_id = ("multi-transparency-verifier", str(len(self.verifiers)))
+
+    def __getattr__(self, name):
+        return getattr(self.default_verifier, name)
+
+    def verifier_for_signed_root(self, root):
+        errors = []
+        for verifier in self.verifiers:
+            try:
+                verifier._verify_signed_root_for_lineage(root)
+                return verifier
+            except Exception as exc:
+                errors.append(f"{_source_label(verifier.operator)}: {exc}")
+        detail = "; ".join(errors) if errors else "no configured operators"
+        raise RootVerificationError(f"untrusted transparency operator: {detail}")
+
+    def verifier_for_operator(self, *, operator_public_key=None, log_id=None):
+        operator_public_key = str(operator_public_key or "").strip()
+        log_id = str(log_id or "").strip()
+        errors = []
+        for verifier in self.verifiers:
+            configured_key = str(getattr(verifier, "operator_public_key", "") or "").strip()
+            configured_log_id = log_id_from_public_key(configured_key) if configured_key else ""
+            if operator_public_key and configured_key == operator_public_key:
+                return verifier
+            if log_id and configured_log_id == log_id:
+                return verifier
+            errors.append(_source_label(verifier.operator))
+        detail = ", ".join(errors) if errors else "no configured operators"
+        raise RootVerificationError(f"untrusted transparency operator: {detail}")
+
+    def _verifier_for_message_root(self, root):
+        try:
+            return self.verifier_for_signed_root(root)
+        except Exception:
+            return self.default_verifier
+
+    def consume_pending_gossip_messages(self):
+        messages = []
+        for verifier in self.verifiers:
+            messages.extend(verifier.consume_pending_gossip_messages())
+        return messages
+
+    def persisted_equivocation_messages(self, limit=100):
+        messages = []
+        for verifier in self.verifiers:
+            messages.extend(verifier.persisted_equivocation_messages(limit=limit))
+        return messages[: max(0, int(limit))]
+
+    def persisted_operator_policy_violation_messages(self, limit=100):
+        messages = []
+        for verifier in self.verifiers:
+            persisted = getattr(verifier, "persisted_operator_policy_violation_messages", None)
+            if callable(persisted):
+                messages.extend(persisted(limit=limit))
+        return messages[: max(0, int(limit))]
+
+    def process_root_announcement(self, message, peer_id=None, message_hash=None):
+        root = verify_root_announcement(message)
+        return self._verifier_for_message_root(root).process_root_announcement(
+            message, peer_id=peer_id, message_hash=message_hash
+        )
+
+    def process_equivocation_proof(self, message, peer_id=None, message_hash=None):
+        evidence = verify_equivocation_proof(message)
+        root = evidence["root_a"]
+        return self._verifier_for_message_root(root).process_equivocation_proof(
+            message, peer_id=peer_id, message_hash=message_hash
+        )
+
+    def process_operator_policy_violation_proof(self, message, peer_id=None, message_hash=None):
+        proof = verify_operator_policy_violation_proof(message)
+        root = proof["root"]
+        return self._verifier_for_message_root(root).process_operator_policy_violation_proof(
+            message, peer_id=peer_id, message_hash=message_hash
+        )
+
+
+def _select_active_operator_config(operator_configs):
+    configs = [item for item in operator_configs if item.get("url")]
+    if len(configs) <= 1:
+        return configs[0] if configs else None
+    for config in configs:
+        try:
+            status = HTTPTransparencyOperator(config["url"], timeout=3).status()
+        except Exception:
+            continue
+        if str(status.get("state", "active")).strip().lower() == "active":
+            return config
+    return None
+
+
+def _operator_configs_from_env_json():
+    operators_raw = os.environ.get("IND_LOG_OPERATORS", "").strip()
+    operator_configs = []
+    if not operators_raw:
+        return operator_configs
+    try:
+        parsed_operators = json.loads(operators_raw)
+    except json.JSONDecodeError:
+        parsed_operators = []
+    if not isinstance(parsed_operators, list):
+        return operator_configs
+    for item in parsed_operators:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url", "")).strip()
+        public_key = str(item.get("public_key", "")).strip()
+        mirrors = list(item.get("mirrors") or [])
+        proof_archives = list(item.get("proof_archives") or [])
+        if url or public_key or mirrors or proof_archives:
+            operator_configs.append(
+                {
+                    "url": url,
+                    "public_key": public_key,
+                    "mirrors": mirrors,
+                    "proof_archives": proof_archives,
+                }
+            )
+    return operator_configs
+
+
+def _with_legacy_operator_config(operator_configs, operator_url, public_key, mirrors, proof_archives):
+    operator_configs = [dict(item) for item in operator_configs]
+    operator_url = str(operator_url or "").strip()
+    if not operator_url:
+        return operator_configs
+    normalized_url = operator_url.rstrip("/")
+    if any(str(item.get("url", "")).strip().rstrip("/") == normalized_url for item in operator_configs):
+        return operator_configs
+    operator_configs.insert(
+        0,
+        {
+            "url": operator_url,
+            "public_key": str(public_key or "").strip(),
+            "mirrors": list(mirrors or []),
+            "proof_archives": list(proof_archives or []),
+        },
+    )
+    return operator_configs
+
+
+def _ordered_operator_configs(operator_configs):
+    operator_configs = [dict(item) for item in operator_configs if isinstance(item, dict)]
+    active_config = _select_active_operator_config(operator_configs)
+    if active_config is None:
+        return operator_configs
+    ordered = [active_config]
+    ordered.extend(item for item in operator_configs if item is not active_config)
+    return ordered
+
+
+def _build_transparency_verifier_from_config(
+    config,
+    *,
+    default_mirrors,
+    default_proof_archives,
+    default_public_key,
+    use_default_sources,
+    require_pinned_operator,
+    max_lag,
+    operator_recovery_min_feeds,
+    max_current_age,
+    current_future_skew,
+    min_mirrors,
+    allow_unsafe_single_mirror,
+    strict_mode,
+    observed_roots_path,
+    consistency_anchor_path,
+    consistency_interval,
+    consistency_max_stale,
+):
+    operator_url = str(config.get("url", "")).strip()
+    operator_public_key = str(config.get("public_key") or "").strip()
+    if not operator_public_key and use_default_sources:
+        operator_public_key = str(default_public_key or "").strip()
+    mirrors = list(config.get("mirrors") or (default_mirrors if use_default_sources else []))
+    proof_archives = list(
+        config.get("proof_archives")
+        or (default_proof_archives if use_default_sources else [])
+    )
+    if require_pinned_operator and not operator_public_key:
+        raise TransparencyLogError("multi-operator transparency config must pin public_key")
+    if not operator_url and not operator_public_key:
+        raise TransparencyLogError("verify-only transparency operator must pin public_key")
+    if not mirrors:
+        return None
+    operator = (
+        operator_url
+        if operator_url
+        else VerifyOnlyTransparencyOperator(operator_public_key)
+    )
+    return TransparencyVerifier(
+        operator,
+        mirrors,
+        operator_public_key=operator_public_key or None,
+        max_root_lag_seconds=max_lag,
+        max_current_root_age_seconds=max_current_age,
+        current_root_future_skew_seconds=current_future_skew,
+        proof_archives=proof_archives,
+        min_mirrors=min_mirrors,
+        allow_unsafe_single_mirror=allow_unsafe_single_mirror,
+        strict_mode=bool(strict_mode),
+        observed_roots_path=observed_roots_path,
+        consistency_anchor_path=consistency_anchor_path,
+        consistency_check_interval_seconds=consistency_interval,
+        consistency_max_stale_seconds=consistency_max_stale,
+        operator_recovery_min_feeds=operator_recovery_min_feeds,
+        start_background_checks=True,
+    )
+
+
 # Build a verifier from IND transparency environment variables.
 def verifier_from_environment(strict_mode=None):
-    proof_archives = []
     ind_settings = _settings_module()
     if ind_settings is not None:
         settings = ind_settings.load_security_settings()
-        operator_url = ind_settings.transparency_operator_url(settings)
-        mirrors = ind_settings.trusted_root_mirrors(settings)
-        proof_archives = ind_settings.transparency_proof_archives(settings)
-        operator_public_key = ind_settings.transparency_operator_public_key(settings) or None
+        operator_configs = ind_settings.transparency_operators(settings)
+        default_mirrors = ind_settings.trusted_root_mirrors(settings)
+        default_proof_archives = ind_settings.transparency_proof_archives(settings)
+        default_public_key = ind_settings.transparency_operator_public_key(settings)
+        operator_configs = _with_legacy_operator_config(
+            operator_configs,
+            ind_settings.transparency_operator_url(settings),
+            default_public_key,
+            default_mirrors,
+            default_proof_archives,
+        )
         max_lag = ind_settings.max_root_lag_seconds(settings)
+        operator_recovery_min_feeds = ind_settings.operator_recovery_min_feeds(settings)
         max_current_age = ind_settings.max_current_root_age_seconds(settings)
         current_future_skew = ind_settings.current_root_future_skew_seconds(settings)
         min_mirrors = ind_settings.min_root_mirrors(settings)
@@ -4160,17 +4847,30 @@ def verifier_from_environment(strict_mode=None):
         if strict_mode is None:
             strict_mode = ind_settings.require_transparency_log(settings)
     else:
-        operator_url = os.environ.get("IND_LOG_OPERATOR_URL", "").strip()
+        operator_configs = _operator_configs_from_env_json()
         mirrors_raw = os.environ.get("IND_LOG_MIRROR_URLS", "").strip()
-        operator_public_key = os.environ.get("IND_LOG_OPERATOR_PUBLIC_KEY", "").strip() or None
-        mirrors = [item.strip() for item in mirrors_raw.split(",") if item.strip()]
+        default_mirrors = [item.strip() for item in mirrors_raw.split(",") if item.strip()]
         proof_archives_raw = os.environ.get("IND_LOG_PROOF_ARCHIVES", "").strip()
-        proof_archives = [
+        default_proof_archives = [
             item.strip()
             for item in proof_archives_raw.replace("\n", ",").split(",")
             if item.strip()
         ]
+        default_public_key = os.environ.get("IND_LOG_OPERATOR_PUBLIC_KEY", "").strip()
+        operator_configs = _with_legacy_operator_config(
+            operator_configs,
+            os.environ.get("IND_LOG_OPERATOR_URL", "").strip(),
+            default_public_key,
+            default_mirrors,
+            default_proof_archives,
+        )
         max_lag = int(os.environ.get("IND_LOG_MAX_ROOT_LAG_SECONDS", DEFAULT_MAX_ROOT_LAG_SECONDS))
+        operator_recovery_min_feeds = int(
+            os.environ.get(
+                "IND_OPERATOR_RECOVERY_MIN_FEEDS",
+                str(DEFAULT_OPERATOR_RECOVERY_MIN_FEEDS),
+            )
+        )
         max_current_age = int(
             os.environ.get(
                 "IND_LOG_MAX_CURRENT_ROOT_AGE_SECONDS", DEFAULT_MAX_CURRENT_ROOT_AGE_SECONDS
@@ -4202,25 +4902,39 @@ def verifier_from_environment(strict_mode=None):
         raise TransparencyLogError(STRICT_UNSAFE_SINGLE_MIRROR_ERROR)
     if allow_unsafe_single_mirror and "IND_LOG_MIN_MIRRORS" not in os.environ:
         min_mirrors = 1
-    if not operator_url or not mirrors:
+    operator_configs = _ordered_operator_configs(operator_configs)
+    if not operator_configs:
         return None
-    return TransparencyVerifier(
-        operator_url,
-        mirrors,
-        operator_public_key=operator_public_key,
-        max_root_lag_seconds=max_lag,
-        max_current_root_age_seconds=max_current_age,
-        current_root_future_skew_seconds=current_future_skew,
-        proof_archives=proof_archives,
-        min_mirrors=min_mirrors,
-        allow_unsafe_single_mirror=allow_unsafe_single_mirror,
-        strict_mode=bool(strict_mode),
-        observed_roots_path=observed_roots_path,
-        consistency_anchor_path=consistency_anchor_path,
-        consistency_check_interval_seconds=consistency_interval,
-        consistency_max_stale_seconds=consistency_max_stale,
-        start_background_checks=True,
-    )
+    use_default_sources = len(operator_configs) == 1
+    require_pinned_operator = len(operator_configs) > 1
+    verifiers = []
+    for config in operator_configs:
+        verifier = _build_transparency_verifier_from_config(
+            config,
+            default_mirrors=default_mirrors,
+            default_proof_archives=default_proof_archives,
+            default_public_key=default_public_key,
+            use_default_sources=use_default_sources,
+            require_pinned_operator=require_pinned_operator,
+            max_lag=max_lag,
+            operator_recovery_min_feeds=operator_recovery_min_feeds,
+            max_current_age=max_current_age,
+            current_future_skew=current_future_skew,
+            min_mirrors=min_mirrors,
+            allow_unsafe_single_mirror=allow_unsafe_single_mirror,
+            strict_mode=strict_mode,
+            observed_roots_path=observed_roots_path,
+            consistency_anchor_path=consistency_anchor_path,
+            consistency_interval=consistency_interval,
+            consistency_max_stale=consistency_max_stale,
+        )
+        if verifier is not None:
+            verifiers.append(verifier)
+    if not verifiers:
+        return None
+    if len(verifiers) == 1:
+        return verifiers[0]
+    return MultiTransparencyVerifier(verifiers)
 
 
 # Build a log submitter from IND transparency environment variables.
@@ -4228,9 +4942,30 @@ def submitter_from_environment():
     ind_settings = _settings_module()
     if ind_settings is not None:
         settings = ind_settings.load_security_settings()
-        operator_url = ind_settings.transparency_operator_url(settings)
+        operator_configs = ind_settings.transparency_operators(settings)
+        operator_configs = _with_legacy_operator_config(
+            operator_configs,
+            ind_settings.transparency_operator_url(settings),
+            ind_settings.transparency_operator_public_key(settings),
+            ind_settings.trusted_root_mirrors(settings),
+            ind_settings.transparency_proof_archives(settings),
+        )
     else:
-        operator_url = os.environ.get("IND_LOG_OPERATOR_URL", "").strip()
-    if not operator_url:
+        operator_configs = _operator_configs_from_env_json()
+        operator_configs = _with_legacy_operator_config(
+            operator_configs,
+            os.environ.get("IND_LOG_OPERATOR_URL", "").strip(),
+            os.environ.get("IND_LOG_OPERATOR_PUBLIC_KEY", "").strip(),
+            [],
+            [],
+        )
+    operator_items = [item for item in operator_configs if item.get("url")]
+    if not operator_items:
         return None
-    return HTTPTransparencyOperator(operator_url)
+    if len(operator_items) == 1:
+        item = operator_items[0]
+        return HTTPTransparencyOperator(
+            item["url"],
+            operator_public_key=str(item.get("public_key") or "").strip() or None,
+        )
+    return MultiTransparencySubmitter(operator_items)

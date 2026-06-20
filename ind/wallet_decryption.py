@@ -1,47 +1,18 @@
-import base64
 import logging
 import os
-
-from cryptography.fernet import Fernet
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from . import runtime as runtime_json
 from . import wallet_crypto
 
-WALLET_V1_PREFIX = b'INDW1:'
-LEGACY_WALLET_SALT = b'w\x8a\xb3\x97d\x17D\xba\x86\xcc\xea\x9a\x11\\=\xe2'
 logger = logging.getLogger(__name__)
-
-
-# Derive the legacy Fernet key used by pre-INDW2 wallet files.
-def _derive_key(password, salt):
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA3_256(),
-        length=32,
-        salt=salt,
-        iterations=1000000,
-        backend=default_backend(),
-    )
-    return base64.urlsafe_b64encode(kdf.derive(password))
-
-
-# Decrypt current legacy wallet files and the older fixed-salt format.
-def _decrypt_legacy_payload(file_read, password):
-    if file_read.startswith(WALLET_V1_PREFIX):
-        salt_b64, encrypted_file = file_read[len(WALLET_V1_PREFIX) :].split(b':', 1)
-        salt = base64.urlsafe_b64decode(salt_b64)
-        return Fernet(_derive_key(password, salt)).decrypt(encrypted_file)
-    return Fernet(_derive_key(password, LEGACY_WALLET_SALT)).decrypt(file_read)
 
 
 # Best-effort overwrite and removal for temporary decrypted wallet files.
 def secure_delete(path):
     try:
         size = os.path.getsize(path)
-        with open(path, 'r+b') as handle:
-            handle.write(b'\x00' * size)
+        with open(path, "r+b") as handle:
+            handle.write(b"\x00" * size)
             handle.flush()
             os.fsync(handle.fileno())
     except Exception as exc:
@@ -54,7 +25,7 @@ def secure_delete(path):
 
 def _clear_plaintext_wallet_files():
     for wallet_path in runtime_json.iter_decrypted_wallet_files():
-        if wallet_path.exists() and wallet_path.name.startswith('wallet_decrypted'):
+        if wallet_path.exists() and wallet_path.name.startswith("wallet_decrypted"):
             secure_delete(wallet_path)
 
 
@@ -66,7 +37,7 @@ def clear_plaintext_wallet_files(clear_memory=False):
         wallet_crypto.clear_all_session_mwks()
 
 
-def _decrypt_indw2(record, password):
+def _decrypt_indw3(record, password):
     decrypted_file, mwk = wallet_crypto.decrypt_wallet_record(
         record,
         password,
@@ -79,13 +50,13 @@ def _decrypt_indw2(record, password):
     return decrypted_file
 
 
-# Unlock the selected wallet into process memory after passphrase entry.
+# Unlock the selected V3 wallet into process memory after passphrase entry.
 def wallet_decrypt(passphrase=None, address=None):
     if passphrase is None or address is None:
         request = runtime_json.consume_passphrase_request()
         passphrase = request["passphrase"]
         address = request["address"]
-    password = str(passphrase).encode('utf-8')
+    password = str(passphrase).encode("utf-8")
     address = str(address).strip()
     clear_plaintext_wallet_files()
     for wallet_path in runtime_json.iter_encrypted_wallet_files():
@@ -93,14 +64,10 @@ def wallet_decrypt(passphrase=None, address=None):
             continue
         try:
             record = runtime_json.read_encrypted_wallet_record(wallet_path)
-            if record.get("format") == wallet_crypto.FORMAT:
-                decrypted_file = _decrypt_indw2(record, password)
-            else:
-                file_read = runtime_json.read_encrypted_wallet_bytes(
-                    wallet_path, prefix=WALLET_V1_PREFIX
-                )
-                decrypted_file = _decrypt_legacy_payload(file_read, password)
-            if decrypted_file.decode('utf-8').startswith(address):
+            if record.get("format") != wallet_crypto.FORMAT:
+                return False
+            decrypted_file = _decrypt_indw3(record, password)
+            if decrypted_file.decode("utf-8").startswith(address):
                 runtime_json.write_decrypted_wallet(address, decrypted_file)
                 return True
         except Exception:

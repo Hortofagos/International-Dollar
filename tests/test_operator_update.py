@@ -1,10 +1,16 @@
 import unittest
 
-from ind import address_generation, update_manifest
+from ind import keys_v3
+from ind import update_manifest
+
+
+def operator_signing_keypair(seed=1):
+    _address, private_key, public_key = keys_v3.generate_keypair(bytes([seed]) * 32)
+    return private_key, public_key
 
 
 def signed_manifest(sequence=1, channel="operator-canary"):
-    _address, private_key, public_key = address_generation.generate_legacy_keypair()
+    private_key, public_key = operator_signing_keypair(sequence)
     manifest = {
         "type": update_manifest.UPDATE_MANIFEST_TYPE,
         "version": 1,

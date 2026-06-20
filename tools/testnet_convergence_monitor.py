@@ -206,7 +206,7 @@ def build_report(
 
     ok = bool(peers and refs) and not mismatches and not stale_peers
     return {
-        "type": "ind.testnet_convergence_status.v1",
+        "type": "ind.testnet_convergence_status.v3",
         "version": 1,
         "network": "testnet",
         "queried_at": queried_at,

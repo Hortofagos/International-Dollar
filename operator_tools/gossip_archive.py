@@ -2,6 +2,7 @@
 # Export, audit, and replay full public IND gossip messages.
 
 import argparse
+import base64
 import json
 import sys
 import time
@@ -12,13 +13,15 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from ind import settings as ind_settings
+from ind import keys_v3
 from ind import token as ind_token
 from tools import testnet_peers
 
-GOSSIP_ARCHIVE_MANIFEST_TYPE = "ind.public_gossip_archive_manifest.v1"
-GOSSIP_ARCHIVE_SIGNATURE_DOMAIN = "IND_PUBLIC_GOSSIP_ARCHIVE_MANIFEST_V1"
+GOSSIP_ARCHIVE_MANIFEST_TYPE = "ind.public_gossip_archive_manifest.v3"
+GOSSIP_ARCHIVE_SIGNATURE_DOMAIN = "IND_PUBLIC_GOSSIP_ARCHIVE_MANIFEST_V3"
 SEGMENT_HASH_ALGORITHM = "sha3_256"
-SIGNATURE_ALGORITHM = "ECDSA_SECP256K1_SHA3_256_BASE85"
+SIGNATURE_ALGORITHM = "ED25519_BASE85"
+LEGACY_SIGNATURE_ALGORITHM = "ECDSA_SECP256K1_SHA3_256_BASE85"
 DEFAULT_ARCHIVE_DIR = "operator_tools/gossip-archive"
 DEFAULT_SEGMENT_SIZE = 1000
 
@@ -67,15 +70,21 @@ def manifest_signature_payload(manifest):
     return unsigned
 
 
+def _signature_payload(manifest):
+    return ind_token.signature_payload(
+        GOSSIP_ARCHIVE_SIGNATURE_DOMAIN,
+        manifest_signature_payload(manifest),
+    )
+
+
 def sign_manifest(manifest, private_key):
     if not private_key:
         raise GossipArchiveError("archive signing private key is required")
     signed = dict(manifest)
-    signed["signature"] = ind_token.b85_sign_domain(
-        private_key,
-        GOSSIP_ARCHIVE_SIGNATURE_DOMAIN,
-        manifest_signature_payload(signed),
-    )
+    private_key = str(private_key).strip()
+    if not private_key.startswith(keys_v3.PRIVATE_KEY_PREFIX):
+        raise GossipArchiveError("archive signing key must be an indsk3 Ed25519 key")
+    signed["signature"] = base64.b85encode(keys_v3.sign(private_key, _signature_payload(signed))).decode("ascii")
     return signed
 
 
@@ -101,17 +110,27 @@ def verify_manifest_signature(manifest, expected_public_key=None):
         raise GossipArchiveError("unsupported gossip archive manifest version")
     if manifest["segment_hash_algorithm"] != SEGMENT_HASH_ALGORITHM:
         raise GossipArchiveError("unsupported gossip archive segment hash algorithm")
-    if manifest["signature_algorithm"] != SIGNATURE_ALGORITHM:
+    if manifest["signature_algorithm"] not in {SIGNATURE_ALGORITHM, LEGACY_SIGNATURE_ALGORITHM}:
         raise GossipArchiveError("unsupported gossip archive signature algorithm")
     public_key = str(manifest["signing_public_key"]).strip()
     if expected_public_key and public_key != str(expected_public_key).strip():
         raise GossipArchiveError("gossip archive was signed by an unexpected key")
-    if not ind_token.b85_verify_domain(
-        public_key,
-        manifest["signature"],
-        GOSSIP_ARCHIVE_SIGNATURE_DOMAIN,
-        manifest_signature_payload(manifest),
-    ):
+    if manifest["signature_algorithm"] == SIGNATURE_ALGORITHM:
+        if not public_key.startswith(keys_v3.PUBLIC_KEY_PREFIX):
+            raise GossipArchiveError("invalid gossip archive manifest signature")
+        try:
+            signature = base64.b85decode(str(manifest["signature"]).strip().encode("ascii"))
+        except Exception as exc:
+            raise GossipArchiveError("invalid gossip archive manifest signature") from exc
+        valid = keys_v3.verify(public_key, signature, _signature_payload(manifest))
+    else:
+        valid = ind_token.b85_verify_domain(
+            public_key,
+            manifest["signature"],
+            GOSSIP_ARCHIVE_SIGNATURE_DOMAIN,
+            manifest_signature_payload(manifest),
+        )
+    if not valid:
         raise GossipArchiveError("invalid gossip archive manifest signature")
     return True
 
@@ -131,8 +150,8 @@ def archive_id_for(network, message_count, segments):
 
 def _message_bill(message):
     if message.get("type") in {
-        ind_token.TRANSFER_ANNOUNCEMENT_V2_TYPE,
-        ind_token.RECEIPT_ANNOUNCEMENT_V2_TYPE,
+        ind_token.TRANSFER_ANNOUNCEMENT_V3_TYPE,
+        ind_token.RECEIPT_ANNOUNCEMENT_V3_TYPE,
     }:
         return message.get("bill")
     if message.get("type") in {

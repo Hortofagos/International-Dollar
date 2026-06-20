@@ -1,12 +1,15 @@
 # Compressed sparse spend-map proofs for IND V3.
 
 import copy
+import json
 
+from . import binary_v3
 from . import transparency_client as log_client
 
 COMPRESSED_SPEND_MAP_PROOF_TYPE = "ind.transparency_compressed_spend_map_proof.v3"
 COMPRESSED_SPEND_MAP_PROOF_VERSION = 3
 COMPRESSED_SPEND_MAP_ALGORITHM = "IND_SPARSE_SPEND_MAP_SHA3_256_COMPRESSED_V3"
+COMPRESSED_SPEND_MAP_PROOF_MAGIC = b"IND3SPMP"
 DEFAULT_NETWORK_ID = 1
 
 
@@ -57,22 +60,128 @@ def _compress_audit_path(audit_path):
     return siblings
 
 
-# Build a V3 compressed proof from the current V2 sparse-map semantics.
-def build_compressed_spend_map_proof(claims, spend_key, tree_size, network_id=DEFAULT_NETWORK_ID):
-    full_proof = log_client.build_spend_map_proof(claims, spend_key, tree_size)
+# Return the compressed V3 form of an operator spend-map proof.
+def compress_spend_map_proof(full_proof, network_id=DEFAULT_NETWORK_ID):
+    if not isinstance(full_proof, dict):
+        raise log_client.InclusionProofError("malformed transparency spend-map proof")
+    spend_claims = full_proof.get("spend_claims")
+    if spend_claims is None and "spend_claim" in full_proof:
+        spend_claims = [full_proof["spend_claim"]]
+    if not isinstance(spend_claims, list) or not spend_claims:
+        raise log_client.InclusionProofError("transparency spend-map proof has no spend claims")
+    if not isinstance(full_proof.get("audit_path"), list):
+        raise log_client.InclusionProofError("transparency spend-map proof has no audit path")
     siblings = _compress_audit_path(full_proof["audit_path"])
     return {
         "type": COMPRESSED_SPEND_MAP_PROOF_TYPE,
         "version": COMPRESSED_SPEND_MAP_PROOF_VERSION,
         "network_id": int(network_id),
         "algorithm": COMPRESSED_SPEND_MAP_ALGORITHM,
-        "spend_key": full_proof["spend_key"],
+        "spend_key": log_client._hex32(full_proof["spend_key"], "spend key"),
         "tree_size": int(full_proof["tree_size"]),
         "map_size": int(full_proof["map_size"]),
-        "spend_claims": copy.deepcopy(full_proof["spend_claims"]),
+        "spend_claims": copy.deepcopy(spend_claims),
         "non_empty_sibling_count": len(siblings),
         "non_empty_siblings": siblings,
     }
+
+
+# Build a V3 compressed proof from the sparse spend-map semantics.
+def build_compressed_spend_map_proof(claims, spend_key, tree_size, network_id=DEFAULT_NETWORK_ID):
+    full_proof = log_client.build_spend_map_proof(claims, spend_key, tree_size)
+    return compress_spend_map_proof(full_proof, network_id=network_id)
+
+
+def _encode_envelope(network_id, body):
+    return b"".join(
+        (
+            COMPRESSED_SPEND_MAP_PROOF_MAGIC,
+            binary_v3.encode_uvarint(COMPRESSED_SPEND_MAP_PROOF_VERSION),
+            binary_v3.encode_uvarint(int(network_id)),
+            body,
+        )
+    )
+
+
+def _read_envelope(reader):
+    magic = reader.read(len(COMPRESSED_SPEND_MAP_PROOF_MAGIC), "compressed spend-map magic")
+    if magic != COMPRESSED_SPEND_MAP_PROOF_MAGIC:
+        raise log_client.InclusionProofError("invalid compressed spend-map proof magic")
+    version = reader.read_uvarint("compressed spend-map proof version")
+    if version != COMPRESSED_SPEND_MAP_PROOF_VERSION:
+        raise log_client.InclusionProofError("unsupported compressed spend-map proof version")
+    return reader.read_uvarint("compressed spend-map proof network id")
+
+
+def _side_marker(side):
+    if side == "left":
+        return 0
+    if side == "right":
+        return 1
+    raise log_client.InclusionProofError("invalid compressed spend-map sibling side")
+
+
+def _side_from_marker(marker):
+    if marker == 0:
+        return "left"
+    if marker == 1:
+        return "right"
+    raise log_client.InclusionProofError("invalid compressed spend-map sibling side")
+
+
+def encode_compressed_spend_map_proof(proof):
+    spend_key = _validate_compressed_header(proof, expected_network_id=None)
+    siblings = proof["non_empty_siblings"]
+    body = [
+        binary_v3.encode_ascii(proof["algorithm"], max_length=128),
+        binary_v3.encode_hash_hex(spend_key),
+        binary_v3.encode_uvarint(int(proof["tree_size"])),
+        binary_v3.encode_uvarint(int(proof["map_size"])),
+        binary_v3.encode_bytes(log_client.canonical_bytes(proof["spend_claims"])),
+        binary_v3.encode_uvarint(len(siblings)),
+    ]
+    for sibling in siblings:
+        _require_exact_keys(sibling, {"depth", "side", "hash"}, "compressed spend-map sibling")
+        body.extend(
+            (
+                binary_v3.encode_uvarint(int(sibling["depth"])),
+                binary_v3.encode_uvarint(_side_marker(sibling["side"])),
+                binary_v3.encode_hash_hex(sibling["hash"]),
+            )
+        )
+    return _encode_envelope(proof["network_id"], b"".join(body))
+
+
+def decode_compressed_spend_map_proof(data):
+    reader = binary_v3.Reader(data)
+    network_id = _read_envelope(reader)
+    proof = {
+        "type": COMPRESSED_SPEND_MAP_PROOF_TYPE,
+        "version": COMPRESSED_SPEND_MAP_PROOF_VERSION,
+        "network_id": int(network_id),
+        "algorithm": reader.read_ascii("compressed spend-map algorithm", max_length=128),
+        "spend_key": reader.read_hash_hex("compressed spend-map spend key"),
+        "tree_size": reader.read_uvarint("compressed spend-map tree size"),
+        "map_size": reader.read_uvarint("compressed spend-map size"),
+        "spend_claims": json.loads(reader.read_bytes("compressed spend-map claims").decode("utf-8")),
+        "non_empty_sibling_count": 0,
+        "non_empty_siblings": [],
+    }
+    sibling_count = reader.read_uvarint("compressed spend-map sibling count")
+    proof["non_empty_siblings"] = [
+        {
+            "depth": reader.read_uvarint("compressed spend-map sibling depth"),
+            "side": _side_from_marker(
+                reader.read_uvarint("compressed spend-map sibling side")
+            ),
+            "hash": reader.read_hash_hex("compressed spend-map sibling hash"),
+        }
+        for _ in range(sibling_count)
+    ]
+    proof["non_empty_sibling_count"] = len(proof["non_empty_siblings"])
+    reader.require_eof()
+    _validate_compressed_header(proof, expected_network_id=network_id)
+    return proof
 
 
 def _validate_compressed_header(proof, expected_network_id=None):
@@ -166,7 +275,7 @@ def _expanded_audit_path(proof, spend_key):
     return audit_path
 
 
-# Return the equivalent full V2-style sparse spend-map proof.
+# Return the equivalent full sparse spend-map proof.
 def expand_compressed_spend_map_proof(proof, expected_network_id=None):
     spend_key = _validate_compressed_header(proof, expected_network_id=expected_network_id)
     return {

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
+"""Legacy lazy-token minter removed from the active V3 toolchain."""
+
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -8,30 +9,23 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-import ind_token
+from ind import protocol_policy
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Mint one IND lazy-genesis bill from a signed supply manifest."
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    _args, _unknown = parser.parse_known_args(argv)
+    return _args
+
+
+def main(argv=None):
+    parse_args(argv)
+    raise SystemExit(
+        protocol_policy.legacy_disabled_message(
+            "legacy lazy-token minter; use native V3 genesis/proof-bundle tooling"
+        )
     )
-    parser.add_argument("--manifest", required=True, help="path to signed genesis manifest JSON")
-    parser.add_argument("--index", type=int, required=True, help="bill index to mint")
-    parser.add_argument("--output", help="output bill JSON path; defaults to stdout")
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-    manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
-    bill = ind_token.make_lazy_genesis_token(args.index, manifest)
-    payload = ind_token.canonical_json(bill) + "\n"
-    if args.output:
-        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.output).write_text(payload, encoding="utf-8")
-    else:
-        print(payload, end="")
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

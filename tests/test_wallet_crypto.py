@@ -3,8 +3,6 @@ import os
 import tempfile
 import unittest
 
-from cryptography.fernet import Fernet
-
 import runtime_json
 import wallet_crypto
 import wallet_decryption
@@ -69,7 +67,7 @@ class WalletCryptoTests(unittest.TestCase):
             self.assertEqual(runtime_json.iter_decrypted_wallet_files(), [])
             self.assertIsNone(wallet_crypto.get_session_mwk("addr456"))
 
-    def test_wallet_encryption_uses_indw2_wrapped_mwk_and_decrypts_in_memory(self):
+    def test_wallet_encryption_uses_indw3_wrapped_mwk_and_decrypts_in_memory(self):
         with tempfile.TemporaryDirectory() as temp_dir, temporary_cwd(temp_dir):
             self._make_runtime_dirs()
             runtime_json.write_wallet_generation(
@@ -108,7 +106,7 @@ class WalletCryptoTests(unittest.TestCase):
                 "addr123\nprivate-key\npublic-key\n1x-bill 0 0\n",
             )
 
-    def test_wrong_password_does_not_unlock_indw2_wallet(self):
+    def test_wrong_password_does_not_unlock_indw3_wallet(self):
         with tempfile.TemporaryDirectory() as temp_dir, temporary_cwd(temp_dir):
             self._make_runtime_dirs()
             runtime_json.write_wallet_generation("addr123", "private-key", "public-key")
@@ -117,25 +115,15 @@ class WalletCryptoTests(unittest.TestCase):
             self.assertFalse(wallet_decryption.wallet_decrypt("wrong password", "addr123"))
             self.assertEqual(runtime_json.iter_decrypted_wallet_files(), [])
 
-    def test_legacy_wallet_payloads_still_decrypt(self):
+    def test_non_v3_wallet_payloads_do_not_unlock(self):
         with tempfile.TemporaryDirectory() as temp_dir, temporary_cwd(temp_dir):
             self._make_runtime_dirs()
             wallet_plaintext = "legacyaddr\nprivate-key\npublic-key\nlegacy-password\n"
-            key = wallet_decryption._derive_key(
-                b"legacy-password",
-                wallet_decryption.LEGACY_WALLET_SALT,
-            )
-            encrypted = Fernet(key).encrypt(wallet_plaintext.encode("utf-8"))
             with open("wallet_folder/wallet_encrypted_legacyaddr.txt", "wb") as handle:
-                handle.write(encrypted)
+                handle.write(wallet_plaintext.encode("utf-8"))
 
-            self.assertTrue(wallet_decryption.wallet_decrypt("legacy-password", "legacyaddr"))
-            self.assertEqual(
-                runtime_json.read_decrypted_wallet_payload(
-                    "wallet_folder/wallet_decrypted_legacyaddr.json"
-                ),
-                wallet_plaintext,
-            )
+            self.assertFalse(wallet_decryption.wallet_decrypt("legacy-password", "legacyaddr"))
+            self.assertEqual(runtime_json.iter_decrypted_wallet_files(), [])
 
 
 if __name__ == "__main__":

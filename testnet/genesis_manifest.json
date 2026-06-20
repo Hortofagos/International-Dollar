@@ -17,7 +17,7 @@
     "network": "testnet",
     "project": "IND",
     "purpose": "public testnet supply for real IND protocol transfers without mainnet value",
-    "release": "public-testnet-v1"
+    "release": "public-testnet-v3"
   },
   "ranges": [
     {
@@ -45,6 +45,6 @@
   "signature": "_dW>+)oJ{_FQXw$Z&$;51FTV^69$<%^MA7iA_{^RduZ#ZfOl4A)k?@mul~*)J*IOFAMSsAyjrsQ&+cq;",
   "total_token_count": 33000000000,
   "total_value": 121000000000,
-  "type": "ind.genesis_manifest.v1",
+  "type": "ind.genesis_manifest.v3",
   "version": 1
 }

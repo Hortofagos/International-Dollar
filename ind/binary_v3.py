@@ -99,6 +99,18 @@ def decode_hash_hex(raw):
     return encode_fixed_bytes(raw, 32, "hash").hex()
 
 
+def encode_hash_hex_nullable(hex_text):
+    if hex_text is None:
+        return b"\x00"
+    return b"\x01" + encode_hash_hex(hex_text)
+
+
+def decode_nullable_hash_hex(raw):
+    if raw is None:
+        return None
+    return decode_hash_hex(raw)
+
+
 # Hash one typed canonical binary object with its domain.
 def object_hash(domain, canonical_bytes):
     if not isinstance(domain, str):
@@ -208,6 +220,12 @@ class Reader:
         if marker == b"\x01":
             return self.read_fixed_bytes(32, label)
         raise BinaryV3Error(f"invalid {label} marker")
+
+    def read_hash_hex(self, label="hash"):
+        return decode_hash_hex(self.read_fixed_bytes(32, label))
+
+    def read_nullable_hash_hex(self, label="nullable hash"):
+        return decode_nullable_hash_hex(self.read_nullable_hash(label))
 
     # Require every byte in the envelope to have been consumed.
     def require_eof(self):

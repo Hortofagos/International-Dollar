@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-# Issue one public-testnet IND bill by transferring it from the faucet wallet.
+"""Disabled legacy public-testnet faucet.
+
+The old faucet materialized lazy-genesis bills through the retired JSON bill
+protocol. Native V3 testnet funding should use stored BillV3/proof-bundle flows
+instead.
+"""
 
 import argparse
 import contextlib
 import json
 import os
 import sys
-import time
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-import ind_token
-from ind import runtime as runtime_json
-from ind import sender_node
-from tools import testnet_peers
+from ind import protocol_policy
+from ind import token as ind_token
 
 DEFAULT_MANIFEST = ROOT_DIR / "testnet" / "genesis_manifest.json"
 DEFAULT_STATE_PATH = ROOT_DIR / "files" / "testnet" / "testnet_faucet_state.json"
@@ -47,7 +49,8 @@ def write_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(path.name + ".tmp")
     tmp_path.write_text(
-        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
     )
     os.replace(tmp_path, path)
 
@@ -88,134 +91,35 @@ def ensure_manifest_trusted_for_process(manifest):
     return manifest_hash
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Transfer one real IND bill on the public testnet."
-    )
-    parser.add_argument("--recipient-address", required=True, help="recipient wallet address")
-    parser.add_argument(
-        "--manifest", default=str(DEFAULT_MANIFEST), help="public testnet genesis manifest"
-    )
-    parser.add_argument(
-        "--faucet-private-key-file",
-        required=True,
-        help="JSON/text file with the faucet private key",
-    )
-    parser.add_argument(
-        "--faucet-public-key-file", required=True, help="JSON/text file with the faucet public key"
-    )
-    parser.add_argument(
-        "--index",
-        type=int,
-        help="specific manifest index to issue; default uses the next local index",
-    )
-    parser.add_argument(
-        "--state-file", default=str(DEFAULT_STATE_PATH), help="local next-index state file"
-    )
-    parser.add_argument(
-        "--peer",
-        action="append",
-        help="seed/node to broadcast to; repeatable and comma-separated; default uses testnet/testnet.json",
-    )
-    parser.add_argument(
-        "--no-broadcast",
-        action="store_true",
-        help="queue the transfer without immediately gossiping it",
-    )
-    return parser.parse_args()
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--recipient-address")
+    parser.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
+    parser.add_argument("--faucet-private-key-file")
+    parser.add_argument("--faucet-public-key-file")
+    parser.add_argument("--index", type=int)
+    parser.add_argument("--state-file", default=str(DEFAULT_STATE_PATH))
+    parser.add_argument("--peer", action="append")
+    parser.add_argument("--no-broadcast", action="store_true")
+    return parser.parse_args(argv)
 
 
-# Issue one lazy-genesis testnet bill and return a safe public summary.
-def issue_testnet_bill(
-    recipient_address,
-    manifest_path=DEFAULT_MANIFEST,
-    faucet_private_key_file=None,
-    faucet_public_key_file=None,
-    index=None,
-    state_file=DEFAULT_STATE_PATH,
-    broadcast=True,
-    peers=None,
-):
-    if faucet_private_key_file is None or faucet_public_key_file is None:
-        raise ValueError("faucet private/public key files are required")
-    with testnet_network():
-        runtime_json.ensure_runtime_files()
-        manifest = read_json(manifest_path)
-        manifest_hash = ensure_manifest_trusted_for_process(manifest)
-        faucet_private = read_key(faucet_private_key_file, "private_key")
-        faucet_public = read_key(faucet_public_key_file, "public_key")
-        faucet_address = ind_token.address_from_public_key(faucet_public)
-        recipient_address = ind_token.validate_address(recipient_address, "recipient address")
-
-        owner_addresses = {item["owner_address"] for item in manifest_ranges(manifest)}
-        if owner_addresses != {faucet_address}:
-            raise SystemExit(
-                "faucet public key does not match the owner address in every manifest range"
-            )
-
-        state = read_json(state_file, default={"next_index": manifest["ranges"][0]["start_index"]})
-        issue_index = pick_index(manifest, state, explicit_index=index)
-        bill = ind_token.make_lazy_genesis_token(
-            issue_index,
-            manifest,
-            metadata={"network": "testnet", "source": "public-testnet-faucet-v1"},
+def issue_testnet_bill(*_args, **_kwargs):
+    raise RuntimeError(
+        protocol_policy.legacy_disabled_message(
+            "legacy testnet faucet; use native V3 funding tooling"
         )
-        transferred = ind_token.create_transfer(
-            bill,
-            faucet_private,
-            faucet_public,
-            recipient_address,
-            metadata={"network": "testnet", "source": "public-testnet-faucet-v1"},
-        )
-        announcement = ind_token.create_transfer_announcement(transferred)
-        store = ind_token.INDLocalStore()
-        store.ingest_message(announcement)
-        broadcast_results = []
-        selected_peers = testnet_peers.parse_peer_args(peers)
-        if not broadcast:
-            runtime_json.write_transaction_message(announcement)
-        if index is None:
-            state["next_index"] = issue_index + 1
-            state["updated_at"] = int(time.time())
-            write_json(state_file, state)
-        if broadcast:
-            if selected_peers:
-                broadcast_results = testnet_peers.broadcast_message_to_peers(
-                    announcement, selected_peers
-                )
-            else:
-                runtime_json.write_transaction_message(announcement)
-                sender_node.send_bills()
-
-        transfer_state = ind_token.verify_token(transferred)
-        return {
-            "accepted": True,
-            "network": "testnet",
-            "manifest_hash": manifest_hash,
-            "display_id": transfer_state.display_id,
-            "token_id": transfer_state.token_id,
-            "recipient_address": recipient_address,
-            "sequence": transfer_state.sequence,
-            "broadcast": bool(broadcast),
-            "peers": selected_peers,
-            "broadcast_results": broadcast_results,
-        }
-
-
-def main():
-    args = parse_args()
-    result = issue_testnet_bill(
-        args.recipient_address,
-        manifest_path=args.manifest,
-        faucet_private_key_file=args.faucet_private_key_file,
-        faucet_public_key_file=args.faucet_public_key_file,
-        index=args.index,
-        state_file=args.state_file,
-        broadcast=not args.no_broadcast,
-        peers=args.peer,
     )
-    print(json.dumps(result, sort_keys=True, indent=2))
+
+
+def main(argv=None):
+    parse_args(argv)
+    raise SystemExit(
+        protocol_policy.legacy_disabled_message(
+            "legacy testnet faucet; use native V3 funding tooling"
+        )
+    )
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

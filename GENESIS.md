@@ -4,7 +4,7 @@ Status: policy draft.
 
 IND has a fixed maximum supply of 33,000,000,000 bill indexes. The protocol only accepts genesis records with indexes inside that range and positive values, but a serious public launch also needs an auditable genesis process.
 
-The preferred launch path is now lazy genesis: publish one signed supply manifest with denomination ranges, then mint individual genesis bills only when a bill first moves. Users verify a lazy bill by checking the issuer signature, the pinned manifest hash, the bill index inside the signed range, and the deterministic nonce/commitment. This avoids dumping tens of terabytes of pre-generated bills onto the network.
+The V3 launch path is native BillV3: publish auditable genesis references, checkpoint/proof-bundle evidence, and archive material that can be independently reconstructed. The retired lazy-genesis JSON bill path is disabled in the active tree.
 
 ## Required For Public Alpha
 
@@ -19,6 +19,7 @@ Before launch, generate the intended supply manifest and publish:
 
 - denomination ranges
 - starting index and count for each range
+- one-based per-denomination serial caps matching the V3 display-id table
 - owner address for each range
 - deterministic nonce seed for each range
 - total bill count
@@ -30,36 +31,18 @@ Before launch, generate the intended supply manifest and publish:
 
 Anyone should be able to recompute the manifest hash and verify that no hidden launch supply map is being used.
 
-`tools/generate_genesis.py` can either create local genesis shards or a lazy manifest. It is safe by default: without `--write` it only estimates the run, and huge materialized writes require `--allow-huge`.
-
-Example dry run:
-
-```bash
-python tools/generate_genesis.py --count 33000000000 --owner-address x...x
-```
-
-Lazy manifest with denominations:
-
-```bash
-python tools/generate_genesis.py --lazy-manifest --write --denominations 1:11000000000,2:11000000000,8:11000000000 --owner-address x...x --issuer-private-key-file issuer_private.json --issuer-public-key-file issuer_public.json
-```
-
-Mint one lazy bill from the manifest:
-
-```bash
-python tools/mint_lazy_token.py --manifest genesis/manifest.json --index 12345 --output genesis/bill_12345.json
-```
+The old `tools/generate_genesis.py` and `tools/mint_lazy_token.py` entry points
+now fail closed. Native V3 genesis/proof-bundle tooling must not produce or
+accept retired ECDSA JSON bill objects.
 
 ## Public Testnet Genesis
 
-The public testnet has a committed lazy-genesis manifest in `testnet/genesis_manifest.json`. It is intended for real IND protocol transfers with no mainnet or real-world value.
+The public testnet metadata is in `testnet/testnet.json`. The old lazy-genesis
+manifest is historical metadata and is not an active V3 issuance path.
 
 - Network: `testnet`
 - Node port: TCP `18888`
-- Manifest hash: `20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8`
-- Faucet owner address: `x1F75rwW6ah8jBByt4dJLsWRyd22aQFKx`
-- Manifest bill count: `33,000,000,000`
-- Manifest total face value: `121,000,000,000`
+- Metadata: `testnet/testnet.json`
 
 Public testnet nodes should set:
 
@@ -68,13 +51,8 @@ IND_NETWORK=testnet
 IND_TRUSTED_GENESIS_MANIFEST_HASHES=20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8
 ```
 
-The faucet operator can issue testnet IND with `tools/testnet_faucet.py`. The faucet private key is local operator state under `files/testnet/` and must not be committed. Recipients receive and settle faucet transfers through the ordinary node gossip and receipt flow.
-
-Small local test set:
-
-```bash
-python tools/generate_genesis.py --write --count 100 --owner-address x...x --generate-local-issuer-keypair
-```
+Use `tools/v3_testnet_smoke.py` for readiness checks and
+`tools/v3_double_spend_drill.py` for native BillV3 conflict construction.
 
 ## Current Trust Assumption
 

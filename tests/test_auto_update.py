@@ -7,8 +7,8 @@ from pathlib import Path
 from unittest import mock
 
 import auto_update
-from ind import address_generation
 from ind import auto_update as auto_update_impl
+from ind import keys_v3
 from ind import update_manifest
 
 
@@ -167,7 +167,7 @@ class AutoUpdateTests(unittest.TestCase):
         )
 
     def _signed_manifest(self, artifact, sequence=1, channel="stable"):
-        _address, private_key, public_key = address_generation.generate_legacy_keypair()
+        private_key, public_key = self._operator_signing_keypair(sequence)
         manifest = {
             "type": update_manifest.UPDATE_MANIFEST_TYPE,
             "version": 1,
@@ -180,6 +180,10 @@ class AutoUpdateTests(unittest.TestCase):
             "artifacts": [artifact],
         }
         return update_manifest.sign_update_manifest(manifest, private_key, public_key), public_key
+
+    def _operator_signing_keypair(self, seed):
+        _address, private_key, public_key = keys_v3.generate_keypair(bytes([seed]) * 32)
+        return private_key, public_key
 
     def _write_source_zip(self, temp_dir, files):
         source_root = Path(temp_dir) / "source"

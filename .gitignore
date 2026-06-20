@@ -32,6 +32,22 @@ Thumbs.db
 *.bak
 *.swp
 *.swo
+*.local
+*.local.*
+*.secret
+*.secrets
+*.pem
+*.p12
+*.pfx
+*.key
+id_rsa*
+id_ed25519*
+known_hosts
+
+# Local operator/VPS inventories and run configs
+tools/*.local.json
+operator_tools/*.local.json
+testnet/*.local.json
 
 # Local backups made during cleanup
 .local_secrets_backup/

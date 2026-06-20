@@ -51,6 +51,12 @@ python -m operator_tools.root_streamer `
 For a daemon-like loop, omit `--once`. The default polling interval is 60
 seconds.
 
+Cross-host static mirrors should treat signed roots as the live safety path and
+hash-log archives as a separate audit artifact. If a root-only sync uses
+`tools/publish_testnet_static_mirror.py`, run it with `--allow-missing-archive`
+so a temporarily missing `archive/manifest.json` cannot stop `latest.json` from
+refreshing. Use `--no-archive` for pure root mirrors.
+
 Export full hash-log pages for auditors:
 
 ```bash

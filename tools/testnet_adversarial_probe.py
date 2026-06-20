@@ -17,8 +17,8 @@ import ind_token
 from ind import sender_node
 from tools import testnet_peers, testnet_report
 
-DEFAULT_VALID_MESSAGE = ROOT_DIR / "files" / "testnet" / "local_clean_receipt_1x2.local.json"
-DEFAULT_REFS = ("1x0", "1x1", "1x2")
+DEFAULT_VALID_MESSAGE = ""
+DEFAULT_REFS = ("1x1", "1x2", "1x3")
 STALE_STATUSES = {
     "",
     "n",
@@ -55,11 +55,11 @@ def invalid_probe_payloads(valid_message=None, *, nonce=None):
     probes = [
         {
             "name": "duplicate_json_key",
-            "raw": '{"type":"ind.transfer_announcement.v1","type":"shadow"}',
+            "raw": '{"type":"ind.transfer_announcement.v3","type":"shadow"}',
         },
         {
             "name": "floating_point_json",
-            "raw": '{"type":"ind.transfer_announcement.v1","version":1.25}',
+            "raw": '{"type":"ind.transfer_announcement.v3","version":1.25}',
         },
     ]
     if valid_message is not None:
@@ -94,7 +94,13 @@ def _send_gossip(peer, raw):
 
 # Run the adversarial probe and return a machine-readable report.
 def build_report(
-    peers, refs, *, valid_message_path=DEFAULT_VALID_MESSAGE, valid_replays=6, nonce=None
+    peers,
+    refs,
+    *,
+    valid_message_path=DEFAULT_VALID_MESSAGE,
+    valid_replays=6,
+    nonce=None,
+    send_delay_seconds=0.1,
 ):
     peers = testnet_peers.parse_peer_args(peers)
     refs = [str(ref).strip() for ref in refs if str(ref).strip()]
@@ -102,13 +108,16 @@ def build_report(
         valid_message = None
         valid_raw = ""
         valid_error = ""
-        try:
-            valid_message = read_valid_message(valid_message_path)
-            valid_raw = ind_token.pack_wire_message(valid_message)
-        except Exception as exc:  # noqa: BLE001 - surfaced in JSON for operators.
-            valid_error = str(exc)
+        valid_message_path = str(valid_message_path or "").strip()
+        if valid_message_path:
+            try:
+                valid_message = read_valid_message(valid_message_path)
+                valid_raw = ind_token.pack_wire_message(valid_message)
+            except Exception as exc:  # noqa: BLE001 - surfaced in JSON for operators.
+                valid_error = str(exc)
 
         invalid_probes = invalid_probe_payloads(valid_message, nonce=nonce)
+        delay = max(0.0, float(send_delay_seconds or 0.0))
         peer_reports = []
         for peer in peers:
             invalid_results = []
@@ -117,6 +126,8 @@ def build_report(
                 sent["name"] = probe["name"]
                 sent["ok"] = sent["response"] == "invalid"
                 invalid_results.append(sent)
+                if delay:
+                    time.sleep(delay)
 
             replay_results = []
             if valid_raw and int(valid_replays) > 0:
@@ -125,6 +136,8 @@ def build_report(
                     sent["attempt"] = attempt + 1
                     sent["ok"] = sent["response"] == "ok"
                     replay_results.append(sent)
+                    if delay:
+                        time.sleep(delay)
 
             status_records = testnet_report.query_peer_status(refs, peer=peer) if refs else []
             status_ok = all(
@@ -148,7 +161,7 @@ def build_report(
 
     ok = bool(peers) and all(item["ok"] for item in peer_reports) and not valid_error
     return {
-        "type": "ind.testnet_adversarial_probe.v1",
+        "type": "ind.testnet_adversarial_probe.v3",
         "version": 1,
         "network": "testnet",
         "ok": bool(ok),
@@ -174,11 +187,17 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--valid-message",
-        default=str(DEFAULT_VALID_MESSAGE),
-        help="known-good gossip JSON to replay",
+        default=DEFAULT_VALID_MESSAGE,
+        help="known-good gossip JSON to replay; omitted by default",
     )
     parser.add_argument(
         "--valid-replays", type=int, default=6, help="valid replay attempts per peer"
+    )
+    parser.add_argument(
+        "--send-delay-seconds",
+        type=float,
+        default=0.1,
+        help="delay between probe sends to avoid tripping cooldowns during routine checks",
     )
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
     parser.add_argument(
@@ -195,6 +214,7 @@ def main(argv=None):
         args.refs or list(DEFAULT_REFS),
         valid_message_path=args.valid_message,
         valid_replays=args.valid_replays,
+        send_delay_seconds=args.send_delay_seconds,
     )
     if args.json:
         print(json.dumps(report, sort_keys=True, indent=2, ensure_ascii=True))

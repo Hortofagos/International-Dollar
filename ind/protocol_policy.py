@@ -1,21 +1,11 @@
 """Runtime policy for the active IND bill protocol generation."""
 
-LEGACY_BILL_MESSAGE_TYPES = {
-    "ind.token.v1",
-    "ind.bill.v2",
-    "ind.transfer_announcement.v1",
-    "ind.transfer_announcement.v2",
-    "ind.receipt_announcement.v1",
-    "ind.receipt_announcement.v2",
-    "ind.conflict_proof.v1",
-    "ind.bill_checkpoint.v2",
-    "ind.checkpoint_announcement.v2",
-}
+LEGACY_BILL_MESSAGE_TYPES = set()
 
 V3_BILL_MESSAGE_TYPES = {
     "ind.bill.v3",
     "ind.transfer_announcement.v3",
-    "ind.receipt_announcement.v3",
+    "ind.checkpoint_announcement.v3",
     "ind.proof_bundle_announcement.v3",
     "ind.archive_segment_announcement.v3",
     "ind.conflict_proof.v3",

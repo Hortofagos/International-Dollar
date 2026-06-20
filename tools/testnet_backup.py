@@ -121,7 +121,7 @@ def load_or_create_backup_key(path):
     atomic_write_json(
         path,
         {
-            "type": "ind.testnet_offsite_backup_key.v1",
+            "type": "ind.testnet_offsite_backup_key.v3",
             "version": 1,
             "algorithm": "AES-256-GCM",
             "created_at": int(dt.datetime.now(dt.UTC).timestamp()),
@@ -232,7 +232,7 @@ def create_backup(args):
     manifest_path = backup_path.with_suffix(backup_path.suffix + ".manifest.json")
 
     metadata = {
-        "type": "ind.testnet_offsite_backup.v1",
+        "type": "ind.testnet_offsite_backup.v3",
         "version": 1,
         "created_at": int(now.timestamp()),
         "created_at_iso": now.isoformat(),

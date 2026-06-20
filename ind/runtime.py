@@ -348,8 +348,13 @@ def is_wallet_bill_line(line):
     if not parts:
         return False
     display_id = parts[0].lstrip("-")
-    value, separator, index = display_id.partition("x")
-    return separator == "x" and value.isdigit() and bool(index)
+    try:
+        from . import protocol_v3
+
+        protocol_v3.parse_display_id(display_id, "wallet bill display id")
+        return True
+    except Exception:
+        return False
 
 
 def wallet_bill_start_index(lines):
@@ -636,25 +641,6 @@ def clear_decrypted_wallets():
     _DECRYPTED_WALLETS.clear()
 
 
-def write_encrypted_wallet(address, salt_b64, ciphertext):
-    if isinstance(salt_b64, bytes):
-        salt_b64 = salt_b64.decode("ascii")
-    if isinstance(ciphertext, bytes):
-        ciphertext = ciphertext.decode("ascii")
-    _write_json(
-        encrypted_wallet_path(address),
-        {
-            "format": "INDW1",
-            "address": str(address).strip(),
-            "cipher": "Fernet",
-            "kdf": "PBKDF2-HMAC-SHA3-256",
-            "iterations": 1000000,
-            "salt": salt_b64,
-            "ciphertext": ciphertext,
-        },
-    )
-
-
 def write_encrypted_wallet_record(record):
     address = str(record.get("address", "")).strip()
     if not address:
@@ -667,24 +653,6 @@ def read_encrypted_wallet_record(path):
     if path.suffix.lower() == ".json":
         return _read_json(path, {})
     return {}
-
-
-def read_encrypted_wallet_bytes(path, prefix=b"INDW1:"):
-    path = Path(path)
-    if path.suffix.lower() == ".json":
-        data = _read_json(path, {})
-        if isinstance(data, dict) and data.get("format") == "INDW1":
-            return (
-                prefix
-                + str(data.get("salt", "")).encode("ascii")
-                + b":"
-                + str(data.get("ciphertext", "")).encode("ascii")
-            )
-        return b""
-    try:
-        return path.read_bytes()
-    except FileNotFoundError:
-        return b""
 
 
 def remove_encrypted_wallet(address):

@@ -15,7 +15,7 @@ if str(ROOT_DIR) not in sys.path:
 import ind_token
 from ind import sender_node
 
-DEFAULT_REFS = ("1x0", "1x1", "1x2")
+DEFAULT_REFS = ("1x1", "1x2", "1x3")
 DEFAULT_PEER = "testnet-seed.international-dollar.com"
 DEFAULT_STATUS_REQUEST_TIMEOUT_SECONDS = 60
 DEFAULT_STATUS_REQUEST_BUDGET_SECONDS = 75

@@ -1,8 +1,7 @@
 """Thin BillV3 verification built on ProofBundleV3.
 
-This module is the first protocol-level V3 consumer of proof bundles. It does
-not replace the existing V1/V2 wallet flow yet; it verifies compact V3 bill
-state from a checkpoint core plus an external ProofBundleV3.
+This module verifies compact V3 bill state from a checkpoint core plus an
+external ProofBundleV3.
 """
 
 import base64
@@ -18,12 +17,17 @@ TRANSFER_TYPE = "ind.transfer.v3"
 RECEIPT_TYPE = "ind.receipt.v3"
 TRANSFER_ANNOUNCEMENT_TYPE = "ind.transfer_announcement.v3"
 RECEIPT_ANNOUNCEMENT_TYPE = "ind.receipt_announcement.v3"
+CHECKPOINT_ANNOUNCEMENT_TYPE = "ind.checkpoint_announcement.v3"
 PROOF_BUNDLE_ANNOUNCEMENT_TYPE = "ind.proof_bundle_announcement.v3"
 ARCHIVE_SEGMENT_ANNOUNCEMENT_TYPE = "ind.archive_segment_announcement.v3"
 CONFLICT_PROOF_TYPE = "ind.conflict_proof.v3"
 VERSION = 3
 BILL_MAGIC = b"IND3BILL"
 TRANSFER_MAGIC = b"IND3XFER"
+GENESIS_REF_MAGIC = b"IND3GENR"
+CHECKPOINT_CORE_MAGIC = b"IND3CPNT"
+RECEIPT_MAGIC = b"IND3RCPT"
+CONFLICT_PROOF_MAGIC = b"IND3CFLP"
 DEFAULT_NETWORK_ID = proof_bundle_v3.DEFAULT_NETWORK_ID
 V3_PAYLOAD_ENCODING = "indb3-base85"
 V3_PAYLOAD_PREFIX = "indb3:"
@@ -113,6 +117,15 @@ TRANSFER_ANNOUNCEMENT_FIELDS = {
     "archive_segments",
     "announced_at",
 }
+CHECKPOINT_ANNOUNCEMENT_FIELDS = {
+    "type",
+    "version",
+    "network_id",
+    "payload_encoding",
+    "checkpoint_core",
+    "archive_segments",
+    "announced_at",
+}
 PROOF_BUNDLE_ANNOUNCEMENT_FIELDS = {
     "type",
     "version",
@@ -175,6 +188,77 @@ def _require_int(value, label, minimum=None):
     return value
 
 
+def _require_bill_value(value, label):
+    try:
+        return ind_token.validate_bill_value(value, label)
+    except ind_token.ValidationError as exc:
+        raise ProtocolV3Error(str(exc)) from exc
+
+
+def _require_display_serial(value, serial, label):
+    try:
+        return ind_token.validate_bill_serial(value, serial, label)
+    except ind_token.ValidationError as exc:
+        raise ProtocolV3Error(str(exc)) from exc
+
+
+def _display_id_hash(display_id, label="display id"):
+    if not isinstance(display_id, str) or display_id != display_id.strip():
+        raise ProtocolV3Error(f"invalid {label}")
+    try:
+        payload = display_id.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ProtocolV3Error(f"invalid {label}") from exc
+    return ind_token.sha3_hex(payload)
+
+
+def _validate_display_id_value(display_id, value, label):
+    parsed = parse_display_id(display_id, label)
+    if int(parsed["value"]) != int(value):
+        raise ProtocolV3Error(f"{label} value prefix does not match bill value")
+    return parsed
+
+
+def parse_display_id(display_id, label="display id"):
+    _display_id_hash(display_id, label)
+    prefix, separator, suffix = display_id.partition("x")
+    if separator != "x" or not prefix or not suffix or "x" in suffix:
+        raise ProtocolV3Error(f"{label} must be formatted as valuexserial")
+    if not prefix.isdigit() or not suffix.isdigit():
+        raise ProtocolV3Error(f"{label} must be formatted as valuexserial")
+    if len(prefix) > 1 and prefix.startswith("0"):
+        raise ProtocolV3Error(f"{label} value must be canonical")
+    if len(suffix) > 1 and suffix.startswith("0"):
+        raise ProtocolV3Error(f"{label} serial must be canonical")
+    value = _require_bill_value(int(prefix), f"{label} value")
+    serial = _require_display_serial(value, int(suffix), f"{label} serial")
+    return {"value": value, "serial": serial}
+
+
+def canonical_display_id(value, issue_index):
+    value = _require_bill_value(value, "display id value")
+    issue_index = _require_display_serial(value, issue_index, "display id issue index")
+    return f"{value}x{issue_index}"
+
+
+def _validate_display_id_issue_index(display_id, value, issue_index, label):
+    parsed = _validate_display_id_value(display_id, value, label)
+    issue_index = _require_display_serial(value, issue_index, f"{label} issue index")
+    if int(parsed["serial"]) != issue_index:
+        raise ProtocolV3Error(f"{label} serial does not match genesis issue index")
+    return parsed
+
+
+def _validate_checkpoint_genesis_display_id(genesis_ref, checkpoint_core, label):
+    value = _require_bill_value(checkpoint_core["value"], f"{label} value")
+    return _validate_display_id_issue_index(
+        checkpoint_core["display_id"],
+        value,
+        genesis_ref["issue_index"],
+        label,
+    )
+
+
 def _hex32(value, label):
     if not isinstance(value, str) or len(value) != 64:
         raise ProtocolV3Error(f"invalid {label}")
@@ -185,14 +269,277 @@ def _hex32(value, label):
     return value.lower()
 
 
-def _validate_any_address(address, label):
-    if keys_v3.is_address(address):
+def _validate_v3_address(address, label):
+    try:
         return keys_v3.validate_address(address, label)
-    return ind_token.validate_address(address, label)
+    except ind_token.ValidationError as exc:
+        raise ProtocolV3Error(str(exc)) from exc
 
 
 def _canonical_payload_bytes(data):
     return ind_token.canonical_json(data).encode("utf-8")
+
+
+def _json_field_bytes(data, label):
+    try:
+        return _canonical_payload_bytes(data)
+    except Exception as exc:
+        raise ProtocolV3Error(f"invalid {label}") from exc
+
+
+def _decode_json_field(raw, label):
+    try:
+        return ind_token._load_json(raw.decode("utf-8"))
+    except Exception as exc:
+        raise ProtocolV3Error(f"invalid {label}") from exc
+
+
+def _encode_envelope(magic, network_id, body):
+    return b"".join(
+        (
+            magic,
+            binary_v3.encode_uvarint(VERSION),
+            binary_v3.encode_uvarint(network_id),
+            body,
+        )
+    )
+
+
+def _read_envelope(reader, magic, label):
+    actual = reader.read(len(magic), f"{label} magic")
+    if actual != magic:
+        raise ProtocolV3Error(f"invalid {label} magic")
+    version = reader.read_uvarint(f"{label} version")
+    if version != VERSION:
+        raise ProtocolV3Error(f"unsupported {label} version")
+    return reader.read_uvarint(f"{label} network id")
+
+
+def _decode_envelope(data, magic, label, body_decoder):
+    try:
+        reader = binary_v3.Reader(data)
+        network_id = _read_envelope(reader, magic, label)
+        value = body_decoder(reader, network_id)
+        reader.require_eof()
+        return value
+    except binary_v3.BinaryV3Error as exc:
+        raise ProtocolV3Error(f"malformed {label}") from exc
+
+
+def _encode_signature_hex(value, label):
+    try:
+        raw = bytes.fromhex(value)
+    except Exception as exc:
+        raise ProtocolV3Error(f"invalid {label}") from exc
+    if len(raw) != 64:
+        raise ProtocolV3Error(f"invalid {label}")
+    return raw
+
+
+def _decode_signature_hex(reader, label):
+    return reader.read_fixed_bytes(64, label).hex()
+
+
+def _encode_public_key(public_key, label):
+    try:
+        return keys_v3.decode_public_key(public_key)
+    except Exception as exc:
+        raise ProtocolV3Error(f"invalid {label}") from exc
+
+
+def _decode_public_key(reader, label):
+    return keys_v3.encode_public_key(reader.read_fixed_bytes(32, label))
+
+
+def encode_genesis_ref_body(genesis_ref):
+    _validate_genesis_ref(genesis_ref, int(genesis_ref.get("network_id")))
+    return b"".join(
+        (
+            binary_v3.encode_hash_hex(genesis_ref["genesis_hash"]),
+            binary_v3.encode_hash_hex_nullable(genesis_ref["manifest_hash"]),
+            binary_v3.encode_hash_hex_nullable(genesis_ref["issuer_key_id"]),
+            binary_v3.encode_uvarint(int(genesis_ref["issue_index"])),
+            binary_v3.encode_uvarint(int(genesis_ref["issued_at"])),
+        )
+    )
+
+
+def decode_genesis_ref_body(reader, network_id):
+    return {
+        "type": GENESIS_REF_TYPE,
+        "version": VERSION,
+        "network_id": int(network_id),
+        "genesis_hash": reader.read_hash_hex("GenesisRefV3 genesis hash"),
+        "manifest_hash": reader.read_nullable_hash_hex("GenesisRefV3 manifest hash"),
+        "issuer_key_id": reader.read_nullable_hash_hex("GenesisRefV3 issuer key id"),
+        "issue_index": reader.read_uvarint("GenesisRefV3 issue index"),
+        "issued_at": reader.read_uvarint("GenesisRefV3 issued_at"),
+    }
+
+
+def encode_genesis_ref(genesis_ref):
+    network_id = _require_int(genesis_ref.get("network_id"), "GenesisRefV3 network id", minimum=0)
+    return _encode_envelope(GENESIS_REF_MAGIC, network_id, encode_genesis_ref_body(genesis_ref))
+
+
+def decode_genesis_ref(data):
+    return _decode_envelope(data, GENESIS_REF_MAGIC, "GenesisRefV3", decode_genesis_ref_body)
+
+
+def encode_base_state_body(state):
+    _validate_base_state(state)
+    return b"".join(
+        (
+            binary_v3.encode_uvarint(int(state["sequence"])),
+            binary_v3.encode_ascii(state["owner_address"], max_length=128),
+            binary_v3.encode_hash_hex(state["last_transfer_hash"]),
+            binary_v3.encode_uvarint(int(state["last_transfer_timestamp"])),
+            binary_v3.encode_uvarint(int(state["last_transfer_day"])),
+            binary_v3.encode_uvarint(int(state["transfers_in_last_day"])),
+            binary_v3.encode_ascii(state["display_id"], max_length=64),
+            binary_v3.encode_uvarint(int(state["value"])),
+        )
+    )
+
+
+def decode_base_state_body(reader):
+    return {
+        "sequence": reader.read_uvarint("V3 base sequence"),
+        "owner_address": reader.read_ascii("V3 base owner address", max_length=128),
+        "last_transfer_hash": reader.read_hash_hex("V3 base last transfer hash"),
+        "last_transfer_timestamp": reader.read_uvarint("V3 base timestamp"),
+        "last_transfer_day": reader.read_uvarint("V3 base day"),
+        "transfers_in_last_day": reader.read_uvarint("V3 base day count"),
+        "display_id": reader.read_ascii("V3 base display id", max_length=64),
+        "value": reader.read_uvarint("V3 base value"),
+    }
+
+
+def encode_checkpoint_core_body(core, include_hash=True):
+    core_for_validation = copy.deepcopy(core)
+    if not include_hash:
+        core_for_validation["checkpoint_hash"] = "00" * 32
+    _validate_checkpoint_core(core_for_validation, int(core_for_validation.get("network_id")))
+    checkpoint_hash = core["checkpoint_hash"] if include_hash else "00" * 32
+    return b"".join(
+        (
+            binary_v3.encode_hash_hex(core["token_id"]),
+            binary_v3.encode_hash_hex(core["genesis_hash"]),
+            binary_v3.encode_uvarint(int(core["sequence"])),
+            binary_v3.encode_ascii(core["owner_address"], max_length=128),
+            binary_v3.encode_uvarint(int(core["value"])),
+            binary_v3.encode_ascii(core["display_id"], max_length=64),
+            binary_v3.encode_hash_hex(core["display_id_hash"]),
+            binary_v3.encode_hash_hex(core["last_transfer_hash"]),
+            binary_v3.encode_uvarint(int(core["last_transfer_timestamp"])),
+            binary_v3.encode_uvarint(int(core["last_transfer_day"])),
+            binary_v3.encode_uvarint(int(core["transfers_in_last_day"])),
+            binary_v3.encode_hash_hex_nullable(core["previous_checkpoint_hash"]),
+            binary_v3.encode_hash_hex(checkpoint_hash),
+        )
+    )
+
+
+def decode_checkpoint_core_body(reader, network_id):
+    return {
+        "type": CHECKPOINT_CORE_TYPE,
+        "version": VERSION,
+        "network_id": int(network_id),
+        "token_id": reader.read_hash_hex("CheckpointCoreV3 token id"),
+        "genesis_hash": reader.read_hash_hex("CheckpointCoreV3 genesis hash"),
+        "sequence": reader.read_uvarint("CheckpointCoreV3 sequence"),
+        "owner_address": reader.read_ascii("CheckpointCoreV3 owner address", max_length=128),
+        "value": reader.read_uvarint("CheckpointCoreV3 value"),
+        "display_id": reader.read_ascii("CheckpointCoreV3 display id", max_length=64),
+        "display_id_hash": reader.read_hash_hex("CheckpointCoreV3 display id hash"),
+        "last_transfer_hash": reader.read_hash_hex("CheckpointCoreV3 last transfer hash"),
+        "last_transfer_timestamp": reader.read_uvarint("CheckpointCoreV3 timestamp"),
+        "last_transfer_day": reader.read_uvarint("CheckpointCoreV3 day"),
+        "transfers_in_last_day": reader.read_uvarint("CheckpointCoreV3 day count"),
+        "previous_checkpoint_hash": reader.read_nullable_hash_hex(
+            "CheckpointCoreV3 previous checkpoint hash"
+        ),
+        "checkpoint_hash": reader.read_hash_hex("CheckpointCoreV3 checkpoint hash"),
+    }
+
+
+def encode_checkpoint_core(core, include_hash=True):
+    network_id = _require_int(core.get("network_id"), "CheckpointCoreV3 network id", minimum=0)
+    return _encode_envelope(
+        CHECKPOINT_CORE_MAGIC,
+        network_id,
+        encode_checkpoint_core_body(core, include_hash=include_hash),
+    )
+
+
+def decode_checkpoint_core(data):
+    return _decode_envelope(
+        data, CHECKPOINT_CORE_MAGIC, "CheckpointCoreV3", decode_checkpoint_core_body
+    )
+
+
+def encode_transfer_body(transfer, include_signature=True):
+    network_id = _require_int(transfer.get("network_id"), "TransferV3 network id", minimum=0)
+    _validate_transfer_shape(transfer, network_id, require_signature=include_signature)
+    parts = [
+        binary_v3.encode_hash_hex(transfer["token_id"]),
+        binary_v3.encode_uvarint(int(transfer["sequence"])),
+        binary_v3.encode_hash_hex(transfer["previous_hash"]),
+        binary_v3.encode_ascii(transfer["sender_address"], max_length=128),
+        _encode_public_key(transfer["sender_public_key"], "TransferV3 sender public key"),
+        binary_v3.encode_ascii(transfer["recipient_address"], max_length=128),
+        binary_v3.encode_uvarint(int(transfer["timestamp"])),
+        binary_v3.encode_bytes(
+            _json_field_bytes(transfer["metadata"], "TransferV3 metadata"),
+            max_length=ind_token.MAX_TRANSFER_METADATA_BYTES,
+        ),
+        binary_v3.encode_uvarint(int(transfer["signature_algorithm"])),
+    ]
+    if include_signature:
+        parts.append(_encode_signature_hex(transfer["signature"], "TransferV3 signature"))
+    return b"".join(parts)
+
+
+def decode_transfer_body(reader, network_id, require_signature=True):
+    transfer = {
+        "type": TRANSFER_TYPE,
+        "version": VERSION,
+        "network_id": int(network_id),
+        "signature_algorithm": None,
+        "token_id": reader.read_hash_hex("TransferV3 token id"),
+        "sequence": reader.read_uvarint("TransferV3 sequence"),
+        "previous_hash": reader.read_hash_hex("TransferV3 previous hash"),
+        "sender_address": reader.read_ascii("TransferV3 sender address", max_length=128),
+        "sender_public_key": _decode_public_key(reader, "TransferV3 sender public key"),
+        "recipient_address": reader.read_ascii("TransferV3 recipient address", max_length=128),
+        "timestamp": reader.read_uvarint("TransferV3 timestamp"),
+        "metadata": _decode_json_field(
+            reader.read_bytes(
+                "TransferV3 metadata", max_length=ind_token.MAX_TRANSFER_METADATA_BYTES
+            ),
+            "TransferV3 metadata",
+        ),
+    }
+    transfer["signature_algorithm"] = reader.read_uvarint("TransferV3 signature algorithm")
+    transfer["signature"] = (
+        _decode_signature_hex(reader, "TransferV3 signature") if require_signature else ""
+    )
+    return transfer
+
+
+# Encode a TransferV3 dict in a canonical V3 binary envelope.
+def encode_transfer(transfer, include_signature=True):
+    network_id = _require_int(transfer.get("network_id"), "TransferV3 network id", minimum=0)
+    return _encode_envelope(
+        TRANSFER_MAGIC,
+        network_id,
+        encode_transfer_body(transfer, include_signature=include_signature),
+    )
+
+
+# Decode a canonical TransferV3 binary envelope.
+def decode_transfer(data):
+    return _decode_envelope(data, TRANSFER_MAGIC, "TransferV3", decode_transfer_body)
 
 
 # Encode a BillV3 dict in a canonical V3 binary envelope.
@@ -200,77 +547,61 @@ def encode_bill(bill):
     if not isinstance(bill, dict):
         raise ProtocolV3Error("BillV3 must be a dict")
     network_id = _require_int(bill.get("network_id"), "BillV3 network id", minimum=0)
-    return b"".join(
-        (
-            BILL_MAGIC,
-            binary_v3.encode_uvarint(VERSION),
-            binary_v3.encode_uvarint(network_id),
-            binary_v3.encode_bytes(_canonical_payload_bytes(bill)),
-        )
+    _require_exact_fields(bill, BILL_FIELDS, "BillV3")
+    if bill["type"] != BILL_TYPE or int(bill["version"]) != VERSION:
+        raise ProtocolV3Error("malformed BillV3")
+    if not isinstance(bill["recent_transfers"], list):
+        raise ProtocolV3Error("BillV3 recent transfers must be a list")
+    transfer_parts = [
+        binary_v3.encode_uvarint(len(bill["recent_transfers"])),
+        *[
+            encode_transfer_body(transfer, include_signature=True)
+            for transfer in bill["recent_transfers"]
+        ],
+    ]
+    return _encode_envelope(
+        BILL_MAGIC,
+        network_id,
+        b"".join(
+            (
+                binary_v3.encode_hash_hex(bill["token_id"]),
+                binary_v3.encode_uvarint(int(bill["value"])),
+                encode_genesis_ref_body(bill["genesis_ref"]),
+                encode_checkpoint_core_body(bill["checkpoint_core"]),
+                proof_bundle_v3.encode_proof_bundle_ref_body(bill["proof_bundle_ref"]),
+                *transfer_parts,
+            )
+        ),
     )
 
 
 # Decode a BillV3 binary envelope.
 def decode_bill(data):
-    reader = binary_v3.Reader(data)
-    magic = reader.read(len(BILL_MAGIC), "BillV3 magic")
-    if magic != BILL_MAGIC:
-        raise ProtocolV3Error("invalid BillV3 magic")
-    version = reader.read_uvarint("BillV3 version")
-    if version != VERSION:
-        raise ProtocolV3Error("unsupported BillV3 version")
-    network_id = reader.read_uvarint("BillV3 network id")
-    payload = reader.read_bytes("BillV3 payload")
-    reader.require_eof()
-    bill = ind_token._load_json(payload.decode("utf-8"))
-    if _require_int(bill.get("network_id"), "BillV3 network id", minimum=0) != network_id:
-        raise ProtocolV3Error("BillV3 network id mismatch")
-    return bill
+    def decode_body(reader, network_id):
+        bill = {
+            "type": BILL_TYPE,
+            "version": VERSION,
+            "network_id": int(network_id),
+            "token_id": reader.read_hash_hex("BillV3 token id"),
+            "value": reader.read_uvarint("BillV3 value"),
+            "genesis_ref": decode_genesis_ref_body(reader, network_id),
+            "checkpoint_core": decode_checkpoint_core_body(reader, network_id),
+            "proof_bundle_ref": proof_bundle_v3.decode_proof_bundle_ref_body(reader, network_id),
+            "recent_transfers": [],
+        }
+        count = reader.read_uvarint("BillV3 recent transfer count")
+        bill["recent_transfers"] = [
+            decode_transfer_body(reader, network_id, require_signature=True)
+            for _ in range(count)
+        ]
+        return bill
+
+    return _decode_envelope(data, BILL_MAGIC, "BillV3", decode_body)
 
 
 # Hash a complete BillV3 binary envelope.
 def bill_hash(bill):
     return binary_v3.object_hash(BILL_TYPE, encode_bill(bill))
-
-
-def _unsigned_transfer(transfer):
-    unsigned = copy.deepcopy(transfer)
-    unsigned.pop("signature", None)
-    return unsigned
-
-
-# Encode a TransferV3 dict in a canonical V3 binary envelope.
-def encode_transfer(transfer, include_signature=True):
-    if not isinstance(transfer, dict):
-        raise ProtocolV3Error("TransferV3 must be a dict")
-    network_id = _require_int(transfer.get("network_id"), "TransferV3 network id", minimum=0)
-    payload = transfer if include_signature else _unsigned_transfer(transfer)
-    return b"".join(
-        (
-            TRANSFER_MAGIC,
-            binary_v3.encode_uvarint(VERSION),
-            binary_v3.encode_uvarint(network_id),
-            binary_v3.encode_bytes(_canonical_payload_bytes(payload)),
-        )
-    )
-
-
-# Decode a canonical TransferV3 binary envelope.
-def decode_transfer(data):
-    reader = binary_v3.Reader(data)
-    magic = reader.read(len(TRANSFER_MAGIC), "TransferV3 magic")
-    if magic != TRANSFER_MAGIC:
-        raise ProtocolV3Error("invalid TransferV3 magic")
-    version = reader.read_uvarint("TransferV3 version")
-    if version != VERSION:
-        raise ProtocolV3Error("unsupported TransferV3 version")
-    network_id = reader.read_uvarint("TransferV3 network id")
-    payload = reader.read_bytes("TransferV3 payload")
-    reader.require_eof()
-    transfer = ind_token._load_json(payload.decode("utf-8"))
-    if _require_int(transfer.get("network_id"), "TransferV3 network id", minimum=0) != network_id:
-        raise ProtocolV3Error("TransferV3 network id mismatch")
-    return transfer
 
 
 # Encode binary V3 data into the text form used by gossip messages.
@@ -303,6 +634,228 @@ def _require_v3_payload_envelope(message, required_fields, expected_type, label)
     return network_id
 
 
+def validate_gossip_envelope_shape(message):
+    """Reject malformed V3 gossip envelopes before async ingest queues them."""
+
+    def require_payload_string(value, label):
+        if not isinstance(value, str):
+            raise ProtocolV3Error(f"{label} must be a V3 wire payload")
+        return value
+
+    def require_decoded_network_id(decoded, expected_network_id, label):
+        if not isinstance(decoded, dict):
+            raise ProtocolV3Error(f"{label} payload is malformed")
+        payload_network_id = _require_int(
+            decoded.get("network_id"), f"{label} network id", minimum=0
+        )
+        if payload_network_id != int(expected_network_id):
+            raise ProtocolV3Error(f"{label} network id mismatch")
+
+    def validate_checkpoint_payload(checkpoint, expected_network_id, label):
+        require_decoded_network_id(checkpoint, expected_network_id, label)
+        _validate_checkpoint_core(checkpoint, int(expected_network_id))
+        if checkpoint["checkpoint_hash"] != checkpoint_core_hash(checkpoint):
+            raise ProtocolV3Error(f"{label} hash mismatch")
+
+    def checkpoint_from_archive_segment_payload(segment, expected_network_id):
+        require_decoded_network_id(segment, expected_network_id, "ArchiveSegmentV3")
+        from . import archive_segment_v3
+
+        try:
+            if segment["segment_hash"] != archive_segment_v3.archive_segment_hash_hex(segment):
+                raise ProtocolV3Error("ArchiveSegmentV3 hash mismatch")
+        except ProtocolV3Error:
+            raise
+        except Exception as exc:
+            raise ProtocolV3Error("malformed ArchiveSegmentV3") from exc
+        _validate_genesis_ref(segment["genesis_ref"], int(expected_network_id))
+        _validate_display_id_issue_index(
+            segment["display_id"],
+            segment["value"],
+            segment["genesis_ref"]["issue_index"],
+            "ArchiveSegmentV3 display id",
+        )
+        final_state = verify_transfer_sequence_from_state(
+            segment["token_id"],
+            copy.deepcopy(segment["base_state"]),
+            segment["transfers"],
+            network_id=expected_network_id,
+        )
+        if int(final_state["sequence"]) != int(segment["end_sequence"]):
+            raise ProtocolV3Error("ArchiveSegmentV3 end sequence mismatch")
+        if int(final_state["value"]) != int(segment["value"]):
+            raise ProtocolV3Error("ArchiveSegmentV3 value mismatch")
+        if str(final_state["display_id"]) != str(segment["display_id"]):
+            raise ProtocolV3Error("ArchiveSegmentV3 display id mismatch")
+        checkpoint = checkpoint_core_from_state(
+            segment["token_id"],
+            segment["genesis_ref"]["genesis_hash"],
+            final_state,
+            previous_checkpoint_hash=segment["previous_checkpoint_hash"],
+            network_id=expected_network_id,
+        )
+        if checkpoint["checkpoint_hash"] != segment["checkpoint_hash"]:
+            raise ProtocolV3Error("ArchiveSegmentV3 checkpoint hash mismatch")
+        return checkpoint
+
+    def validate_archive_segment_payload(segment, expected_network_id):
+        checkpoint_from_archive_segment_payload(segment, expected_network_id)
+
+    def validate_proof_bundle_payload(bundle, expected_network_id):
+        require_decoded_network_id(bundle, expected_network_id, "ProofBundleV3")
+        try:
+            proof_bundle_v3.verify_self_hash(bundle)
+            from . import transparency_client as log_client
+
+            log_client.verify_signed_root(bundle["signed_root"])
+        except Exception as exc:
+            raise ProtocolV3Error(str(exc)) from exc
+        source = bundle.get("source_evidence")
+        if isinstance(source, dict):
+            require_decoded_network_id(source, expected_network_id, "ProofBundleV3 source")
+            embedded_segment = source.get("archive_segment")
+            if embedded_segment is not None:
+                checkpoint = checkpoint_from_archive_segment_payload(
+                    embedded_segment, expected_network_id
+                )
+                if source.get("archive_segment_hash") != embedded_segment.get("segment_hash"):
+                    raise ProtocolV3Error("ProofBundleV3 archive segment hash mismatch")
+                if source.get("source_checkpoint_hash") != checkpoint["checkpoint_hash"]:
+                    raise ProtocolV3Error("ProofBundleV3 source checkpoint hash mismatch")
+
+    def validate_transfer_bill_payload(bill, expected_network_id):
+        require_decoded_network_id(bill, expected_network_id, "BillV3")
+        _require_exact_fields(bill, BILL_FIELDS, "BillV3")
+        if bill["type"] != BILL_TYPE or int(bill["version"]) != VERSION:
+            raise ProtocolV3Error("malformed BillV3")
+        _validate_genesis_ref(bill["genesis_ref"], int(expected_network_id))
+        validate_checkpoint_payload(
+            bill["checkpoint_core"], expected_network_id, "CheckpointCoreV3"
+        )
+        _validate_checkpoint_genesis_display_id(
+            bill["genesis_ref"], bill["checkpoint_core"], "CheckpointCoreV3 display id"
+        )
+        if bill["genesis_ref"]["genesis_hash"] != bill["checkpoint_core"]["genesis_hash"]:
+            raise ProtocolV3Error("CheckpointCoreV3 genesis hash mismatch")
+        proof_bundle_v3.encode_proof_bundle_ref_body(bill["proof_bundle_ref"])
+        if not isinstance(bill["recent_transfers"], list) or not bill["recent_transfers"]:
+            raise ProtocolV3Error("TransferAnnouncementV3 requires a recent TransferV3")
+        verify_transfer_sequence_from_state(
+            bill["token_id"],
+            _initial_state_from_checkpoint_core(bill["checkpoint_core"]),
+            bill["recent_transfers"],
+            network_id=expected_network_id,
+        )
+
+    def decode_archive_segment_payload(payload, expected_network_id, label):
+        from . import archive_segment_v3
+
+        segment = archive_segment_v3.decode_archive_segment(
+            decode_wire_payload(require_payload_string(payload, label))
+        )
+        require_decoded_network_id(segment, expected_network_id, label)
+        validate_archive_segment_payload(segment, expected_network_id)
+        return segment
+
+    def decode_proof_bundle_payload(payload, expected_network_id, label):
+        bundle = proof_bundle_v3.decode_proof_bundle(
+            decode_wire_payload(require_payload_string(payload, label))
+        )
+        require_decoded_network_id(bundle, expected_network_id, label)
+        validate_proof_bundle_payload(bundle, expected_network_id)
+        return bundle
+
+    def validate_payloads(expected_network_id):
+        message_type = message["type"]
+        if message_type == TRANSFER_ANNOUNCEMENT_TYPE:
+            bill = decode_bill(decode_wire_payload(require_payload_string(message["bill"], "BillV3")))
+            validate_transfer_bill_payload(bill, expected_network_id)
+            if message["proof_bundle"] is not None:
+                bundle = decode_proof_bundle_payload(
+                    message["proof_bundle"], expected_network_id, "ProofBundleV3"
+                )
+                proof_bundle_v3.verify_proof_bundle_ref(
+                    bill["proof_bundle_ref"], bundle, expected_network_id=expected_network_id
+                )
+            for index, payload in enumerate(message["archive_segments"]):
+                decode_archive_segment_payload(
+                    payload, expected_network_id, f"ArchiveSegmentV3[{index}]"
+                )
+        elif message_type == CHECKPOINT_ANNOUNCEMENT_TYPE:
+            checkpoint = decode_checkpoint_core(
+                decode_wire_payload(
+                    require_payload_string(message["checkpoint_core"], "CheckpointCoreV3")
+                )
+            )
+            validate_checkpoint_payload(checkpoint, expected_network_id, "CheckpointCoreV3")
+            for index, payload in enumerate(message["archive_segments"]):
+                segment = decode_archive_segment_payload(
+                    payload, expected_network_id, f"ArchiveSegmentV3[{index}]"
+                )
+                if index == 0:
+                    derived = checkpoint_from_archive_segment_payload(segment, expected_network_id)
+                    for field in CHECKPOINT_CORE_FIELDS:
+                        if checkpoint[field] != derived[field]:
+                            raise ProtocolV3Error(
+                                f"CheckpointCoreV3 does not match archive segment: {field}"
+                            )
+        elif message_type == PROOF_BUNDLE_ANNOUNCEMENT_TYPE:
+            decode_proof_bundle_payload(
+                message["proof_bundle"], expected_network_id, "ProofBundleV3"
+            )
+        elif message_type == ARCHIVE_SEGMENT_ANNOUNCEMENT_TYPE:
+            decode_archive_segment_payload(
+                message["archive_segment"], expected_network_id, "ArchiveSegmentV3"
+            )
+
+    envelope_specs = {
+        TRANSFER_ANNOUNCEMENT_TYPE: (
+            TRANSFER_ANNOUNCEMENT_FIELDS,
+            TRANSFER_ANNOUNCEMENT_TYPE,
+            "TransferAnnouncementV3",
+        ),
+        CHECKPOINT_ANNOUNCEMENT_TYPE: (
+            CHECKPOINT_ANNOUNCEMENT_FIELDS,
+            CHECKPOINT_ANNOUNCEMENT_TYPE,
+            "CheckpointAnnouncementV3",
+        ),
+        PROOF_BUNDLE_ANNOUNCEMENT_TYPE: (
+            PROOF_BUNDLE_ANNOUNCEMENT_FIELDS,
+            PROOF_BUNDLE_ANNOUNCEMENT_TYPE,
+            "ProofBundleAnnouncementV3",
+        ),
+        ARCHIVE_SEGMENT_ANNOUNCEMENT_TYPE: (
+            ARCHIVE_SEGMENT_ANNOUNCEMENT_FIELDS,
+            ARCHIVE_SEGMENT_ANNOUNCEMENT_TYPE,
+            "ArchiveSegmentAnnouncementV3",
+        ),
+    }
+    spec = envelope_specs.get(message.get("type") if isinstance(message, dict) else None)
+    message_type = message.get("type") if isinstance(message, dict) else None
+    if message_type == CONFLICT_PROOF_TYPE:
+        _require_exact_fields(message, CONFLICT_PROOF_FIELDS, "ConflictProofV3")
+        if _require_int(message["version"], "ConflictProofV3 version") != VERSION:
+            raise ProtocolV3Error("unsupported ConflictProofV3 version")
+        network_id = _require_int(message["network_id"], "ConflictProofV3 network id", minimum=0)
+        _require_int(message["sequence"], "ConflictProofV3 sequence", minimum=1)
+        _require_int(message["detected_at"], "ConflictProofV3 detected_at", minimum=0)
+        verify_conflict_proof(message, expected_network_id=network_id)
+        return True
+    if spec is None:
+        if isinstance(message_type, str) and message_type.startswith("ind.") and message_type.endswith(
+            ".v3"
+        ):
+            raise ProtocolV3Error("unsupported V3 gossip message type")
+        return False
+    network_id = _require_v3_payload_envelope(message, *spec)
+    if message["type"] in {TRANSFER_ANNOUNCEMENT_TYPE, CHECKPOINT_ANNOUNCEMENT_TYPE}:
+        label = spec[2]
+        if not isinstance(message["archive_segments"], list):
+            raise ProtocolV3Error(f"{label} archive segments must be a list")
+    validate_payloads(network_id)
+    return True
+
+
 # Hash a TransferV3 envelope for chain links and transparency leaves.
 def transfer_hash(transfer):
     return binary_v3.object_hash(TRANSFER_TYPE, encode_transfer(transfer)).hex()
@@ -322,8 +875,8 @@ def spend_key_for_transfer(transfer):
 # Build the spend-map claim that the transparency log records for a transfer.
 def spend_claim_for_transfer(transfer, log_id, transfer_leaf_index, accepted_at):
     return {
-        "type": "ind.transparency_spend_claim.v1",
-        "version": 1,
+        "type": "ind.transparency_spend_claim.v3",
+        "version": VERSION,
         "log_id": str(log_id),
         "spend_key": spend_key_for_transfer(transfer),
         "token_id": transfer["token_id"],
@@ -415,18 +968,16 @@ def _initial_state_from_checkpoint_core(core):
     }
 
 
-def _validate_base_state(state, require_v3_owner=True):
+def _validate_base_state(state):
     _require_exact_fields(state, BASE_STATE_FIELDS, "V3 base state")
     _require_int(state["sequence"], "V3 base sequence", minimum=0)
-    if require_v3_owner:
-        keys_v3.validate_address(state["owner_address"], "V3 base owner address")
-    else:
-        _validate_any_address(state["owner_address"], "V3 base owner address")
+    _validate_v3_address(state["owner_address"], "V3 base owner address")
     _hex32(state["last_transfer_hash"], "V3 base last transfer hash")
     _require_int(state["last_transfer_timestamp"], "V3 base timestamp", minimum=0)
     _require_int(state["last_transfer_day"], "V3 base day", minimum=0)
     _require_int(state["transfers_in_last_day"], "V3 base day count", minimum=0)
-    _require_int(state["value"], "V3 base value", minimum=1)
+    value = _require_bill_value(state["value"], "V3 base value")
+    _validate_display_id_value(state["display_id"], value, "V3 base display id")
     return state
 
 
@@ -440,7 +991,7 @@ def verify_transfer_sequence_from_state(
 ):
     if not isinstance(transfers, list):
         raise ProtocolV3Error("TransferV3 sequence must be a list")
-    state = copy.deepcopy(_validate_base_state(state, require_v3_owner=bool(transfers)))
+    state = copy.deepcopy(_validate_base_state(state))
     max_allowed_timestamp = ind_token.current_time(now) + ind_token.MAX_TRANSFER_FUTURE_SKEW_SECONDS
     for transfer in transfers:
         _validate_transfer_shape(transfer, int(network_id), now=now)
@@ -490,7 +1041,7 @@ def create_transfer_from_state(
     timestamp=None,
     network_id=DEFAULT_NETWORK_ID,
 ):
-    state = copy.deepcopy(_validate_base_state(state, require_v3_owner=True))
+    state = copy.deepcopy(_validate_base_state(state))
     sender_address = keys_v3.address_from_public_key(sender_public_key)
     if sender_address != state["owner_address"]:
         raise ProtocolV3Error("TransferV3 sender key is not the current owner")
@@ -523,11 +1074,9 @@ def create_transfer_from_state(
 
 # Hash a CheckpointCoreV3 with its self-hash field cleared.
 def checkpoint_core_hash(core):
-    unsigned = copy.deepcopy(core)
-    unsigned["checkpoint_hash"] = ""
     return binary_v3.object_hash(
         CHECKPOINT_CORE_TYPE,
-        _canonical_payload_bytes(unsigned),
+        encode_checkpoint_core(core, include_hash=False),
     ).hex()
 
 
@@ -546,7 +1095,7 @@ def checkpoint_core_from_state(
     previous_checkpoint_hash=None,
     network_id=DEFAULT_NETWORK_ID,
 ):
-    state = copy.deepcopy(_validate_base_state(state, require_v3_owner=True))
+    state = copy.deepcopy(_validate_base_state(state))
     core = {
         "type": CHECKPOINT_CORE_TYPE,
         "version": VERSION,
@@ -557,7 +1106,7 @@ def checkpoint_core_from_state(
         "owner_address": state["owner_address"],
         "value": int(state["value"]),
         "display_id": str(state["display_id"]),
-        "display_id_hash": ind_token.sha3_hex(str(state["display_id"]).encode("ascii")),
+        "display_id_hash": _display_id_hash(str(state["display_id"]), "CheckpointCoreV3 display id"),
         "last_transfer_hash": state["last_transfer_hash"],
         "last_transfer_timestamp": int(state["last_transfer_timestamp"]),
         "last_transfer_day": int(state["last_transfer_day"]),
@@ -582,6 +1131,11 @@ def create_bill_from_checkpoint_core(
 ):
     _validate_genesis_ref(genesis_ref, int(network_id))
     _validate_checkpoint_core(checkpoint_core, int(network_id))
+    _validate_checkpoint_genesis_display_id(
+        genesis_ref,
+        checkpoint_core,
+        "CheckpointCoreV3 display id",
+    )
     if genesis_ref["genesis_hash"] != checkpoint_core["genesis_hash"]:
         raise ProtocolV3Error("CheckpointCoreV3 genesis hash mismatch")
     proven = proof_bundle_v3.verify_proof_bundle(
@@ -620,7 +1174,7 @@ def _validate_genesis_ref(genesis_ref, network_id):
         _hex32(genesis_ref["manifest_hash"], "GenesisRefV3 manifest hash")
     if genesis_ref["issuer_key_id"] is not None:
         _hex32(genesis_ref["issuer_key_id"], "GenesisRefV3 issuer key id")
-    _require_int(genesis_ref["issue_index"], "GenesisRefV3 issue index", minimum=0)
+    _require_int(genesis_ref["issue_index"], "GenesisRefV3 issue index", minimum=1)
     _require_int(genesis_ref["issued_at"], "GenesisRefV3 issued_at", minimum=0)
 
 
@@ -636,9 +1190,12 @@ def _validate_checkpoint_core(core, network_id):
         raise ProtocolV3Error("invalid CheckpointCoreV3 token id")
     _hex32(core["genesis_hash"], "CheckpointCoreV3 genesis hash")
     _require_int(core["sequence"], "CheckpointCoreV3 sequence", minimum=1)
-    _validate_any_address(core["owner_address"], "CheckpointCoreV3 owner address")
-    _require_int(core["value"], "CheckpointCoreV3 value", minimum=1)
-    if core["display_id_hash"] != ind_token.sha3_hex(str(core["display_id"]).encode("ascii")):
+    _validate_v3_address(core["owner_address"], "CheckpointCoreV3 owner address")
+    value = _require_bill_value(core["value"], "CheckpointCoreV3 value")
+    _validate_display_id_value(core["display_id"], value, "CheckpointCoreV3 display id")
+    if core["display_id_hash"] != _display_id_hash(
+        core["display_id"], "CheckpointCoreV3 display id"
+    ):
         raise ProtocolV3Error("CheckpointCoreV3 display id hash mismatch")
     _hex32(core["last_transfer_hash"], "CheckpointCoreV3 last transfer hash")
     _require_int(core["last_transfer_timestamp"], "CheckpointCoreV3 timestamp", minimum=0)
@@ -647,6 +1204,24 @@ def _validate_checkpoint_core(core, network_id):
     if core["previous_checkpoint_hash"] is not None:
         _hex32(core["previous_checkpoint_hash"], "CheckpointCoreV3 previous checkpoint hash")
     _hex32(core["checkpoint_hash"], "CheckpointCoreV3 checkpoint hash")
+
+
+def validate_bill_display_id(bill):
+    if isinstance(bill, bytes):
+        bill = decode_bill(bill)
+    _require_exact_fields(bill, BILL_FIELDS, "BillV3")
+    network_id = _require_int(bill["network_id"], "BillV3 network id", minimum=0)
+    _validate_genesis_ref(bill["genesis_ref"], network_id)
+    _validate_checkpoint_core(bill["checkpoint_core"], network_id)
+    bill_value = _require_bill_value(bill["value"], "BillV3 value")
+    if bill_value != int(bill["checkpoint_core"]["value"]):
+        raise ProtocolV3Error("BillV3 value mismatch")
+    return _validate_display_id_issue_index(
+        bill["checkpoint_core"]["display_id"],
+        bill_value,
+        bill["genesis_ref"]["issue_index"],
+        "BillV3 display id",
+    )
 
 
 def _checkpoint_matches_core(checkpoint, core):
@@ -680,8 +1255,15 @@ def _verify_bill_state(
         raise ProtocolV3Error("BillV3 network id mismatch")
     _validate_genesis_ref(bill["genesis_ref"], network_id)
     _validate_checkpoint_core(bill["checkpoint_core"], network_id)
-    if int(bill["value"]) != int(bill["checkpoint_core"]["value"]):
+    bill_value = _require_bill_value(bill["value"], "BillV3 value")
+    if bill_value != int(bill["checkpoint_core"]["value"]):
         raise ProtocolV3Error("BillV3 value mismatch")
+    _validate_display_id_issue_index(
+        bill["checkpoint_core"]["display_id"],
+        bill_value,
+        bill["genesis_ref"]["issue_index"],
+        "BillV3 display id",
+    )
     if not isinstance(bill["recent_transfers"], list):
         raise ProtocolV3Error("BillV3 recent transfers must be a list")
     if proof_bundle is None and proof_bundle_resolver is not None:
@@ -926,6 +1508,93 @@ def verify_transfer_announcement(
     }
 
 
+def create_checkpoint_announcement(checkpoint_core, archive_segments, now=None):
+    from . import archive_segment_v3
+
+    if not isinstance(archive_segments, list) or not archive_segments:
+        raise ProtocolV3Error("CheckpointAnnouncementV3 requires archive segments")
+    network_id = _require_int(
+        checkpoint_core.get("network_id"), "CheckpointAnnouncementV3 network id", minimum=0
+    )
+    _validate_checkpoint_core(checkpoint_core, network_id)
+    segment_payloads = [
+        encode_wire_payload(archive_segment_v3.encode_archive_segment(segment))
+        for segment in archive_segments
+    ]
+    return {
+        "type": CHECKPOINT_ANNOUNCEMENT_TYPE,
+        "version": VERSION,
+        "network_id": int(network_id),
+        "payload_encoding": V3_PAYLOAD_ENCODING,
+        "checkpoint_core": encode_wire_payload(encode_checkpoint_core(checkpoint_core)),
+        "archive_segments": segment_payloads,
+        "announced_at": ind_token.current_time(now),
+    }
+
+
+def decode_checkpoint_announcement(message):
+    from . import archive_segment_v3
+
+    _require_v3_payload_envelope(
+        message,
+        CHECKPOINT_ANNOUNCEMENT_FIELDS,
+        CHECKPOINT_ANNOUNCEMENT_TYPE,
+        "CheckpointAnnouncementV3",
+    )
+    checkpoint_core = decode_checkpoint_core(decode_wire_payload(message["checkpoint_core"]))
+    if not isinstance(message["archive_segments"], list) or not message["archive_segments"]:
+        raise ProtocolV3Error("CheckpointAnnouncementV3 requires archive segments")
+    archive_segments = [
+        archive_segment_v3.decode_archive_segment(decode_wire_payload(payload))
+        for payload in message["archive_segments"]
+    ]
+    return checkpoint_core, archive_segments
+
+
+def verify_checkpoint_announcement(
+    message,
+    expected_network_id=DEFAULT_NETWORK_ID,
+    previous_segment_resolver=None,
+    previous_checkpoint_resolver=None,
+):
+    from . import archive_segment_v3
+
+    network_id = _require_v3_payload_envelope(
+        message,
+        CHECKPOINT_ANNOUNCEMENT_FIELDS,
+        CHECKPOINT_ANNOUNCEMENT_TYPE,
+        "CheckpointAnnouncementV3",
+    )
+    if expected_network_id is not None and network_id != int(expected_network_id):
+        raise ProtocolV3Error("CheckpointAnnouncementV3 network id mismatch")
+    checkpoint_core, archive_segments = decode_checkpoint_announcement(message)
+    segments_by_hash = {
+        archive_segment_v3.archive_segment_hash_hex(segment): segment
+        for segment in archive_segments
+    }
+
+    def resolver(segment_hash):
+        segment_hash = str(segment_hash).lower()
+        if segment_hash in segments_by_hash:
+            return segments_by_hash[segment_hash]
+        if previous_segment_resolver is not None:
+            return previous_segment_resolver(segment_hash)
+        return None
+
+    derived = archive_segment_v3.verify_archive_segment(
+        archive_segments[0],
+        expected_network_id=network_id,
+        previous_segment_resolver=resolver,
+        previous_checkpoint_resolver=previous_checkpoint_resolver,
+    )
+    for field in CHECKPOINT_CORE_FIELDS:
+        if checkpoint_core[field] != derived[field]:
+            raise ProtocolV3Error(f"checkpoint does not match archive segment: {field}")
+    if checkpoint_core["checkpoint_hash"] != checkpoint_core_hash(checkpoint_core):
+        raise ProtocolV3Error("checkpoint hash mismatch")
+    return {"checkpoint_core": checkpoint_core, "archive_segments": archive_segments}
+
+
 # Wrap a ProofBundleV3 in a binary V3 gossip envelope.
 def create_proof_bundle_announcement(proof_bundle, now=None):
     return {
@@ -1010,71 +1679,44 @@ def verify_archive_segment_announcement(
     return {"archive_segment": segment, "checkpoint": checkpoint}
 
 
-def _unsigned_receipt(receipt):
-    unsigned = copy.deepcopy(receipt)
-    unsigned.pop("signature", None)
-    return unsigned
-
-
-def _receipt_signing_preimage(receipt):
-    return binary_v3.signing_preimage(
-        receipt["network_id"],
-        RECEIPT_TYPE,
-        VERSION,
-        binary_v3.SIGNATURE_ALGORITHM_ID,
-        RECEIPT_TYPE,
-        _canonical_payload_bytes(_unsigned_receipt(receipt)),
+def _receipt_v3_disabled():
+    raise ProtocolV3Error(
+        "ReceiptV3 is not an active protocol message; wallet sync imports owner-addressed bills"
     )
 
 
-# Hash a ReceiptV3 for local indexing and dedupe.
+def encode_receipt_body(receipt, include_signature=True):
+    _receipt_v3_disabled()
+
+
+def decode_receipt_body(reader, network_id, require_signature=True):
+    _receipt_v3_disabled()
+
+
+def encode_receipt(receipt, include_signature=True):
+    _receipt_v3_disabled()
+
+
+def decode_receipt(data):
+    _receipt_v3_disabled()
+
+
+def _receipt_signing_preimage(receipt):
+    _receipt_v3_disabled()
+
+
 def receipt_hash(receipt):
-    return binary_v3.object_hash(RECEIPT_TYPE, _canonical_payload_bytes(receipt)).hex()
+    _receipt_v3_disabled()
 
 
 def _validate_receipt_shape(receipt, network_id, require_signature=True):
-    _require_exact_fields(receipt, RECEIPT_FIELDS, "ReceiptV3")
-    if receipt["type"] != RECEIPT_TYPE:
-        raise ProtocolV3Error("malformed ReceiptV3")
-    if _require_int(receipt["version"], "ReceiptV3 version") != VERSION:
-        raise ProtocolV3Error("unsupported ReceiptV3 version")
-    if _require_int(receipt["network_id"], "ReceiptV3 network id", minimum=0) != network_id:
-        raise ProtocolV3Error("ReceiptV3 network id mismatch")
-    if (
-        _require_int(receipt["signature_algorithm"], "ReceiptV3 signature algorithm")
-        != binary_v3.SIGNATURE_ALGORITHM_ID
-    ):
-        raise ProtocolV3Error("unsupported ReceiptV3 signature algorithm")
-    _hex32(receipt["token_id"], "ReceiptV3 token id")
-    _hex32(receipt["transfer_hash"], "ReceiptV3 transfer hash")
-    _require_int(receipt["sequence"], "ReceiptV3 sequence", minimum=1)
-    keys_v3.validate_address(receipt["recipient_address"], "ReceiptV3 recipient address")
-    keys_v3.decode_public_key(receipt["recipient_public_key"])
-    _require_int(receipt["received_at"], "ReceiptV3 received_at", minimum=0)
-    if require_signature:
-        try:
-            signature = bytes.fromhex(receipt["signature"])
-        except Exception as exc:
-            raise ProtocolV3Error("invalid ReceiptV3 signature") from exc
-        if len(signature) != 64:
-            raise ProtocolV3Error("invalid ReceiptV3 signature")
+    _receipt_v3_disabled()
 
 
-# Verify a ReceiptV3 signature against the recipient key.
 def verify_receipt_signature(receipt):
-    if not keys_v3.public_key_matches_address(
-        receipt["recipient_public_key"], receipt["recipient_address"]
-    ):
-        raise ProtocolV3Error("ReceiptV3 recipient key does not match recipient address")
-    signature = bytes.fromhex(receipt["signature"])
-    if not keys_v3.verify(
-        receipt["recipient_public_key"], signature, _receipt_signing_preimage(receipt)
-    ):
-        raise ProtocolV3Error("invalid ReceiptV3 signature")
-    return True
+    _receipt_v3_disabled()
 
 
-# Countersign a BillV3 tip with the current owner's Ed25519 key.
 def create_receipt(
     bill,
     recipient_private_key,
@@ -1088,55 +1730,9 @@ def create_receipt(
     trusted_operator_public_key=None,
     archive_segment_resolver=None,
 ):
-    if isinstance(bill, bytes):
-        bill = decode_bill(bill)
-    state = _verify_bill_state(
-        bill,
-        proof_bundle=proof_bundle,
-        proof_bundle_resolver=proof_bundle_resolver,
-        expected_network_id=expected_network_id,
-        transparency_verifier=transparency_verifier,
-        trusted_operator_public_key=trusted_operator_public_key,
-        archive_segment_resolver=archive_segment_resolver,
-        now=now,
-    )
-    recipient_address = keys_v3.address_from_public_key(recipient_public_key)
-    if recipient_address != state["owner_address"]:
-        raise ProtocolV3Error("ReceiptV3 signer is not the bill recipient")
-    wall_now = ind_token.current_time(now)
-    received_at = _require_int(
-        int(timestamp if timestamp is not None else wall_now),
-        "ReceiptV3 received_at",
-        minimum=0,
-    )
-    if timestamp is None:
-        received_at = max(received_at, int(state["last_transfer_timestamp"]))
-    if received_at < int(state["last_transfer_timestamp"]):
-        raise ProtocolV3Error("ReceiptV3 timestamp predates transfer")
-    if received_at > wall_now + ind_token.MAX_TRANSFER_FUTURE_SKEW_SECONDS:
-        raise ProtocolV3Error("ReceiptV3 timestamp is too far in the future")
-    receipt_unsigned = {
-        "type": RECEIPT_TYPE,
-        "version": VERSION,
-        "network_id": int(bill["network_id"]),
-        "signature_algorithm": binary_v3.SIGNATURE_ALGORITHM_ID,
-        "token_id": bill["token_id"],
-        "transfer_hash": state["last_transfer_hash"],
-        "sequence": int(state["sequence"]),
-        "recipient_address": recipient_address,
-        "recipient_public_key": recipient_public_key,
-        "received_at": int(received_at),
-        "signature": "",
-    }
-    _validate_receipt_shape(receipt_unsigned, int(bill["network_id"]), require_signature=False)
-    signature = keys_v3.sign(recipient_private_key, _receipt_signing_preimage(receipt_unsigned))
-    receipt_signed = copy.deepcopy(receipt_unsigned)
-    receipt_signed["signature"] = signature.hex()
-    verify_receipt_signature(receipt_signed)
-    return receipt_signed
+    _receipt_v3_disabled()
 
 
-# Validate a ReceiptV3 against the BillV3 tip it acknowledges.
 def verify_receipt(
     bill,
     receipt,
@@ -1148,40 +1744,9 @@ def verify_receipt(
     archive_segment_resolver=None,
     now=None,
 ):
-    if isinstance(bill, bytes):
-        bill = decode_bill(bill)
-    state = _verify_bill_state(
-        bill,
-        proof_bundle=proof_bundle,
-        proof_bundle_resolver=proof_bundle_resolver,
-        expected_network_id=expected_network_id,
-        transparency_verifier=transparency_verifier,
-        trusted_operator_public_key=trusted_operator_public_key,
-        archive_segment_resolver=archive_segment_resolver,
-        now=now,
-    )
-    network_id = int(bill["network_id"])
-    _validate_receipt_shape(receipt, network_id)
-    if receipt["token_id"] != bill["token_id"]:
-        raise ProtocolV3Error("ReceiptV3 references a different bill")
-    if receipt["transfer_hash"] != state["last_transfer_hash"]:
-        raise ProtocolV3Error("ReceiptV3 does not reference the bill tip")
-    if int(receipt["sequence"]) != int(state["sequence"]):
-        raise ProtocolV3Error("ReceiptV3 sequence does not match bill tip")
-    if receipt["recipient_address"] != state["owner_address"]:
-        raise ProtocolV3Error("ReceiptV3 signer is not the bill recipient")
-    if int(receipt["received_at"]) < int(state["last_transfer_timestamp"]):
-        raise ProtocolV3Error("ReceiptV3 timestamp predates transfer")
-    if (
-        int(receipt["received_at"])
-        > ind_token.current_time(now) + ind_token.MAX_TRANSFER_FUTURE_SKEW_SECONDS
-    ):
-        raise ProtocolV3Error("ReceiptV3 timestamp is too far in the future")
-    verify_receipt_signature(receipt)
-    return _token_state_from_v3_state(bill["token_id"], state)
+    _receipt_v3_disabled()
 
 
-# Wrap a ReceiptV3 in the V3 gossip envelope.
 def create_receipt_announcement(
     bill,
     recipient_private_key,
@@ -1194,30 +1759,9 @@ def create_receipt_announcement(
     trusted_operator_public_key=None,
     archive_segment_resolver=None,
 ):
-    receipt = create_receipt(
-        bill,
-        recipient_private_key,
-        recipient_public_key,
-        now=now,
-        proof_bundle=proof_bundle,
-        proof_bundle_resolver=proof_bundle_resolver,
-        expected_network_id=expected_network_id,
-        transparency_verifier=transparency_verifier,
-        trusted_operator_public_key=trusted_operator_public_key,
-        archive_segment_resolver=archive_segment_resolver,
-    )
-    bill_obj = decode_bill(bill) if isinstance(bill, bytes) else bill
-    return {
-        "type": RECEIPT_ANNOUNCEMENT_TYPE,
-        "version": VERSION,
-        "network_id": int(bill_obj["network_id"]),
-        "bill": copy.deepcopy(bill_obj),
-        "receipt": receipt,
-        "announced_at": ind_token.current_time(now),
-    }
+    _receipt_v3_disabled()
 
 
-# Validate a V3 receipt gossip envelope.
 def verify_receipt_announcement(
     message,
     proof_bundle=None,
@@ -1228,28 +1772,7 @@ def verify_receipt_announcement(
     archive_segment_resolver=None,
     now=None,
 ):
-    if isinstance(message, str):
-        message = ind_token._load_json(message)
-    _require_exact_fields(message, RECEIPT_ANNOUNCEMENT_FIELDS, "ReceiptAnnouncementV3")
-    if message["type"] != RECEIPT_ANNOUNCEMENT_TYPE:
-        raise ProtocolV3Error("not a ReceiptAnnouncementV3")
-    if _require_int(message["version"], "ReceiptAnnouncementV3 version") != VERSION:
-        raise ProtocolV3Error("unsupported ReceiptAnnouncementV3 version")
-    network_id = _require_int(message["network_id"], "ReceiptAnnouncementV3 network id", minimum=0)
-    if expected_network_id is not None and network_id != int(expected_network_id):
-        raise ProtocolV3Error("ReceiptAnnouncementV3 network id mismatch")
-    _require_int(message["announced_at"], "ReceiptAnnouncementV3 announced_at", minimum=0)
-    return verify_receipt(
-        message["bill"],
-        message["receipt"],
-        proof_bundle=proof_bundle,
-        proof_bundle_resolver=proof_bundle_resolver,
-        expected_network_id=network_id,
-        transparency_verifier=transparency_verifier,
-        trusted_operator_public_key=trusted_operator_public_key,
-        archive_segment_resolver=archive_segment_resolver,
-        now=now,
-    )
+    _receipt_v3_disabled()
 
 
 def _conflict_proof_unsigned(proof):
@@ -1258,11 +1781,67 @@ def _conflict_proof_unsigned(proof):
     return unsigned
 
 
+def encode_conflict_proof_body(proof, include_hash=True):
+    _require_exact_fields(proof, CONFLICT_PROOF_FIELDS, "ConflictProofV3")
+    _require_int(proof["network_id"], "ConflictProofV3 network id", minimum=0)
+    proof_hash = proof["proof_hash"] if include_hash else "00" * 32
+    _hex32(proof_hash, "ConflictProofV3 proof hash")
+    return b"".join(
+        (
+            binary_v3.encode_hash_hex(proof["token_id"]),
+            binary_v3.encode_hash_hex(proof["previous_hash"]),
+            binary_v3.encode_uvarint(int(proof["sequence"])),
+            binary_v3.encode_ascii(proof["sender_address"], max_length=128),
+            binary_v3.encode_hash_hex(proof["spend_key"]),
+            binary_v3.encode_hash_hex(proof["transfer_hash_a"]),
+            binary_v3.encode_hash_hex(proof["transfer_hash_b"]),
+            encode_transfer_body(proof["transfer_a"], include_signature=True),
+            encode_transfer_body(proof["transfer_b"], include_signature=True),
+            binary_v3.encode_uvarint(int(proof["detected_at"])),
+            binary_v3.encode_hash_hex(proof_hash),
+        )
+    )
+
+
+def decode_conflict_proof_body(reader, network_id):
+    return {
+        "type": CONFLICT_PROOF_TYPE,
+        "version": VERSION,
+        "network_id": int(network_id),
+        "token_id": reader.read_hash_hex("ConflictProofV3 token id"),
+        "previous_hash": reader.read_hash_hex("ConflictProofV3 previous hash"),
+        "sequence": reader.read_uvarint("ConflictProofV3 sequence"),
+        "sender_address": reader.read_ascii("ConflictProofV3 sender address", max_length=128),
+        "spend_key": reader.read_hash_hex("ConflictProofV3 spend key"),
+        "transfer_hash_a": reader.read_hash_hex("ConflictProofV3 transfer hash a"),
+        "transfer_hash_b": reader.read_hash_hex("ConflictProofV3 transfer hash b"),
+        "transfer_a": decode_transfer_body(reader, network_id, require_signature=True),
+        "transfer_b": decode_transfer_body(reader, network_id, require_signature=True),
+        "detected_at": reader.read_uvarint("ConflictProofV3 detected_at"),
+        "proof_hash": reader.read_hash_hex("ConflictProofV3 proof hash"),
+    }
+
+
+def encode_conflict_proof(proof, include_hash=True):
+    network_id = _require_int(proof.get("network_id"), "ConflictProofV3 network id", minimum=0)
+    return _encode_envelope(
+        CONFLICT_PROOF_MAGIC,
+        network_id,
+        encode_conflict_proof_body(proof, include_hash=include_hash),
+    )
+
+
+def decode_conflict_proof(data):
+    return _decode_envelope(
+        data, CONFLICT_PROOF_MAGIC, "ConflictProofV3", decode_conflict_proof_body
+    )
+
+
 # Hash a ConflictProofV3 with its self-hash field removed.
 def conflict_proof_hash(proof):
     return binary_v3.object_hash(
         CONFLICT_PROOF_TYPE,
-        _canonical_payload_bytes(_conflict_proof_unsigned(proof)),
+        encode_conflict_proof(proof, include_hash=False),
     ).hex()
 
 

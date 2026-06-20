@@ -26,7 +26,7 @@ can unwrap the same MWK:
 - Device wrapper: planned, hardware-keystore sealed key released after PIN.
 - Passkey wrapper: planned, WebAuthn PRF output if the user opts in.
 
-The current implemented wallet format is `INDW2`: AES-256-GCM payload
+The current implemented wallet format is `INDW3`: AES-256-GCM payload
 encryption, Argon2id password wrapper, optional recovery phrase wrapper, and
 in-memory unlocked sessions.
 
@@ -85,8 +85,8 @@ copied wallet file plus phrase must not be enough to skip the delay.
 
 ## Implementation Notes
 
-- Legacy Fernet/PBKDF2 wallet files remain decryptable for migration.
-- New wallet creation writes `INDW2` JSON files.
+- Legacy Fernet/PBKDF2 wallet files are rejected by the active wallet runtime.
+- New wallet creation writes `INDW3` JSON files.
 - New wallet generation stages the raw private key in process memory instead of
   writing `files/wallet_generation.json` with secrets.
 - Unlocked wallets are held in process memory through `runtime_json` instead of

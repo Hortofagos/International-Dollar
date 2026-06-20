@@ -17,7 +17,7 @@ This checks:
 - default wallet generation returns x3 Ed25519 keys
 - the local store initializes the V3 schema
 - V3 transfer/proof/archive gossip tests pass
-- V3 archive, proof bundle, receipt, conflict, and spend-map tests pass
+- V3 archive, proof bundle, conflict, spend-map, and receipt-retirement tests pass
 - native V3 double-spend drill message construction passes
 
 ## Strict Transparency Gate
@@ -34,6 +34,54 @@ $env:IND_LOG_MIN_MIRRORS = "2"
 ```
 
 Do not set `IND_LOG_UNSAFE_SINGLE_MIRROR=1` outside a local developer sandbox.
+
+Strict public-testnet nodes should render their transparency environment from
+`testnet/operator_set.testnet.json`:
+
+```powershell
+python tools/render_operator_env.py --format systemd
+```
+
+For systemd services, prefer an `EnvironmentFile` for the generated JSON:
+
+```powershell
+python tools/render_operator_env.py --format systemd-envfile
+```
+
+Install the same operator-set environment for both the node service and the
+transparency operator service. The node uses it for append fanout/finality; the
+operator uses it to verify that historical checkpoints were signed by any
+configured operator in the network.
+
+Each operator entry with a `url` is append-capable and counts toward
+`IND_OPERATOR_FINALITY_MIN_PROOFS`. To add operators, append another object with
+`url`, `public_key`, at least two independent `mirrors`, and `proof_archives`;
+the renderer will raise if the set is incomplete.
+
+Do not count a mirror hosted on the same HTTP origin as the operator append API.
+Strict verification rejects that shape because it cannot defend against an
+operator/API-origin split view.
+
+## Mirror Freshness
+
+Run root publication and archive publication as separate jobs. Root mirrors are
+the current-spend safety path; a missing or delayed hash-log archive must not
+block `latest.json` from refreshing.
+
+For cross-host static mirrors, use `tools/publish_testnet_static_mirror.py` with
+`--allow-missing-archive`, or `--no-archive` when the job is intentionally
+root-only. Each operator should have independent root publishers for:
+
+- local operator root to local website mirror
+- local operator root to the opposite VPS website mirror
+
+Configure the testnet monitor with every required public root mirror so stale
+heartbeat roots fail loudly:
+
+```powershell
+$env:IND_TESTNET_MONITOR_MIRROR_ROOT_URLS = "https://mirror-a.example/transparency,https://mirror-b.example/transparency"
+python tools/testnet_monitor.py --json --strict
+```
 
 ## Operator Gate
 
@@ -61,14 +109,12 @@ Before joining public peers:
 The node must ingest and relay:
 
 - `ind.transfer_announcement.v3`
-- `ind.receipt_announcement.v3`
 - `ind.proof_bundle_announcement.v3`
 - `ind.archive_segment_announcement.v3`
 - `ind.conflict_proof.v3`
 
-It must reject legacy bill gossip (`ind.transfer_announcement.v1`,
-`ind.transfer_announcement.v2`, `ind.receipt_announcement.v1`,
-`ind.receipt_announcement.v2`, and `ind.conflict_proof.v1`).
+It must reject legacy bill gossip and retired receipt announcements
+(`ind.receipt_announcement.v3`).
 
 ## V3 Conflict Drill
 
@@ -87,7 +133,8 @@ V3 conflict proof without broadcasting.
 - Full test suite passes.
 - At least two independent root mirrors are configured.
 - Operator root freshness and consistency monitors are active.
-- Proof archive publication is enabled.
+- Root mirror publication is independent from proof/archive publication.
+- Proof archive publication is enabled and monitored separately.
 - Faucet/wallet tooling creates x3 wallets by default.
-- V1/V2 generation is used only with `IND_LEGACY_WALLET_KEYS=1`.
-- V1/V2 bill protocol execution is disabled.
+- Historical bill generation toggles are absent from runtime configuration.
+- V3 bill protocol execution is the only enabled path.

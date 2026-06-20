@@ -1,11 +1,11 @@
 from . import runtime as runtime_json
 from . import wallet_crypto
 
-WALLET_V2_FORMAT = wallet_crypto.FORMAT
+WALLET_V3_FORMAT = wallet_crypto.FORMAT
 PasswordPolicyError = wallet_crypto.PasswordPolicyError
 
 
-# Create a new INDW2 wallet: payload encrypted by MWK, MWK wrapped by password.
+# Create a new INDW3 wallet: payload encrypted by MWK, MWK wrapped by password.
 def wallet_encrypt(wallet_password=None, recovery_phrase=None):
     wallet = runtime_json.read_wallet_generation()
     password = wallet_password
@@ -23,7 +23,7 @@ def wallet_encrypt(wallet_password=None, recovery_phrase=None):
     return record
 
 
-# Persist changes to an already unlocked INDW2 wallet without storing the password.
+# Persist changes to an already unlocked INDW3 wallet without storing the password.
 def wallet_reencrypt_unlocked(address, payload):
     address = str(address).strip()
     mwk = wallet_crypto.get_session_mwk(address)
@@ -33,8 +33,8 @@ def wallet_reencrypt_unlocked(address, payload):
         if runtime_json.wallet_address_from_name(wallet_path.name) != address:
             continue
         record = runtime_json.read_encrypted_wallet_record(wallet_path)
-        if record.get("format") != WALLET_V2_FORMAT:
-            raise wallet_crypto.WalletCryptoError("unlocked re-encryption requires INDW2")
+        if record.get("format") != WALLET_V3_FORMAT:
+            raise wallet_crypto.WalletCryptoError("unlocked re-encryption requires INDW3")
         updated = wallet_crypto.update_wallet_payload(record, str(payload).encode("utf-8"), mwk)
         runtime_json.write_encrypted_wallet_record(updated)
         return updated

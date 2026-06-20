@@ -44,8 +44,8 @@ Mainnet value must remain disabled until these requirements are complete and rev
 
 Audit in this order before any real-value launch:
 
-- protocol: signature validation, transfer-chain rules, double-spend proof generation, receipt finality, timestamp rules, manifest trust, compact checkpoints, and conflict handling
-- wallet: INDW2 encryption, Argon2id parameters, temporary decrypted wallet handling, passphrase UX, in-memory session handling, and recovery behavior
+- protocol: signature validation, transfer-chain rules, double-spend proof generation, receipt-retirement checks, timestamp rules, manifest trust, compact checkpoints, and conflict handling
+- wallet: INDW3 encryption, Argon2id parameters, temporary decrypted wallet handling, passphrase UX, in-memory session handling, and recovery behavior
 - network: INDN1 transport, peer discovery, DNS seed trust boundaries, peer poisoning, replay resistance, rate limits, and malformed message handling
 - deployment: nginx, TLS, Cloudflare, SSH, systemd service users, file permissions, secret placement, logs, and backup restore
 - release/update: signed manifests, binary signing, reproducible builds, rollback protection, and `/update` endpoint behavior

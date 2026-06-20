@@ -5,7 +5,7 @@ Status: experimental alpha.
 ## Security Goals
 
 - A bill cannot be transferred without the current owner's private key.
-- A malformed bill, transfer, receipt, or conflict proof is rejected.
+- A malformed bill, transfer, retired receipt announcement, or conflict proof is rejected.
 - A double-spend from the same bill state can be proven from signatures alone.
 - Nodes do not rely on IP voting or stake voting to decide ownership.
 
@@ -52,7 +52,7 @@ hashes, that is durable evidence of operator dishonesty.
 If an operator signs a root whose spend map accepts two different transfers for
 the same spend key, the affected bill is rejected. When the spend-map proof
 contains the conflicting transfer bodies, clients store
-`ind.transparency_operator_policy_violation.v1`, blacklist that operator
+`ind.transparency_operator_policy_violation.v3`, blacklist that operator
 locally, and gossip the evidence. This detects a malicious operator
 manipulating the present; it does not replace future multi-operator quorum
 finality.
@@ -73,7 +73,7 @@ deprecated compatibility alias, and unknown algorithm identifiers fail closed.
 
 ## Malicious Nodes
 
-Nodes can lie by omission, refuse to relay messages, or serve stale peer lists. They cannot forge valid transfers, receipts, or conflict proofs without private keys.
+Nodes can lie by omission, refuse to relay messages, or serve stale peer lists. They cannot forge valid transfers or conflict proofs without private keys.
 
 ## Spam And DoS
 

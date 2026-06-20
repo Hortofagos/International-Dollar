@@ -49,20 +49,30 @@ DEFAULT_SECURITY_SETTINGS = {
     "transparency_proof_archives": [],
     "transparency_operator_url": "",
     "transparency_operator_public_key": "",
+    "transparency_operators": [],
     "require_transparency_log": True,
     "submit_to_transparency_log": True,
     "min_root_mirrors": 2,
     "max_root_lag_seconds": 120,
     "max_current_root_age_seconds": 300,
     "current_root_future_skew_seconds": 120,
+    "operator_recovery_feeds": [],
+    "operator_recovery_min_feeds": 2,
+    "operator_recovery_stable_seconds": 120,
     "transparency_observed_roots_db": "files/transparency_observed_roots.db",
     "transparency_consistency_anchor_path": "",
     "transparency_consistency_check_interval_seconds": 900,
     "transparency_consistency_max_stale_seconds": 3600,
     "transparency_root_gossip": True,
+    "operator_finality_min_proofs": 0,
     "finality_buffer_seconds": DEFAULT_FINALITY_BUFFER_SECONDS,
+    "settlement_quorum_enabled": False,
+    "settlement_peers": [],
+    "settlement_min_remote_confirmations": 1,
+    "settlement_require_all_configured_peers": False,
+    "transparency_submit_async": False,
     "peer_request_timeout_seconds": DEFAULT_PEER_REQUEST_TIMEOUT_SECONDS,
-    "reject_peer_key_changes": True,
+    "reject_peer_key_changes": False,
     "trusted_genesis_issuer_keys": [],
     "trusted_genesis_manifest_hashes": [],
     "allow_untrusted_genesis": False,
@@ -188,6 +198,25 @@ def _normalize_mirror(value):
     return value
 
 
+def _normalize_operator_config(value):
+    if not isinstance(value, dict):
+        return None
+    url = _normalize_mirror(value.get("url", ""))
+    public_key = str(value.get("public_key", "")).strip()
+    mirrors = _dedupe(_normalize_mirror(item) for item in _as_lines(value.get("mirrors")))
+    proof_archives = _dedupe(
+        _normalize_mirror(item) for item in _as_lines(value.get("proof_archives"))
+    )
+    if not url and not public_key and not mirrors and not proof_archives:
+        return None
+    return {
+        "url": url,
+        "public_key": public_key,
+        "mirrors": mirrors,
+        "proof_archives": proof_archives,
+    }
+
+
 def _safe_http_base_url(value):
     parsed = urlparse(str(value).strip())
     if parsed.scheme not in {"http", "https"}:
@@ -267,6 +296,19 @@ def normalize_security_settings(settings):
     normalized["transparency_operator_public_key"] = str(
         merged.get("transparency_operator_public_key", "")
     ).strip()
+    operators = []
+    raw_operators = merged.get("transparency_operators")
+    if isinstance(raw_operators, str):
+        try:
+            raw_operators = json.loads(raw_operators)
+        except json.JSONDecodeError:
+            raw_operators = []
+    if isinstance(raw_operators, (list, tuple)):
+        for item in raw_operators:
+            operator = _normalize_operator_config(item)
+            if operator:
+                operators.append(operator)
+    normalized["transparency_operators"] = operators
 
     # Transparency knobs are bounded here so production checks can reason over one shape.
     normalized["require_transparency_log"] = _as_bool(merged.get("require_transparency_log"))
@@ -285,6 +327,15 @@ def normalize_security_settings(settings):
     normalized["current_root_future_skew_seconds"] = _as_int(
         merged.get("current_root_future_skew_seconds"), 120, minimum=0, maximum=86400
     )
+    normalized["operator_recovery_feeds"] = _dedupe(
+        _normalize_mirror(item) for item in _as_lines(merged.get("operator_recovery_feeds"))
+    )
+    normalized["operator_recovery_min_feeds"] = _as_int(
+        merged.get("operator_recovery_min_feeds"), 2, minimum=1, maximum=10
+    )
+    normalized["operator_recovery_stable_seconds"] = _as_int(
+        merged.get("operator_recovery_stable_seconds"), 120, minimum=0, maximum=86400
+    )
     normalized["transparency_observed_roots_db"] = (
         str(
             merged.get("transparency_observed_roots_db", "files/transparency_observed_roots.db")
@@ -301,11 +352,35 @@ def normalize_security_settings(settings):
         merged.get("transparency_consistency_max_stale_seconds"), 3600, minimum=60, maximum=604800
     )
     normalized["transparency_root_gossip"] = _as_bool(merged.get("transparency_root_gossip"), True)
+    normalized["operator_finality_min_proofs"] = _as_int(
+        merged.get("operator_finality_min_proofs"),
+        0,
+        minimum=0,
+        maximum=10,
+    )
     normalized["finality_buffer_seconds"] = _as_int(
         merged.get("finality_buffer_seconds"),
         DEFAULT_FINALITY_BUFFER_SECONDS,
         minimum=MIN_FINALITY_BUFFER_SECONDS,
         maximum=86400,
+    )
+    normalized["settlement_quorum_enabled"] = _as_bool(
+        merged.get("settlement_quorum_enabled"), False
+    )
+    normalized["settlement_peers"] = _dedupe(
+        _normalize_server(item) for item in _as_lines(merged.get("settlement_peers"))
+    )
+    normalized["settlement_min_remote_confirmations"] = _as_int(
+        merged.get("settlement_min_remote_confirmations"),
+        1,
+        minimum=0,
+        maximum=10,
+    )
+    normalized["settlement_require_all_configured_peers"] = _as_bool(
+        merged.get("settlement_require_all_configured_peers"), False
+    )
+    normalized["transparency_submit_async"] = _as_bool(
+        merged.get("transparency_submit_async"), False
     )
     normalized["peer_request_timeout_seconds"] = _as_int(
         merged.get("peer_request_timeout_seconds"),
@@ -313,7 +388,7 @@ def normalize_security_settings(settings):
         minimum=1,
         maximum=MAX_PEER_REQUEST_TIMEOUT_SECONDS,
     )
-    normalized["reject_peer_key_changes"] = _as_bool(merged.get("reject_peer_key_changes"), True)
+    normalized["reject_peer_key_changes"] = _as_bool(merged.get("reject_peer_key_changes"), False)
 
     # Genesis trust pins are intentionally exact strings/hashes after whitespace cleanup.
     normalized["trusted_genesis_issuer_keys"] = _dedupe(
@@ -354,19 +429,25 @@ def production_security_issues(settings, role=None):
         if role in {"client", "operator"}:
             settings["security_role"] = role
     issues = []
+    configured_operators = transparency_operators(settings)
     if not require_transparency_log(settings):
         issues.append("require_transparency_log must be true")
     if not submit_to_transparency_log(settings):
         issues.append("submit_to_transparency_log must be true")
-    if not transparency_operator_url(settings):
-        issues.append("transparency_operator_url must be configured")
-    if not transparency_operator_public_key(settings):
-        issues.append("transparency_operator_public_key must be pinned")
+    if not configured_operators:
+        issues.append("transparency_operator_url or transparency_operators must be configured")
+    if not any(operator.get("public_key") for operator in configured_operators):
+        issues.append("transparency operator public key must be pinned")
     configured_min_mirrors = min_root_mirrors(settings)
     configured_root_mirrors = trusted_root_mirrors(settings)
+    operator_mirror_counts = [
+        len(operator.get("mirrors", [])) for operator in configured_operators
+    ]
     if configured_min_mirrors < 2:
         issues.append("min_root_mirrors must be at least 2")
-    if len(configured_root_mirrors) < configured_min_mirrors:
+    if len(configured_root_mirrors) < configured_min_mirrors and not any(
+        count >= configured_min_mirrors for count in operator_mirror_counts
+    ):
         issues.append("trusted_root_mirrors must contain enough independent mirrors")
     if _env_true("IND_LOG_UNSAFE_SINGLE_MIRROR"):
         issues.append("IND_LOG_UNSAFE_SINGLE_MIRROR is forbidden in production")
@@ -380,6 +461,10 @@ def production_security_issues(settings, role=None):
         issues.append(
             "current_root_future_skew_seconds must be smaller than max_current_root_age_seconds"
         )
+    append_operator_count = append_capable_operator_count(settings)
+    configured_finality = operator_finality_min_proofs(settings)
+    if append_operator_count > 0 and configured_finality < append_operator_count:
+        issues.append("operator_finality_min_proofs must require every append-capable operator")
     if not transparency_proof_archives(settings):
         issues.append("at least one transparency proof archive mirror should be configured")
     return issues
@@ -472,9 +557,91 @@ def finality_buffer_seconds(settings=None):
     return int(settings["finality_buffer_seconds"])
 
 
+def append_capable_operator_count(settings=None):
+    settings = settings or load_security_settings()
+    return sum(1 for operator in transparency_operators(settings) if operator.get("url"))
+
+
+def operator_finality_min_proofs(settings=None):
+    settings = settings or load_security_settings()
+    configured = _as_int(
+        os.environ.get(
+            "IND_OPERATOR_FINALITY_MIN_PROOFS",
+            settings.get("operator_finality_min_proofs", 0),
+        ),
+        settings.get("operator_finality_min_proofs", 0),
+        minimum=0,
+        maximum=10,
+    )
+    if configured > 0:
+        return configured
+    return append_capable_operator_count(settings)
+
+
+def settlement_quorum_enabled(settings=None):
+    settings = settings or load_security_settings()
+    if _env_false("IND_SETTLEMENT_QUORUM_ENABLED"):
+        return False
+    if _env_true("IND_SETTLEMENT_QUORUM_ENABLED"):
+        return True
+    return bool(settings.get("settlement_quorum_enabled", False))
+
+
+def settlement_peers(settings=None):
+    settings = settings or load_security_settings()
+    env_raw = os.environ.get("IND_SETTLEMENT_PEERS", "").strip()
+    if env_raw:
+        return _dedupe(
+            _normalize_server(item)
+            for item in env_raw.replace("\n", ",").split(",")
+            if item.strip()
+        )
+    return list(settings.get("settlement_peers", []))
+
+
+def settlement_min_remote_confirmations(settings=None):
+    settings = settings or load_security_settings()
+    return _as_int(
+        os.environ.get(
+            "IND_SETTLEMENT_MIN_REMOTE_CONFIRMATIONS",
+            settings.get("settlement_min_remote_confirmations", 1),
+        ),
+        settings.get("settlement_min_remote_confirmations", 1),
+        minimum=0,
+        maximum=10,
+    )
+
+
+def settlement_require_all_configured_peers(settings=None):
+    settings = settings or load_security_settings()
+    if _env_false("IND_SETTLEMENT_REQUIRE_ALL_CONFIGURED_PEERS"):
+        return False
+    if _env_true("IND_SETTLEMENT_REQUIRE_ALL_CONFIGURED_PEERS"):
+        return True
+    return bool(settings.get("settlement_require_all_configured_peers", False))
+
+
+def transparency_submit_async(settings=None):
+    settings = settings or load_security_settings()
+    if _env_false("IND_TRANSPARENCY_SUBMIT_ASYNC"):
+        return False
+    if _env_true("IND_TRANSPARENCY_SUBMIT_ASYNC"):
+        return True
+    return bool(settings.get("transparency_submit_async", False))
+
+
 def peer_request_timeout_seconds(settings=None):
     settings = settings or load_security_settings()
     return int(settings["peer_request_timeout_seconds"])
+
+
+def reject_peer_key_changes(settings=None):
+    settings = settings or load_security_settings()
+    if _env_false("IND_REJECT_PEER_KEY_CHANGES"):
+        return False
+    if _env_true("IND_REJECT_PEER_KEY_CHANGES"):
+        return True
+    return bool(settings["reject_peer_key_changes"])
 
 
 def peer_ping_servers(settings=None):
@@ -535,6 +702,37 @@ def transparency_operator_public_key(settings=None):
     settings = settings or load_security_settings()
     env_value = os.environ.get("IND_LOG_OPERATOR_PUBLIC_KEY", "").strip()
     return env_value or settings["transparency_operator_public_key"]
+
+
+def transparency_operators(settings=None):
+    settings = settings or load_security_settings()
+    env_value = os.environ.get("IND_LOG_OPERATORS", "").strip()
+    if env_value:
+        try:
+            raw_operators = json.loads(env_value)
+        except json.JSONDecodeError:
+            raw_operators = []
+        operators = []
+        if isinstance(raw_operators, list):
+            for item in raw_operators:
+                operator = _normalize_operator_config(item)
+                if operator:
+                    operators.append(operator)
+        return operators
+    operators = [copy.deepcopy(item) for item in settings.get("transparency_operators", [])]
+    if operators:
+        return operators
+    operator_url = transparency_operator_url(settings)
+    if not operator_url:
+        return []
+    return [
+        {
+            "url": operator_url,
+            "public_key": transparency_operator_public_key(settings),
+            "mirrors": trusted_root_mirrors(settings),
+            "proof_archives": transparency_proof_archives(settings),
+        }
+    ]
 
 
 def max_root_lag_seconds(settings=None):
@@ -633,6 +831,41 @@ def transparency_root_gossip(settings=None):
     if env_value:
         return _as_bool(env_value, True)
     return bool(settings["transparency_root_gossip"])
+
+
+def operator_recovery_feeds(settings=None):
+    settings = settings or load_security_settings()
+    env_raw = os.environ.get("IND_OPERATOR_RECOVERY_FEEDS", "").strip()
+    if env_raw:
+        return [
+            _normalize_mirror(item)
+            for item in env_raw.replace("\n", ",").split(",")
+            if item.strip()
+        ]
+    return list(settings["operator_recovery_feeds"])
+
+
+def operator_recovery_min_feeds(settings=None):
+    settings = settings or load_security_settings()
+    return _as_int(
+        os.environ.get("IND_OPERATOR_RECOVERY_MIN_FEEDS", settings["operator_recovery_min_feeds"]),
+        settings["operator_recovery_min_feeds"],
+        minimum=1,
+        maximum=10,
+    )
+
+
+def operator_recovery_stable_seconds(settings=None):
+    settings = settings or load_security_settings()
+    return _as_int(
+        os.environ.get(
+            "IND_OPERATOR_RECOVERY_STABLE_SECONDS",
+            settings["operator_recovery_stable_seconds"],
+        ),
+        settings["operator_recovery_stable_seconds"],
+        minimum=0,
+        maximum=86400,
+    )
 
 
 def _host_matches_domain(host, domain):

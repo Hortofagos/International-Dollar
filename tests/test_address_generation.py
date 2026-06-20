@@ -1,8 +1,6 @@
 import unittest
-from unittest import mock
 
 from ind import address_generation, keys_v3
-from ind import token as ind_token
 
 
 class AddressGenerationTests(unittest.TestCase):
@@ -13,13 +11,6 @@ class AddressGenerationTests(unittest.TestCase):
         self.assertTrue(public_key)
         self.assertEqual(keys_v3.validate_address(address), address)
         self.assertTrue(keys_v3.public_key_matches_address(public_key, address))
-
-    def test_legacy_keypair_is_explicit(self):
-        with mock.patch.dict("os.environ", {"IND_LEGACY_WALLET_KEYS": "1"}):
-            address, _private_key, public_key = address_generation.generate_keypair()
-
-        self.assertEqual(ind_token.validate_address(address), address)
-        self.assertTrue(ind_token.public_key_matches_address(public_key, address))
 
     def test_hash_func_preserves_legacy_list_output(self):
         generated = []

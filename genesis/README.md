@@ -1,7 +1,9 @@
 # Local Genesis Workspace
 
-This folder is for local genesis generation output. Generated shards, manifests, issuer keys, and hash files are ignored by git.
+This folder is for local genesis/proof-bundle experiment output. Generated
+artifacts, issuer keys, and hash files are ignored by git.
 
-Use `tools/generate_genesis.py` to create small test sets or a launch commitment. Do not commit generated private keys or full genesis shards.
+The old JSON genesis generator is retired in the active V3 tree. Do not commit
+generated private keys, full shards, or local proof/archive experiments.
 
 For a real public launch, publish only the agreed public artifacts: issuer public key policy, manifest, test vectors, and the final genesis commitment.

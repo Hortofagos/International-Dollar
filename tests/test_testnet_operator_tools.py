@@ -22,7 +22,7 @@ class TestnetReportTests(unittest.TestCase):
                 "x",
                 "invalid",
                 "1x2",
-                "x1AWhc6ARhi9RmDwvUexWWAhYh5AK5jhx",
+                "x324sq85mgDVTGK4oHXw2b2LHh4YFriSx",
                 "2",
                 "strong_local",
             ]

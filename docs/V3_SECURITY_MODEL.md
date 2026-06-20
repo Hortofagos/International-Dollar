@@ -1,7 +1,7 @@
 # IND V3 Security Model
 
-V3 is the intended public bearer-bill protocol. V1/V2 remain internal reference
-formats until V3 is complete.
+V3 is the only active bearer-bill protocol. Historical bill formats are archived
+reference material, not runtime inputs.
 
 ## Trust Boundaries
 
@@ -20,8 +20,8 @@ archives unless exported with proof bundles and archive segments.
 
 V3 verification must fail closed for:
 
-- V1/V2 objects submitted as V3.
-- V3 objects submitted to V1/V2 parsers.
+- Legacy objects submitted as V3.
+- Any object submitted to a removed historical parser path.
 - Unknown object versions.
 - Unknown signature algorithms.
 - Non-canonical binary encodings.
@@ -40,9 +40,9 @@ public key:  indpk3:<base85 raw 32-byte Ed25519 public key>
 address:     x3...x
 ```
 
-Existing X25519 transport keys are never signing keys. Existing V1/V2
-secp256k1 keys cannot satisfy x3 addresses, and V3 Ed25519 keys cannot satisfy
-x1 or legacy addresses.
+Existing X25519 transport keys are never signing keys. Historical wallet keys
+cannot satisfy x3 addresses, and V3 Ed25519 keys cannot satisfy non-V3
+addresses.
 
 ## Transparency
 

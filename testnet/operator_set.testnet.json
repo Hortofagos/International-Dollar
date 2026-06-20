@@ -1,0 +1,32 @@
+{
+  "network": "testnet",
+  "min_root_mirrors": 2,
+  "operators": [
+    {
+      "name": "primary",
+      "url": "https://testnet-seed.international-dollar.com/operator-api",
+      "public_key": "indpk3:x;`2)Mt$=iFdBW>=U@NjujM0LzPiq~)C8e23eH*u",
+      "mirrors": [
+        "https://international-dollar.com/transparency",
+        "https://testnet-seed.internetofthebots.com/transparency"
+      ],
+      "proof_archives": [
+        "https://international-dollar.com/transparency/archive",
+        "https://testnet-seed.internetofthebots.com/transparency/archive"
+      ]
+    },
+    {
+      "name": "iotb",
+      "url": "https://testnet-seed.internetofthebots.com/operator-api",
+      "public_key": "indpk3:LN)QTd0?Wvc}-BYq*OyXs4rAcjtjvMz!YNdv~AnI",
+      "mirrors": [
+        "https://international-dollar.com/iotb-operator/transparency",
+        "https://testnet-seed.international-dollar.com/iotb-operator/transparency"
+      ],
+      "proof_archives": [
+        "https://international-dollar.com/iotb-operator/transparency/archive",
+        "https://testnet-seed.international-dollar.com/iotb-operator/transparency/archive"
+      ]
+    }
+  ]
+}

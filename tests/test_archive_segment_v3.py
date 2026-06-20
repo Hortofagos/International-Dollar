@@ -1,13 +1,10 @@
-import base64
 import copy
 import os
 from hashlib import sha3_256
 
-import ecdsa
 import pytest
 
 from ind import archive_segment_v3, keys_v3, proof_bundle_v3, protocol_v3, spend_map_v3
-from ind import token as ind_token
 from ind import transparency_server as log_server
 
 os.environ.setdefault("IND_ALLOW_UNTRUSTED_GENESIS", "1")
@@ -163,14 +160,22 @@ def test_proof_bundle_v3_recursively_verifies_previous_checkpoint_bundle(tmp_pat
     assert checkpoint["checkpoint_hash"] == second_checkpoint["checkpoint_hash"]
 
 
-def native_v3_archive_fixture(tmp_path, network_id=spend_map_v3.DEFAULT_NETWORK_ID):
-    log_private, log_public, _log_address = _operator_keypair("native-log")
-    log = log_server.TransparencyLog(str(tmp_path / "native-log.db"), log_private, log_public)
+def native_v3_archive_fixture(
+    tmp_path,
+    network_id=spend_map_v3.DEFAULT_NETWORK_ID,
+    operator_label="native-log",
+    token_label="native-v3-token",
+    genesis_label="native-v3-genesis",
+    display_id="1x1",
+):
+    log_private, log_public, _log_address = _operator_keypair(operator_label)
+    log = log_server.TransparencyLog(str(tmp_path / f"{operator_label}.db"), log_private, log_public)
     alice_address, alice_private, alice_public = keys_v3.generate_keypair(b"\x21" * 32)
     bob_address, bob_private, bob_public = keys_v3.generate_keypair(b"\x22" * 32)
     carol_address, carol_private, carol_public = keys_v3.generate_keypair(b"\x23" * 32)
-    genesis_hash = sha3_256(b"native-v3-genesis").hexdigest()
-    token_id = sha3_256(b"native-v3-token").hexdigest()
+    genesis_hash = sha3_256(str(genesis_label).encode("ascii")).hexdigest()
+    token_id = sha3_256(str(token_label).encode("ascii")).hexdigest()
+    parsed_display = protocol_v3.parse_display_id(display_id, "fixture display id")
     genesis_ref = {
         "type": protocol_v3.GENESIS_REF_TYPE,
         "version": protocol_v3.VERSION,
@@ -178,7 +183,7 @@ def native_v3_archive_fixture(tmp_path, network_id=spend_map_v3.DEFAULT_NETWORK_
         "genesis_hash": genesis_hash,
         "manifest_hash": None,
         "issuer_key_id": None,
-        "issue_index": 1,
+        "issue_index": int(parsed_display["serial"]),
         "issued_at": BASE_TIMESTAMP,
     }
     base_state = {
@@ -188,8 +193,8 @@ def native_v3_archive_fixture(tmp_path, network_id=spend_map_v3.DEFAULT_NETWORK_
         "last_transfer_timestamp": BASE_TIMESTAMP,
         "last_transfer_day": BASE_TIMESTAMP // 86400,
         "transfers_in_last_day": 0,
-        "display_id": "1xnative-v3",
-        "value": 1,
+        "display_id": display_id,
+        "value": int(parsed_display["value"]),
     }
     first_transfer = protocol_v3.create_transfer_from_state(
         token_id,
@@ -347,10 +352,6 @@ def _append_native_checkpoint_bundle(
 
 
 def _operator_keypair(label):
-    order = ecdsa.SECP256k1.order
-    seed = int.from_bytes(sha3_256(f"archive-segment-v3:{label}".encode("ascii")).digest(), "big")
-    secret = ((seed % (order - 1)) + 1).to_bytes(32, "big")
-    signing_key = ecdsa.SigningKey.from_string(secret, curve=ecdsa.SECP256k1, hashfunc=sha3_256)
-    public_key = base64.b85encode(signing_key.get_verifying_key().to_string()).decode("ascii")
-    private_key = base64.b85encode(signing_key.to_string()).decode("ascii")
-    return private_key, public_key, ind_token.address_from_public_key(public_key)
+    seed = sha3_256(f"archive-segment-v3:{label}".encode("ascii")).digest()
+    address, private_key, public_key = keys_v3.generate_keypair(seed)
+    return private_key, public_key, address

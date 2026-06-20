@@ -19,7 +19,73 @@ def _display_id_from_wallet_line(wallet_bill_line):
     parts = str(wallet_bill_line).split()
     if not parts or parts[0].startswith("-"):
         return None
-    return parts[0]
+    return wallet_line_display_id(wallet_bill_line)
+
+
+def wallet_line_display_id(wallet_bill_line):
+    parts = str(wallet_bill_line).split()
+    if not parts:
+        return None
+    display_id = parts[0].lstrip("-")
+    try:
+        protocol_v3.parse_display_id(display_id, "wallet bill display id")
+    except ind_token.ValidationError:
+        return None
+    return display_id
+
+
+def wallet_line_is_sent(wallet_bill_line):
+    parts = str(wallet_bill_line).split()
+    return bool(parts and parts[0].startswith("-") and wallet_line_display_id(wallet_bill_line))
+
+
+def wallet_sent_display_ids(wallet_lines):
+    sent_ids = set()
+    for line in runtime_json.wallet_bill_lines(wallet_lines):
+        if wallet_line_is_sent(line):
+            sent_ids.add(wallet_line_display_id(line))
+    return sent_ids
+
+
+def filter_locally_sent_records(records, wallet_lines):
+    sent_ids = wallet_sent_display_ids(wallet_lines)
+    if not sent_ids:
+        return list(records)
+    return [
+        record
+        for record in records
+        if str(record.get("display_id", "")).strip() not in sent_ids
+    ]
+
+
+def wallet_display_label(display_id):
+    text = str(display_id).strip()
+    sign = ""
+    if text.startswith("-"):
+        sign = "-"
+        text = text[1:]
+    try:
+        protocol_v3.parse_display_id(text)
+        return sign + text
+    except ind_token.ValidationError:
+        return sign + text
+
+
+def wallet_display_value(display_id):
+    text = str(display_id).strip()
+    if text.startswith("-"):
+        text = text[1:]
+    try:
+        return int(protocol_v3.parse_display_id(text)["value"])
+    except ind_token.ValidationError:
+        return 0
+
+
+def wallet_owned_line_value(wallet_bill_line):
+    parts = str(wallet_bill_line).split()
+    if not parts or parts[0].startswith("-"):
+        return 0
+    return wallet_display_value(parts[0])
 
 
 # Return True only when the local store considers a bill spendable.
@@ -35,7 +101,7 @@ token_is_spendable = bill_is_spendable
 
 
 # List locally settled spendable bill records for one wallet address.
-def spendable_wallet_records(wallet_address, store=None, limit=1000):
+def spendable_wallet_records(wallet_address, store=None, limit=None):
     store = store or ind_token.INDLocalStore()
     if keys_v3.is_address(wallet_address):
         return store.bill_v3_records_for_owner(
@@ -47,25 +113,79 @@ def spendable_wallet_records(wallet_address, store=None, limit=1000):
 
 
 # List locally known incoming bills that are visible but not spendable yet.
-def pending_wallet_records(wallet_address, store=None, limit=1000):
+def pending_wallet_records(wallet_address, store=None, limit=None):
     store = store or ind_token.INDLocalStore()
     if keys_v3.is_address(wallet_address):
         return store.bill_v3_records_for_owner(
             wallet_address,
-            statuses=("unreceipted", "pending"),
+            statuses=("pending",),
             limit=limit,
         )
     return []
 
 
+def validate_wallet_address(address, label="wallet V3 address"):
+    return keys_v3.validate_address(str(address).strip(), label)
+
+
+def validate_recipient_address(recipient_address):
+    return validate_wallet_address(recipient_address, "recipient address")
+
+
+def _trusted_operator_key_for_bill(
+    store,
+    bill,
+    proof_bundle=None,
+    trusted_operator_public_key=None,
+):
+    if trusted_operator_public_key:
+        return trusted_operator_public_key
+    if proof_bundle is not None:
+        trusted_key_getter = getattr(store, "_trusted_operator_key_from_proof_bundle_v3", None)
+        if callable(trusted_key_getter):
+            trusted_key = trusted_key_getter(proof_bundle)
+            if trusted_key:
+                return trusted_key
+    trusted_key_getter = getattr(store, "_trusted_operator_key_from_bill_v3", None)
+    if callable(trusted_key_getter):
+        trusted_key = trusted_key_getter(bill)
+        if trusted_key:
+            return trusted_key
+    return None
+
+
+def _archive_segments_for_proof_bundle(store, proof_bundle):
+    hash_getter = getattr(store, "_archive_segment_hashes_for_proof_bundle_v3", None)
+    segment_getter = getattr(store, "get_archive_segment_v3", None)
+    if not callable(hash_getter) or not callable(segment_getter):
+        return []
+    try:
+        segment_hashes = sorted(hash_getter(proof_bundle))
+    except Exception:
+        return []
+    segments = []
+    for segment_hash in segment_hashes:
+        try:
+            segment = segment_getter(segment_hash)
+        except Exception:
+            segment = None
+        if segment is not None:
+            segments.append(segment)
+    return segments
+
+
 # Spend one locally stored wallet bill and queue its transfer announcement.
 def spend_wallet_bill(wallet_lines, wallet_bill_line, recipient_address, store=None):
     store = store or ind_token.INDLocalStore()
-    wallet_address = _wallet_address(wallet_lines)
     display_id = _display_id_from_wallet_line(wallet_bill_line)
     if not display_id:
         return None
-    bill_v3 = store.get_bill_v3_by_display_id(display_id)
+    wallet_address = _wallet_address(wallet_lines)
+    spendable_lookup = getattr(store, "get_spendable_bill_v3_by_display_id", None)
+    if callable(spendable_lookup) and wallet_address:
+        bill_v3 = spendable_lookup(display_id, wallet_address)
+    else:
+        bill_v3 = store.get_bill_v3_by_display_id(display_id)
     if bill_v3:
         return spend_wallet_bill_v3(
             wallet_lines,
@@ -89,6 +209,12 @@ def bill_is_spendable_v3(
     proof_bundle=None,
     trusted_operator_public_key=None,
 ):
+    trusted_operator_public_key = _trusted_operator_key_for_bill(
+        store,
+        bill,
+        proof_bundle=proof_bundle,
+        trusted_operator_public_key=trusted_operator_public_key,
+    )
     state = protocol_v3.verify_bill(
         bill,
         proof_bundle=proof_bundle,
@@ -127,9 +253,19 @@ def spend_wallet_bill_v3(
         display_id = _display_id_from_wallet_line(wallet_bill_line)
         if not display_id:
             return None
-        bill = store.get_bill_v3_by_display_id(display_id)
+        spendable_lookup = getattr(store, "get_spendable_bill_v3_by_display_id", None)
+        if callable(spendable_lookup) and wallet_address:
+            bill = spendable_lookup(display_id, wallet_address)
+        else:
+            bill = store.get_bill_v3_by_display_id(display_id)
     if not bill:
         return None
+    trusted_operator_public_key = _trusted_operator_key_for_bill(
+        store,
+        bill,
+        proof_bundle=proof_bundle,
+        trusted_operator_public_key=trusted_operator_public_key,
+    )
     if not bill_is_spendable_v3(
         store,
         bill,
@@ -154,14 +290,16 @@ def spend_wallet_bill_v3(
         proof_bundle = store.get_proof_bundle_v3(
             transferred_bill["proof_bundle_ref"]["proof_bundle_hash"]
         )
+    archive_segments = _archive_segments_for_proof_bundle(store, proof_bundle)
     announcement = protocol_v3.create_transfer_announcement(
         transferred_bill,
         proof_bundle=proof_bundle,
+        archive_segments=archive_segments,
     )
     store.store_bill_v3(
         transferred_bill,
         proof_bundle=proof_bundle,
-        status="unreceipted",
+        status="verified",
         trusted_operator_public_key=trusted_operator_public_key,
     )
     runtime_json.write_transaction_message(announcement)
@@ -176,28 +314,70 @@ def spend_wallet_bill_v3(
 
 # Force a compact checkpoint for one locally settled wallet bill.
 def compact_wallet_bill(wallet_lines, wallet_bill_line, store=None):
-    raise ind_token.ValidationError(
-        protocol_policy.legacy_disabled_message("legacy compact checkpoint")
-    )
+    store = store or ind_token.INDLocalStore()
+    display_id = _display_id_from_wallet_line(wallet_bill_line)
+    if not display_id:
+        return None
+    compact_bill = store.compact_bill_now(display_id=display_id)
+    wallet_address = _wallet_address(wallet_lines)
+    if wallet_address:
+        proof_bundle = store.get_proof_bundle_v3(
+            compact_bill["proof_bundle_ref"]["proof_bundle_hash"]
+        )
+        trusted_operator_public_key = _trusted_operator_key_for_bill(
+            store,
+            compact_bill,
+            proof_bundle=proof_bundle,
+        )
+        state = protocol_v3.verify_bill(
+            compact_bill,
+            proof_bundle=proof_bundle,
+            proof_bundle_resolver=store.proof_bundle_resolver_v3,
+            transparency_verifier=getattr(store, "transparency_verifier", None),
+            trusted_operator_public_key=trusted_operator_public_key,
+            archive_segment_resolver=store.archive_segment_resolver_v3,
+        )
+        if state.owner_address != wallet_address:
+            return None
+    return compact_bill
 
 
 def _claim_wire_message(message, wallet_lines):
-    private_key, public_key = _wallet_keys(wallet_lines)
+    wallet_address = wallet_lines[0].strip() if wallet_lines else ""
     if message.get("type") == protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE:
         store = ind_token.INDLocalStore()
         try:
-            bill, _proof_bundle, _segments = protocol_v3.decode_transfer_announcement(message)
-            receipt = protocol_v3.create_receipt_announcement(
+            bill, proof_bundle, archive_segments = protocol_v3.decode_transfer_announcement(message)
+            for segment in archive_segments:
+                store.store_archive_segment_v3(segment)
+            trusted_operator_public_key = None
+            trusted_key_getter = getattr(store, "_trusted_operator_key_from_proof_bundle_v3", None)
+            if callable(trusted_key_getter):
+                trusted_operator_public_key = trusted_key_getter(proof_bundle)
+            if proof_bundle is not None:
+                store.store_proof_bundle_v3(
+                    proof_bundle,
+                    trusted_operator_public_key=trusted_operator_public_key,
+                    transparency_verifier=getattr(store, "transparency_verifier", None),
+                )
+            state = protocol_v3.verify_bill(
                 bill,
-                private_key,
-                public_key,
+                proof_bundle=proof_bundle,
                 proof_bundle_resolver=store.proof_bundle_resolver_v3,
                 transparency_verifier=getattr(store, "transparency_verifier", None),
+                trusted_operator_public_key=trusted_operator_public_key,
                 archive_segment_resolver=store.archive_segment_resolver_v3,
+            )
+            if wallet_address and state.owner_address != wallet_address:
+                return False
+            store.store_bill_v3(
+                bill,
+                proof_bundle=proof_bundle,
+                status="verified",
+                trusted_operator_public_key=trusted_operator_public_key,
             )
         except (KeyError, TypeError, ind_token.ValidationError, protocol_v3.ProtocolV3Error):
             return False
-        runtime_json.write_transaction_message(receipt)
         return True
     return False
 

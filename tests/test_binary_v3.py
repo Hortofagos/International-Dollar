@@ -89,7 +89,7 @@ def test_signing_preimage_is_domain_separated_and_bounded():
         "ind.transfer.v3",
         3,
         binary_v3.SIGNATURE_ALGORITHM_ID,
-        "ind.receipt.v3",
+        "ind.conflict_proof.v3",
         payload,
     )
 
