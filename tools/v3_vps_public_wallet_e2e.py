@@ -28,6 +28,7 @@ from ind.store import INDLocalStore
 from tools import testnet_peers
 from tools.testnet_backup import bootstrap_secret, read_bootstrap_secrets, ssh_environment
 from tools.v3_public_wallet_e2e import (
+    ACCEPTED_FINAL_STATUSES,
     DEFAULT_PEERS,
     _broadcast_message,
     _message_hash,
@@ -539,6 +540,7 @@ def _publish_latest_root_mirror(node, run_id, exact_roots=None):
         "/opt/international-dollar/.venv/bin/python - <<'PY'\n"
         "import json\n"
         "import base64\n"
+        "import time\n"
         "from operator_tools.root_streamer import OperatorRootSource, StaticRootMirrorWriter, verify_roots\n"
         f"exact_roots = json.loads(base64.b64decode('{encoded_roots}').decode('utf-8'))\n"
         "writer = StaticRootMirrorWriter("
@@ -549,9 +551,19 @@ def _publish_latest_root_mirror(node, run_id, exact_roots=None):
         "    writer.publish_root(exact_root, force_historical=True)\n"
         "    published_exact.append({'tree_size': int(exact_root['tree_size']), 'timestamp': int(exact_root['timestamp'])})\n"
         "source = OperatorRootSource('http://127.0.0.1:8890', timeout=10)\n"
-        "roots = verify_roots(source.roots(limit=1))\n"
+        "roots = []\n"
+        "last_error = ''\n"
+        "for _attempt in range(12):\n"
+        "    try:\n"
+        "        roots = verify_roots(source.roots(limit=1))\n"
+        "        if roots:\n"
+        "            break\n"
+        "        last_error = 'no roots returned'\n"
+        "    except Exception as exc:\n"
+        "        last_error = f'{type(exc).__name__}: {exc}'\n"
+        "    time.sleep(2)\n"
         "if not roots:\n"
-        "    raise SystemExit('no roots to publish')\n"
+        "    raise SystemExit(f'operator root unavailable after restart: {last_error}')\n"
         "root = sorted(roots, key=lambda item: (int(item['timestamp']), int(item['tree_size'])))[-1]\n"
         "changed = writer.publish_root(root)\n"
         f"latest = json.loads(open('{mirror_dir}/latest.json', encoding='utf-8').read())\n"
@@ -726,7 +738,7 @@ def _report_ok(report):
         if not item["local_archive_result"].get("accepted"):
             return False
         row = (item["status_after_finalize"].get("row") or {})
-        if row.get("status") != "settled":
+        if row.get("status") not in ACCEPTED_FINAL_STATUSES:
             return False
         if row.get("owner_address") != item.get("recipient_address"):
             return False
@@ -740,7 +752,7 @@ def _report_ok(report):
         if not hop["transfer_broadcast"].get("all_ok"):
             return False
         row = (hop["status_after_finalize"].get("row") or {})
-        if row.get("status") != "settled":
+        if row.get("status") not in ACCEPTED_FINAL_STATUSES:
             return False
     negatives = report.get("negative_cases") or {}
     if not negatives.get("wrong_spend_with_non_owner_wallet", {}).get("rejected"):

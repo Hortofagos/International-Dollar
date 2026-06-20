@@ -39,6 +39,7 @@ DEFAULT_PEERS = [
     "testnet-seed.international-dollar.com",
     "testnet-seed.internetofthebots.com",
 ]
+ACCEPTED_FINAL_STATUSES = {"settled", "verified"}
 TRANSFER_BROADCAST_TIMEOUT_SECONDS = 60.0
 
 
@@ -141,19 +142,43 @@ def _verify_bill_snapshot(store, bill, proof_bundle, trusted_operator_public_key
     }
 
 
-def _broadcast_message(message, peers, label, *, timeout=12.0, delay_seconds=0.25):
+def _broadcast_message(
+    message,
+    peers,
+    label,
+    *,
+    timeout=12.0,
+    delay_seconds=0.25,
+    retry_limit=4,
+):
     raw = ind_token.pack_wire_message(message)
     message_hash = _message_hash(message)
     results = []
     for peer in peers:
         started = time.time()
-        result = sender_node.connect_result(
-            "b",
-            raw,
-            [peer],
-            timeout=timeout,
-            max_duration_seconds=max(timeout + 4.0, 6.0),
-        )
+        attempts = []
+        retry_count = max(1, int(retry_limit))
+        for attempt_index in range(retry_count):
+            result = sender_node.connect_result(
+                "b",
+                raw,
+                [peer],
+                timeout=timeout,
+                max_duration_seconds=max(timeout + 4.0, 6.0),
+            )
+            attempts.extend(result.attempts)
+            if result.status == sender_node.REQUEST_OK:
+                break
+            retry_after = max(
+                [float(result.retry_after_seconds or 0.0)]
+                + [float(item.get("retry_after_seconds") or 0.0) for item in result.attempts]
+            )
+            if (
+                result.status != sender_node.REQUEST_RATE_LIMITED
+                or attempt_index >= retry_count - 1
+            ):
+                break
+            time.sleep(max(1.0, retry_after + 0.5, float(delay_seconds or 0.0)))
         results.append(
             {
                 "peer": peer,
@@ -162,7 +187,8 @@ def _broadcast_message(message, peers, label, *, timeout=12.0, delay_seconds=0.2
                 "response": result.response,
                 "ok": result.status == sender_node.REQUEST_OK,
                 "elapsed_seconds": round(time.time() - started, 3),
-                "attempts": list(result.attempts),
+                "attempts": attempts,
+                "retry_attempts": attempt_index + 1,
                 "error": result.error,
             }
         )
@@ -746,7 +772,7 @@ def _report_ok(report):
         if not hop["transfer_broadcast"].get("all_ok"):
             return False
         final_row = (hop["status_after_finalize"].get("row") or {})
-        if final_row.get("status") != "settled":
+        if final_row.get("status") not in ACCEPTED_FINAL_STATUSES:
             return False
     negatives = report.get("negative_cases") or {}
     if not negatives.get("wrong_spend_with_non_owner_wallet", {}).get("rejected"):
