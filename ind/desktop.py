@@ -3714,6 +3714,7 @@ def node_terminal_button():
 
 def sign_in_button():
     close()
+    refresh_sign_in_wallet_dropdown()
     button.config(bg='black', fg='white'), button2.config(bg='black', fg='white'), button3.config(
         bg='black', fg='white'
     )
@@ -5742,11 +5743,10 @@ class SignInWalletDropdown(Frame):
             cursor='hand2',
         )
         self.variable = variable
-        self.values = list(values) or ['']
-        self.visible_rows = max(1, min(SIGN_IN_WALLET_DROPDOWN_ROWS, len(self.values)))
+        self.values = []
+        self.visible_rows = 1
         self.popup = None
-        if not normalized_wallet_address(self.variable.get()) and self.values:
-            self.variable.set(self.values[0])
+        self.listbox = None
 
         self.selected_label = Label(
             self,
@@ -5781,10 +5781,44 @@ class SignInWalletDropdown(Frame):
             widget.bind('<Button-1>', self._toggle_from_event)
         self.bind('<FocusOut>', self._hide_from_focus)
         master.bind('<Button-1>', self._hide_from_outside_click, add='+')
+        self.set_values(values)
 
     def _toggle_from_event(self, _event=None):
         self.toggle_popup()
         return 'break'
+
+    def _has_multiple_wallets(self):
+        return len([value for value in self.values if normalized_wallet_address(value)]) > 1
+
+    def _refresh_click_state(self):
+        cursor = 'hand2' if self._has_multiple_wallets() else 'arrow'
+        self.config(cursor=cursor)
+        self.selected_label.config(cursor=cursor)
+        if self._has_multiple_wallets():
+            self.arrow_button.config(cursor='hand2')
+            if not self.arrow_button.winfo_manager():
+                self.arrow_button.pack(side='right', fill=BOTH, padx=(0, 2), pady=2, ipadx=8)
+        elif self.arrow_button.winfo_manager():
+            self.arrow_button.pack_forget()
+
+    def _clean_values(self, values):
+        cleaned = []
+        for value in values:
+            value = normalized_wallet_address(value)
+            if value and value not in cleaned:
+                cleaned.append(value)
+        return cleaned or ['']
+
+    def set_values(self, values, preferred=None):
+        selected = normalized_wallet_address(preferred or self.variable.get())
+        self.values = self._clean_values(values)
+        self.visible_rows = max(1, min(SIGN_IN_WALLET_DROPDOWN_ROWS, len(self.values)))
+        if selected and selected in self.values:
+            self.variable.set(selected)
+        else:
+            self.variable.set(self.values[0] if normalized_wallet_address(self.values[0]) else '')
+        self.destroy_popup()
+        self._refresh_click_state()
 
     def _contains_widget(self, widget):
         while widget is not None:
@@ -5852,6 +5886,14 @@ class SignInWalletDropdown(Frame):
         self.popup = popup
         self.listbox = listbox
 
+    def _popup_height(self):
+        self.popup.update_idletasks()
+        requested_height = self.popup.winfo_reqheight()
+        if requested_height > 1:
+            return requested_height
+        line_height = tkfont.Font(root=self.master, font=app_font(20)).metrics('linespace')
+        return (line_height + px(8)) * self.visible_rows + px(2)
+
     def _scroll_listbox(self, event):
         if event.delta:
             self.listbox.yview_scroll(-1 * int(event.delta / 120), 'units')
@@ -5872,17 +5914,18 @@ class SignInWalletDropdown(Frame):
             self.show_popup()
 
     def show_popup(self):
+        if not self._has_multiple_wallets():
+            self.hide_popup()
+            return
         if self.popup is None:
             self._build_popup()
         self.update_idletasks()
-        row_height = 34
-        popup_height = (row_height * self.visible_rows) + 2
         popup_y = self.winfo_y() + self.winfo_height() - 1
         self.popup.place(
             x=self.winfo_x(),
             y=popup_y,
             width=self.winfo_width(),
-            height=px(popup_height),
+            height=self._popup_height(),
         )
         try:
             current = self.values.index(self.variable.get())
@@ -5898,6 +5941,12 @@ class SignInWalletDropdown(Frame):
         if self.popup is not None:
             self.popup.place_forget()
 
+    def destroy_popup(self):
+        if self.popup is not None:
+            self.popup.destroy()
+            self.popup = None
+            self.listbox = None
+
     def place_forget(self):
         self.hide_popup()
         super().place_forget()
@@ -5907,14 +5956,21 @@ def make_sign_in_wallet_dropdown(variable, values):
     return SignInWalletDropdown(root, variable, values)
 
 
+def sign_in_wallet_addresses():
+    addresses = []
+    for wallet_path in runtime_json.iter_encrypted_wallet_files() + runtime_json.iter_decrypted_wallet_files():
+        address = normalized_wallet_address(runtime_json.wallet_address_from_name(wallet_path.name))
+        if address and address not in addresses:
+            addresses.append(address)
+    return addresses or ['']
+
+
 address_variable = StringVar(root)
-options_addr = ['                                                                        ']
-for s in runtime_json.iter_encrypted_wallet_files() + runtime_json.iter_decrypted_wallet_files():
-    wallet_raw = runtime_json.wallet_address_from_name(s.name)
-    if wallet_raw not in options_addr:
-        options_addr.append(wallet_raw)
-men = 0 if len(options_addr) == 1 else 1
-enter_address = make_sign_in_wallet_dropdown(address_variable, options_addr[men:])
+enter_address = make_sign_in_wallet_dropdown(address_variable, sign_in_wallet_addresses())
+
+
+def refresh_sign_in_wallet_dropdown(preferred=None):
+    enter_address.set_values(sign_in_wallet_addresses(), preferred=preferred)
 
 enter_key = Entry(root, font=app_font(26), show='*', bg='light grey')
 log_in_button2 = make_asset_button(
@@ -6090,6 +6146,7 @@ def generate_wallet_final():
     choose_password.delete(0, END)
     runtime_json.clear_wallet_generation()
     address_variable.set(addr_hash)
+    refresh_sign_in_wallet_dropdown(preferred=addr_hash)
     sign_in_button()
     show_success_popup(wallet_password)
 
