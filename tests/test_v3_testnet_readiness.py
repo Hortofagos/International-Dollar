@@ -6,7 +6,7 @@ import urllib.request
 
 import pytest
 
-from ind import node_client, protocol as legacy_protocol, protocol_v3
+from ind import node_client, protocol as shared_protocol, protocol_v3
 from ind import token as ind_token
 from ind import transparency_client as log_client
 from ind import transparency_server as log_server
@@ -359,14 +359,9 @@ def test_v3_only_rejects_legacy_operator_append(tmp_path):
         "verify_token",
     ],
 )
-def test_public_legacy_bill_api_is_disabled(api_name):
-    with pytest.raises(ind_token.ValidationError, match="V3 is the only active bill protocol"):
-        getattr(ind_token, api_name)()
-
-
-def test_direct_legacy_protocol_bill_api_is_disabled():
-    with pytest.raises(legacy_protocol.ValidationError, match="V3 is the only active bill protocol"):
-        legacy_protocol.create_transfer()
+def test_retired_legacy_bill_api_is_not_exported(api_name):
+    assert not hasattr(ind_token, api_name)
+    assert not hasattr(shared_protocol, api_name)
 
 
 @pytest.mark.parametrize("payload", ["[]", '"string"', "123", "true", "null"])

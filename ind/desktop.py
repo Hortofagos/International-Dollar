@@ -544,8 +544,8 @@ GUI_TEXT = {
         'IND is a fixed-supply bearer-bill network. There is no mining,\n'
         'staking, or blockchain consensus.\n\n'
         f'Supply is capped at {INFO_MAX_SUPPLY} IND. Genesis defines the full\n'
-        'supply map with an issuer-signed manifest, while bills can remain lazy\n'
-        'until they first move.\n\n'
+        'supply map with an issuer-signed native V3 manifest and auditable\n'
+        'genesis references.\n\n'
         'Each bill has its own owner history. V3 transfers are Ed25519-signed\n'
         'over canonical binary preimages, with proof bundles for old history.\n\n'
         'Desktop nodes gossip transfers and double-spend proofs.\n'
@@ -5157,6 +5157,12 @@ def wallet_send_phase_style(event, queued=0):
     queued = int(queued or 0)
     if event == "complete":
         return "Complete", IND_GREEN
+    if event == "cancelled":
+        return "Cancelled", IND_ORANGE
+    if event == "cancelling":
+        return "Cancelling", IND_ORANGE
+    if event == "queued":
+        return "Queued", IND_GREEN
     if event == "error":
         return "Needs review", IND_ORANGE
     if event == "rate_limited":
@@ -5180,17 +5186,23 @@ def wallet_send_status_detail(progress, status_text):
         retry_after = 0
 
     if event == "complete":
-        return "All queued bills were accepted by peers."
+        return "All queued bills were handed to the background broadcaster."
+    if event == "cancelled":
+        return "Unsent queued bills were restored to the wallet."
+    if event == "cancelling":
+        return "Stopping before the next queued bill is dispatched."
+    if event == "queued":
+        return "Paced dispatch is running in the background."
     if event == "partial" and queued > 0:
-        return "Retrying automatically in the background."
+        return "Retrying handoff automatically in the background."
     if event == "preparing":
-        return "Checking queued transfer files before broadcast."
+        return "Checking queued transfer files before dispatch."
     if event == "rate_limited":
         if retry_after > 0:
             return f"Peers asked us to slow down. Next retry in about {retry_after}s."
         return "Peers asked us to slow down. Retrying automatically."
     if event == "waiting" and queued > 0:
-        return "Waiting for peer responses. Retrying automatically."
+        return "Waiting for peer handoff. Retrying automatically."
     if eta != "estimating":
         return f"Estimated time remaining: {eta}."
     return status_text
@@ -5276,7 +5288,7 @@ def show_wallet_send_progress_popup(total):
     )
     subtitle = Label(
         panel,
-        text=f"Preparing {total} {wallet_send_bill_label(total)} for broadcast",
+        text=f"Preparing {total} {wallet_send_bill_label(total)} for dispatch",
         font=app_font(17),
         bg=WALLET_SEND_POPUP_PANEL_BG,
         fg=IND_MUTED,
@@ -5367,6 +5379,21 @@ def show_wallet_send_progress_popup(total):
         wraplength=px(420),
     )
     footer = Frame(panel, bg=WALLET_SEND_POPUP_PANEL_BG, bd=0, highlightthickness=0)
+    cancel = Button(
+        footer,
+        text="Cancel",
+        font=app_font(14),
+        command=cancel_wallet_send_button,
+        bd=0,
+        highlightthickness=0,
+        bg=IND_ORANGE,
+        fg=IND_BLACK,
+        activebackground=IND_ORANGE,
+        activeforeground=IND_BLACK,
+        cursor='hand2',
+        padx=px(12),
+        pady=px(3),
+    )
     hide = Button(
         footer,
         text="Hide",
@@ -5397,7 +5424,8 @@ def show_wallet_send_progress_popup(total):
     detail.grid(row=5, column=0, padx=px(18), pady=(0, px(4)), sticky='ew')
     status.grid(row=6, column=0, padx=px(18), pady=(0, px(14)), sticky='ew')
     footer.grid(row=7, column=0, padx=px(18), pady=(0, px(16)), sticky='ew')
-    hide.grid(row=0, column=0, sticky='e')
+    cancel.grid(row=0, column=0, padx=(0, px(8)), sticky='e')
+    hide.grid(row=0, column=1, sticky='e')
     popup.grid_columnconfigure(0, minsize=px(WALLET_SEND_POPUP_WIDTH))
     panel.grid_columnconfigure(0, weight=1)
     header.grid_columnconfigure(0, weight=1)
@@ -5416,6 +5444,7 @@ def show_wallet_send_progress_popup(total):
         "busy_value": busy_value,
         "detail": detail,
         "status": status,
+        "cancel": cancel,
     }
     update_wallet_send_progress(
         {
@@ -5456,21 +5485,27 @@ def wallet_send_status_text(progress):
     eta = format_eta(progress.get("eta_seconds"))
     message = str(progress.get("message") or "").strip()
     if event == "complete":
-        return f"Send complete: {sent} {wallet_send_bill_label(sent)} sent.", IND_GREEN
+        return f"Send complete: {sent} {wallet_send_bill_label(sent)} dispatched.", IND_GREEN
+    if event == "cancelled":
+        return f"Send cancelled: {queued} unsent {wallet_send_bill_label(queued)} restored.", IND_ORANGE
+    if event == "cancelling":
+        return f"Send: cancelling, {queued} queued.", IND_ORANGE
+    if event == "queued":
+        return f"Send: {queued} {wallet_send_bill_label(queued)} queued for background dispatch.", IND_GREEN
     if event == "partial":
         return (
-            f"Send: {sent}/{total} sent, {queued} queued for retry.",
+            f"Send: {sent}/{total} dispatched, {queued} queued for retry.",
             IND_ORANGE,
         )
     if event == "rate_limited":
         return f"Send: peers busy, {queued} queued, retrying.", IND_ORANGE
     if event == "waiting":
-        return f"Send: waiting on peers, {sent}/{total} sent, ETA {eta}.", IND_MUTED
+        return f"Send: handing off to peers, {sent}/{total} dispatched, ETA {eta}.", IND_MUTED
     if event == "preparing":
         return "Send: preparing queued bills.", IND_MUTED
     if event == "error":
         return message or "Send issue while processing queued bills.", IND_ORANGE
-    return f"Send: broadcasting {sent}/{total}, ETA {eta}.", IND_MUTED
+    return f"Send: dispatching {sent}/{total}, ETA {eta}.", IND_MUTED
 
 
 def update_wallet_send_progress(progress):
@@ -5495,11 +5530,11 @@ def update_wallet_send_progress(progress):
         widgets["title"].config(text="Sending bills")
         widgets["phase"].config(text=phase_text, fg=phase_color)
         widgets["subtitle"].config(
-            text=f"{sent} of {total} {wallet_send_bill_label(total)} accepted by peers"
+            text=f"{sent} of {total} {wallet_send_bill_label(total)} dispatched"
         )
         update_wallet_send_progress_bar(widgets, ratio, progress_color)
         widgets["progress"].config(
-            text=f"{sent} of {total} sent",
+            text=f"{sent} of {total} dispatched",
             fg=progress_color,
         )
         widgets["sent_value"].config(text=str(sent), fg=IND_GREEN if sent else IND_WHITE)
@@ -5513,13 +5548,28 @@ def update_wallet_send_progress(progress):
             fg=IND_MUTED if event != "rate_limited" else IND_ORANGE,
         )
         if event == "complete":
-            widgets["subtitle"].config(text=f"Sent {sent} {wallet_send_bill_label(sent)}.")
+            widgets["subtitle"].config(text=f"Dispatched {sent} {wallet_send_bill_label(sent)}.")
+            widgets["cancel"].config(state=DISABLED, cursor='arrow')
+        elif event == "cancelled":
+            widgets["subtitle"].config(text="Send cancelled.")
+            widgets["progress"].config(text=f"{queued} restored", fg=progress_color)
+            widgets["cancel"].config(state=DISABLED, cursor='arrow')
+        elif event == "cancelling":
+            widgets["subtitle"].config(text="Cancelling queued dispatch")
+            widgets["progress"].config(text=f"{queued} queued", fg=progress_color)
+            widgets["cancel"].config(state=DISABLED, cursor='arrow')
+        elif event == "queued":
+            widgets["subtitle"].config(
+                text=f"{queued} {wallet_send_bill_label(queued)} queued locally for paced dispatch"
+            )
+            widgets["progress"].config(text=f"{queued} queued", fg=progress_color)
+            widgets["cancel"].config(state=NORMAL, cursor='hand2')
         elif event == "partial":
             widgets["subtitle"].config(
                 text=(
-                    f"{sent} sent, {queued} queued for automatic retry"
+                    f"{sent} dispatched, {queued} queued for automatic retry"
                     if queued
-                    else f"Sent {sent} {wallet_send_bill_label(sent)}."
+                    else f"Dispatched {sent} {wallet_send_bill_label(sent)}."
                 )
             )
         widgets["status"].config(text=message, fg=status_color)
@@ -5532,14 +5582,200 @@ def wallet_send_summary_text(summary, errors):
         return "Send failed: " + errors[0], IND_ORANGE
     if not summary:
         return "Send finished.", IND_MUTED
+    if summary.get("status") == "cancelled":
+        queued = int(summary.get("queued_remaining") or 0)
+        return f"Send cancelled: {queued} unsent {wallet_send_bill_label(queued)} restored.", IND_ORANGE
     sent = int(summary.get("sent") or 0)
     queued = int(summary.get("queued_remaining") or 0)
     rate_limited = int(summary.get("rate_limited_peers") or 0)
     if queued:
         return f"Send: {queued} {wallet_send_bill_label(queued)} queued for retry.", IND_ORANGE
     if rate_limited:
-        return f"Send complete: {sent} {wallet_send_bill_label(sent)} sent, slowed by busy peers.", IND_GREEN
-    return f"Send complete: {sent} {wallet_send_bill_label(sent)} sent.", IND_GREEN
+        return f"Send complete: {sent} {wallet_send_bill_label(sent)} dispatched, slowed by busy peers.", IND_GREEN
+    return f"Send complete: {sent} {wallet_send_bill_label(sent)} dispatched.", IND_GREEN
+
+
+def show_wallet_send_locally_queued(expected_total=0):
+    try:
+        queued = len(runtime_json.transaction_files())
+    except Exception:
+        log_ignored_exception()
+        queued = int(expected_total or 0)
+    total = max(int(expected_total or 0), int(queued or 0))
+    sent = max(0, total - int(queued or 0))
+    update_wallet_send_progress(
+        {
+            "event": "queued",
+            "total": total,
+            "sent": sent,
+            "queued_remaining": queued,
+            "rate_limited_peers": 0,
+            "eta_seconds": 0,
+            "message": f"Queued {queued} {wallet_send_bill_label(queued)} for paced dispatch.",
+        }
+    )
+
+
+def wallet_send_cancel_store():
+    try:
+        store = wallet_snapshot_store()
+        if store is not None:
+            return store
+    except Exception:
+        log_ignored_exception()
+    try:
+        return sender_node.wallet_sync_store()
+    except Exception:
+        log_ignored_exception()
+    return ind_token.INDLocalStore(require_transparency=False)
+
+
+def queued_wallet_transfer_detail(path, store):
+    message = runtime_json.read_transaction_message(path)
+    bill, proof_bundle, _archive_segments = protocol_v3.decode_transfer_announcement(message)
+    trusted_operator_public_key = None
+    trusted_key_getter = getattr(store, "_trusted_operator_key_from_proof_bundle_v3", None)
+    if callable(trusted_key_getter) and proof_bundle is not None:
+        trusted_operator_public_key = trusted_key_getter(proof_bundle)
+    state = protocol_v3.verify_bill(
+        bill,
+        proof_bundle=proof_bundle,
+        proof_bundle_resolver=getattr(store, "proof_bundle_resolver_v3", None),
+        trusted_operator_public_key=trusted_operator_public_key,
+        archive_segment_resolver=getattr(store, "archive_segment_resolver_v3", None),
+    )
+    return {
+        "path": Path(path),
+        "display_id": state.display_id,
+        "owner_address": state.owner_address,
+        "sequence": int(state.sequence),
+        "bill_hash": protocol_v3.bill_hash(bill).hex(),
+    }
+
+
+def restore_cancelled_wallet_lines(details):
+    details_by_display_id = {
+        str(detail.get("display_id") or ""): detail
+        for detail in details
+        if detail.get("display_id")
+    }
+    if not details_by_display_id:
+        return 0
+    wallet_path = active_wallet_path()
+    if wallet_path is None:
+        return 0
+    lines = runtime_json.read_decrypted_wallet_lines(wallet_path)
+    updated = []
+    restored = 0
+    for line in lines:
+        parts = str(line).split()
+        display_id = parts[0].lstrip("-") if parts else ""
+        detail = details_by_display_id.get(display_id)
+        if parts and parts[0].startswith("-") and detail:
+            parts[0] = display_id
+            if len(parts) > 1:
+                parts[1] = str(max(0, int(detail.get("sequence") or 1) - 1))
+            updated.append(" ".join(parts) + "\n")
+            restored += 1
+        else:
+            updated.append(line)
+    if restored:
+        runtime_json.write_decrypted_wallet_lines(wallet_path, updated)
+        clear_wallet_record_cache()
+    return restored
+
+
+def cancel_queued_wallet_send_files():
+    paths = list(runtime_json.transaction_files())
+    if not paths:
+        return {"removed": 0, "restored": 0, "discarded": 0, "details": []}
+    store = wallet_send_cancel_store()
+    details = []
+    removed = 0
+    discarded = 0
+    for path in paths:
+        detail = None
+        try:
+            detail = queued_wallet_transfer_detail(path, store)
+            details.append(detail)
+            discard = getattr(store, "discard_unsettled_bill_v3", None)
+            if callable(discard) and discard(
+                detail["bill_hash"],
+                display_id=detail["display_id"],
+                owner_address=detail["owner_address"],
+                sequence=detail["sequence"],
+            ):
+                discarded += 1
+        except Exception:
+            log_ignored_exception("could not decode queued wallet send for cancellation")
+        try:
+            Path(path).unlink()
+            removed += 1
+        except FileNotFoundError:
+            pass
+        except Exception:
+            log_ignored_exception("could not remove queued wallet send")
+    restored = restore_cancelled_wallet_lines(details)
+    try:
+        refresh_wallet_history_cache()
+    except Exception:
+        log_ignored_exception()
+    return {
+        "removed": removed,
+        "restored": restored,
+        "discarded": discarded,
+        "details": details,
+    }
+
+
+def emit_wallet_send_cancelled(summary):
+    removed = int(summary.get("removed") or 0)
+    restored = int(summary.get("restored") or 0)
+    update_wallet_send_progress(
+        {
+            "event": "cancelled",
+            "total": removed,
+            "sent": 0,
+            "queued_remaining": restored,
+            "rate_limited_peers": 0,
+            "eta_seconds": 0,
+            "message": f"Cancelled send: restored {restored} unsent {wallet_send_bill_label(restored)}.",
+        }
+    )
+
+
+def cancel_wallet_send_button():
+    try:
+        sender_node.request_cancel_queued_bills()
+    except Exception:
+        log_ignored_exception()
+    queued = len(runtime_json.transaction_files())
+    update_wallet_send_progress(
+        {
+            "event": "cancelling",
+            "total": queued,
+            "sent": 0,
+            "queued_remaining": queued,
+            "rate_limited_peers": 0,
+            "eta_seconds": 0,
+            "message": "Cancelling send before the next queued bill is dispatched.",
+        }
+    )
+    if not wallet_send_running:
+        emit_wallet_send_cancelled(cancel_queued_wallet_send_files())
+        refresh_wallet_view()
+
+
+def cancel_wallet_send_queue_for_shutdown():
+    try:
+        sender_node.request_cancel_queued_bills()
+    except Exception:
+        log_ignored_exception()
+    try:
+        return cancel_queued_wallet_send_files()
+    except Exception:
+        log_ignored_exception()
+        return {"removed": 0, "restored": 0, "discarded": 0, "details": []}
 
 
 def cancel_wallet_send_queue_monitor():
@@ -5597,7 +5833,7 @@ def wallet_send_queue_monitor_tick():
                 "sent": sent,
                 "queued_remaining": 0,
                 "eta_seconds": 0,
-                "message": f"Send complete: {sent} bill(s) sent.",
+                "message": f"Send complete: {sent} bill(s) dispatched.",
             }
         )
         refresh_wallet_view()
@@ -5618,7 +5854,7 @@ def wallet_send_queue_monitor_tick():
         schedule_wallet_send_queue_monitor_tick()
 
 
-def start_wallet_send_worker(expected_total=0, show_popup=True):
+def start_wallet_send_worker(expected_total=0, show_popup=True, keep_ui_busy=True):
     global wallet_send_running
     expected_total = max(int(expected_total or 0), len(runtime_json.transaction_files()))
     cancel_wallet_send_queue_monitor()
@@ -5629,10 +5865,17 @@ def start_wallet_send_worker(expected_total=0, show_popup=True):
             f"Send: {expected_total} bill(s) queued; sender already running.",
             IND_MUTED,
         )
+        if not keep_ui_busy:
+            show_wallet_send_locally_queued(expected_total)
+            set_wallet_send_busy(False)
         return
 
     wallet_send_running = True
-    set_wallet_send_busy(True)
+    if keep_ui_busy:
+        set_wallet_send_busy(True)
+    else:
+        show_wallet_send_locally_queued(expected_total)
+        set_wallet_send_busy(False)
 
     def progress(progress_event):
         root.after(0, lambda event=progress_event: update_wallet_send_progress(event))
@@ -5651,8 +5894,26 @@ def start_wallet_send_worker(expected_total=0, show_popup=True):
 
         def finish():
             global wallet_send_running
+            try:
+                live_queued = len(runtime_json.transaction_files())
+            except Exception:
+                log_ignored_exception()
+                live_queued = 0
+            summary_queued = int(summary.get("queued_remaining") or 0) if summary else 0
             wallet_send_running = False
             set_wallet_send_busy(False)
+            if not errors and summary and summary.get("status") == "cancelled":
+                cancel_summary = cancel_queued_wallet_send_files()
+                emit_wallet_send_cancelled(cancel_summary)
+                refresh_wallet_view()
+                return
+            if not errors and live_queued > 0 and summary_queued <= 0:
+                start_wallet_send_worker(
+                    expected_total=max(expected_total, live_queued),
+                    show_popup=False,
+                    keep_ui_busy=False,
+                )
+                return
             refresh_wallet_view()
             status_message, status_color = wallet_send_summary_text(summary, errors)
             set_wallet_sync_status(status_message, status_color)
@@ -6381,7 +6642,10 @@ def confirm_transaction(recipient_address):
     set_wallet_send_busy(True)
     sent_count, errors = send_bills(starts_with, recipient_address)
     if sent_count or pending_before:
-        start_wallet_send_worker(expected_total=pending_before + sent_count)
+        start_wallet_send_worker(
+            expected_total=pending_before + sent_count,
+            keep_ui_busy=False,
+        )
     if errors:
         if not sent_count and not pending_before:
             update_wallet_send_progress(
@@ -7711,6 +7975,10 @@ def on_closing():
     run_on_startup = 'NO'
     run_in_background = 'NO'
     try:
+        cancel_wallet_send_queue_for_shutdown()
+    except Exception as exc:
+        errors.append(f"Could not cancel queued sends: {error_detail(exc)}")
+    try:
         _node_class, run_on_startup, run_in_background = runtime_json.read_node_config()
         if run_in_background == 'NO':
             runtime_json.set_kill_node(True)
@@ -7791,6 +8059,7 @@ def start_update_check_later():
 
 
 def run():
+    cancel_wallet_send_queue_for_shutdown()
     show_root_when_ready()
     root.after(1000, start_update_check_later)
     mainloop()

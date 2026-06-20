@@ -361,15 +361,9 @@ def test_queued_gossip_retry_keeps_trying_after_rate_limit(tmp_path):
         mock.patch.object(sender_node.time, "sleep") as sleep,
         mock.patch.object(
             sender_node,
-            "_broadcast_gossip_to_peer_quorum",
+            "_broadcast_gossip_fire_and_forget",
             side_effect=[rate_limited, accepted],
         ) as broadcast,
-        mock.patch.object(
-            sender_node.runtime_json,
-            "read_transaction_message",
-            return_value={"type": "queued"},
-        ),
-        mock.patch.object(sender_node, "_remote_status_confirms_gossip", return_value=False),
     ):
         assert sender_node._run_queued_gossip_retry(
             transaction_path,
@@ -394,7 +388,7 @@ def test_send_queued_bills_paced_removes_successful_transaction(tmp_path):
 
     result = sender_node.PeerRequestResult(
         status=sender_node.REQUEST_OK,
-        response="ok",
+        response="",
         peer="peer-a",
         route="peer-a",
         attempts=(
@@ -404,6 +398,7 @@ def test_send_queued_bills_paced_removes_successful_transaction(tmp_path):
                 "status": sender_node.REQUEST_OK,
             },
         ),
+        acked_peers=("peer-a",),
     )
 
     with (
@@ -421,7 +416,12 @@ def test_send_queued_bills_paced_removes_successful_transaction(tmp_path):
             return_value={"type": "queued"},
         ),
         mock.patch.object(sender_node.ind_token, "pack_wire_message", return_value="raw"),
-        mock.patch.object(sender_node, "connect_result", return_value=result),
+        mock.patch.object(
+            sender_node,
+            "_broadcast_gossip_fire_and_forget",
+            return_value=result,
+        ) as dispatch,
+        mock.patch.object(sender_node, "connect_result") as connect,
     ):
         summary = sender_node.send_queued_bills_paced(progress_callback=events.append)
 
@@ -429,6 +429,29 @@ def test_send_queued_bills_paced_removes_successful_transaction(tmp_path):
     assert summary["status"] == "complete"
     assert summary["sent"] == 1
     assert [event["event"] for event in events] == ["preparing", "sending", "complete"]
+    dispatch.assert_called_once()
+    connect.assert_not_called()
+
+
+def test_outbound_bill_pacer_limits_bill_rate():
+    now = [100.0]
+    sleeps = []
+
+    def sleep(delay):
+        sleeps.append(delay)
+        now[0] += delay
+
+    pacer = sender_node.OutboundBillPacer(
+        max_bills_per_second=5,
+        now_func=lambda: now[0],
+        sleep_func=sleep,
+    )
+
+    assert pacer.wait()
+    assert pacer.wait()
+    assert pacer.wait()
+    assert len(sleeps) == 2
+    assert all(abs(delay - 0.2) < 0.000001 for delay in sleeps)
 
 
 def test_send_queued_bills_paced_handles_regular_29_bill_send(tmp_path):
@@ -443,11 +466,11 @@ def test_send_queued_bills_paced_handles_regular_29_bill_send(tmp_path):
     def transaction_files():
         return [transaction_path for transaction_path in transaction_paths if transaction_path.exists()]
 
-    def fake_connect(_indicator, _raw, ipnl, **_kwargs):
-        peer = ipnl[0]
+    def fake_dispatch(_raw, peers, **_kwargs):
+        peer = peers[0]
         return sender_node.PeerRequestResult(
             status=sender_node.REQUEST_OK,
-            response="ok",
+            response="",
             peer=peer,
             route=peer,
             attempts=(
@@ -457,7 +480,12 @@ def test_send_queued_bills_paced_handles_regular_29_bill_send(tmp_path):
                     "status": sender_node.REQUEST_OK,
                 },
             ),
+            acked_peers=(peer,),
         )
+
+    class NoopBillPacer:
+        def wait(self, deadline=None):
+            return True
 
     with (
         mock.patch.object(sender_node, "ensure_runtime_files"),
@@ -474,29 +502,42 @@ def test_send_queued_bills_paced_handles_regular_29_bill_send(tmp_path):
             return_value={"type": "queued"},
         ),
         mock.patch.object(sender_node.ind_token, "pack_wire_message", return_value="raw"),
-        mock.patch.object(sender_node, "connect_result", side_effect=fake_connect) as connect,
+        mock.patch.object(
+            sender_node,
+            "_broadcast_gossip_fire_and_forget",
+            side_effect=fake_dispatch,
+        ) as dispatch,
+        mock.patch.object(sender_node, "connect_result") as connect,
         mock.patch.object(sender_node, "_schedule_queued_gossip_retry", return_value=True) as retry,
+        mock.patch.object(sender_node, "OutboundBillPacer", return_value=NoopBillPacer()),
     ):
         summary = sender_node.send_queued_bills_paced()
 
     assert summary["status"] == "complete"
     assert summary["sent"] == 29
     assert all(not transaction_path.exists() for transaction_path in transaction_paths)
-    assert connect.call_count == 58
+    assert dispatch.call_count == 29
+    connect.assert_not_called()
     retry.assert_not_called()
 
 
-def test_send_queued_bills_paced_requires_peer_quorum(tmp_path):
-    transaction_path = tmp_path / "transaction_1.json"
-    transaction_path.write_text("{}", encoding="utf-8")
+def test_send_queued_bills_paced_stops_after_cancel_request(tmp_path):
+    transaction_paths = [tmp_path / "transaction_1.json", tmp_path / "transaction_2.json"]
+    for transaction_path in transaction_paths:
+        transaction_path.write_text("{}", encoding="utf-8")
+    events = []
 
     class FakeStore:
         def ingest_message(self, _message):
             return {"accepted": True}
 
-    ok_a = sender_node.PeerRequestResult(
+    class NoopBillPacer:
+        def wait(self, deadline=None):
+            return True
+
+    result = sender_node.PeerRequestResult(
         status=sender_node.REQUEST_OK,
-        response="ok",
+        response="",
         peer="peer-a",
         route="peer-a",
         attempts=(
@@ -506,23 +547,71 @@ def test_send_queued_bills_paced_requires_peer_quorum(tmp_path):
                 "status": sender_node.REQUEST_OK,
             },
         ),
+        acked_peers=("peer-a",),
     )
-    ok_b = sender_node.PeerRequestResult(
+
+    def transaction_files():
+        return [transaction_path for transaction_path in transaction_paths if transaction_path.exists()]
+
+    def fake_dispatch(*_args, **_kwargs):
+        sender_node.request_cancel_queued_bills()
+        return result
+
+    with (
+        mock.patch.object(sender_node, "ensure_runtime_files"),
+        mock.patch.object(sender_node, "_queued_send_peers", return_value=["peer-a"]),
+        mock.patch.object(sender_node, "wallet_sync_store", return_value=FakeStore()),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "transaction_files",
+            side_effect=transaction_files,
+        ),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "read_transaction_message",
+            return_value={"type": "queued"},
+        ),
+        mock.patch.object(sender_node.ind_token, "pack_wire_message", return_value="raw"),
+        mock.patch.object(
+            sender_node,
+            "_broadcast_gossip_fire_and_forget",
+            side_effect=fake_dispatch,
+        ) as dispatch,
+        mock.patch.object(sender_node, "OutboundBillPacer", return_value=NoopBillPacer()),
+    ):
+        summary = sender_node.send_queued_bills_paced(progress_callback=events.append)
+
+    sender_node.clear_cancel_queued_bills()
+    assert summary["status"] == "cancelled"
+    assert summary["sent"] == 1
+    assert not transaction_paths[0].exists()
+    assert transaction_paths[1].exists()
+    assert dispatch.call_count == 1
+    assert events[-1]["event"] == "cancelled"
+
+
+def test_send_queued_bills_paced_does_not_wait_for_peer_quorum(tmp_path):
+    transaction_path = tmp_path / "transaction_1.json"
+    transaction_path.write_text("{}", encoding="utf-8")
+
+    class FakeStore:
+        def ingest_message(self, _message):
+            return {"accepted": True}
+
+    ok = sender_node.PeerRequestResult(
         status=sender_node.REQUEST_OK,
-        response="ok",
-        peer="peer-b",
-        route="peer-b",
+        response="",
+        peer="peer-a",
+        route="peer-a",
         attempts=(
             {
-                "peer": "peer-b",
-                "route": "peer-b",
+                "peer": "peer-a",
+                "route": "peer-a",
                 "status": sender_node.REQUEST_OK,
             },
         ),
+        acked_peers=("peer-a",),
     )
-
-    def fake_connect(_indicator, _raw, ipnl, **_kwargs):
-        return ok_a if ipnl == ["peer-a"] else ok_b
 
     with (
         mock.patch.object(sender_node, "ensure_runtime_files"),
@@ -539,17 +628,23 @@ def test_send_queued_bills_paced_requires_peer_quorum(tmp_path):
             return_value={"type": "queued"},
         ),
         mock.patch.object(sender_node.ind_token, "pack_wire_message", return_value="raw"),
-        mock.patch.object(sender_node, "connect_result", side_effect=fake_connect) as connect,
+        mock.patch.object(
+            sender_node,
+            "_broadcast_gossip_fire_and_forget",
+            return_value=ok,
+        ) as dispatch,
+        mock.patch.object(sender_node, "connect_result") as connect,
     ):
         summary = sender_node.send_queued_bills_paced()
 
     assert not transaction_path.exists()
     assert summary["status"] == "complete"
     assert summary["sent"] == 1
-    assert sorted(call.args[2][0] for call in connect.call_args_list) == ["peer-a", "peer-b"]
+    dispatch.assert_called_once()
+    connect.assert_not_called()
 
 
-def test_send_queued_bills_paced_keeps_partial_quorum(tmp_path):
+def test_send_queued_bills_paced_keeps_failed_handoff_queued(tmp_path):
     transaction_path = tmp_path / "transaction_1.json"
     transaction_path.write_text("{}", encoding="utf-8")
 
@@ -557,19 +652,6 @@ def test_send_queued_bills_paced_keeps_partial_quorum(tmp_path):
         def ingest_message(self, _message):
             return {"accepted": True}
 
-    ok = sender_node.PeerRequestResult(
-        status=sender_node.REQUEST_OK,
-        response="ok",
-        peer="peer-a",
-        route="peer-a",
-        attempts=(
-            {
-                "peer": "peer-a",
-                "route": "peer-a",
-                "status": sender_node.REQUEST_OK,
-            },
-        ),
-    )
     timeout = sender_node.PeerRequestResult(
         status=sender_node.REQUEST_TIMEOUT,
         peer="peer-b",
@@ -582,9 +664,6 @@ def test_send_queued_bills_paced_keeps_partial_quorum(tmp_path):
             },
         ),
     )
-
-    def fake_connect(_indicator, _raw, ipnl, **_kwargs):
-        return ok if ipnl == ["peer-a"] else timeout
 
     with (
         mock.patch.object(sender_node, "ensure_runtime_files"),
@@ -601,7 +680,11 @@ def test_send_queued_bills_paced_keeps_partial_quorum(tmp_path):
             return_value={"type": "queued"},
         ),
         mock.patch.object(sender_node.ind_token, "pack_wire_message", return_value="raw"),
-        mock.patch.object(sender_node, "connect_result", side_effect=fake_connect),
+        mock.patch.object(
+            sender_node,
+            "_broadcast_gossip_fire_and_forget",
+            return_value=timeout,
+        ),
         mock.patch.object(sender_node, "_schedule_queued_gossip_retry", return_value=True) as retry,
     ):
         summary = sender_node.send_queued_bills_paced()
@@ -612,7 +695,7 @@ def test_send_queued_bills_paced_keeps_partial_quorum(tmp_path):
     retry.assert_called_once()
 
 
-def test_send_queued_bills_paced_keeps_rate_limited_transaction(tmp_path):
+def test_send_queued_bills_paced_keeps_rate_limited_handoff_queued(tmp_path):
     transaction_path = tmp_path / "transaction_1.json"
     transaction_path.write_text("{}", encoding="utf-8")
     events = []
@@ -651,7 +734,11 @@ def test_send_queued_bills_paced_keeps_rate_limited_transaction(tmp_path):
             return_value={"type": "queued"},
         ),
         mock.patch.object(sender_node.ind_token, "pack_wire_message", return_value="raw"),
-        mock.patch.object(sender_node, "connect_result", return_value=result),
+        mock.patch.object(
+            sender_node,
+            "_broadcast_gossip_fire_and_forget",
+            return_value=result,
+        ),
         mock.patch.object(sender_node, "_schedule_queued_gossip_retry", return_value=True) as retry,
     ):
         summary = sender_node.send_queued_bills_paced(
@@ -662,5 +749,6 @@ def test_send_queued_bills_paced_keeps_rate_limited_transaction(tmp_path):
     assert transaction_path.exists()
     assert summary["status"] == "partial"
     assert summary["sent"] == 0
-    assert any(event["event"] == "rate_limited" for event in events)
+    assert any(event["event"] == "waiting" for event in events)
+    assert not any(event["event"] == "rate_limited" for event in events)
     retry.assert_called_once()

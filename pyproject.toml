@@ -37,7 +37,6 @@ ignore = [
 "wallet_*.py" = ["F403", "F405"]
 "node_client.py" = ["F403", "F405"]
 "sender_node.py" = ["F403", "F405"]
-"confirm_validity.py" = ["F403", "F405"]
 "portforwardlib.py" = ["F403", "F405"]
 "operator_tools/gossip_archive.py" = ["E402"]
 "tests/*.py" = ["SIM117"]

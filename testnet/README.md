@@ -1,6 +1,6 @@
 # IND Public Testnet
 
-This folder contains public testnet metadata. The active testnet path is native V3 BillV3 gossip, proof bundles, archive segments, owner-addressed wallet sync, conflicts, and transparency-log checks. Historical lazy-genesis faucet issuance is disabled in the active tree.
+This folder contains public testnet metadata. The active testnet path is native V3 BillV3 gossip, proof bundles, archive segments, owner-addressed wallet sync, conflicts, and transparency-log checks. Historical pre-V3 faucet issuance has been removed from the active tree.
 
 ## Parameters
 
@@ -37,10 +37,9 @@ Build a native V3 double-spend drill from a stored BillV3:
 python tools/v3_double_spend_drill.py --display-id <display-id> --wallet-address <x3-wallet> --dry-run
 ```
 
-## Retired Legacy Smoke
+## Readiness Checks
 
-The old faucet-backed `tools/testnet_smoke.py` lifecycle is retired. Use
-`tools/v3_testnet_smoke.py` for readiness checks and
+Use `tools/v3_testnet_smoke.py` for readiness checks and
 `tools/v3_double_spend_drill.py` for native BillV3 conflict construction.
 
 To check current public seed status without unlocking any wallet:

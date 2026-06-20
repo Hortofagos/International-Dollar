@@ -6,6 +6,7 @@ external ProofBundleV3.
 
 import base64
 import copy
+import os
 
 from . import binary_v3, keys_v3, proof_bundle_v3
 from . import protocol as ind_token
@@ -1161,6 +1162,44 @@ def create_bill_from_checkpoint_core(
     }
 
 
+def _trusted_genesis_manifest_hashes():
+    try:
+        from . import settings as ind_settings
+
+        values = ind_settings.trusted_genesis_manifest_hashes()
+    except Exception:
+        raw = os.environ.get("IND_TRUSTED_GENESIS_MANIFEST_HASHES", "")
+        values = {item.strip() for item in raw.split(",") if item.strip()}
+    return {str(item).strip().lower() for item in values if str(item).strip()}
+
+
+def _allow_untrusted_genesis():
+    try:
+        from . import settings as ind_settings
+
+        return ind_settings.allow_untrusted_genesis()
+    except Exception:
+        return os.environ.get("IND_ALLOW_UNTRUSTED_GENESIS", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+
+def _validate_genesis_ref_trust(genesis_ref):
+    if _allow_untrusted_genesis():
+        return
+    trusted_hashes = _trusted_genesis_manifest_hashes()
+    if not trusted_hashes:
+        return
+    manifest_hash = genesis_ref.get("manifest_hash")
+    if manifest_hash is None:
+        raise ProtocolV3Error("GenesisRefV3 manifest hash is not trusted by this node")
+    if str(manifest_hash).lower() not in trusted_hashes:
+        raise ProtocolV3Error("GenesisRefV3 manifest hash is not trusted by this node")
+
+
 def _validate_genesis_ref(genesis_ref, network_id):
     _require_exact_fields(genesis_ref, GENESIS_REF_FIELDS, "GenesisRefV3")
     if genesis_ref["type"] != GENESIS_REF_TYPE:
@@ -1176,6 +1215,7 @@ def _validate_genesis_ref(genesis_ref, network_id):
         _hex32(genesis_ref["issuer_key_id"], "GenesisRefV3 issuer key id")
     _require_int(genesis_ref["issue_index"], "GenesisRefV3 issue index", minimum=1)
     _require_int(genesis_ref["issued_at"], "GenesisRefV3 issued_at", minimum=0)
+    _validate_genesis_ref_trust(genesis_ref)
 
 
 def _validate_checkpoint_core(core, network_id):

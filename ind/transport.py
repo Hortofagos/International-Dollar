@@ -327,3 +327,25 @@ def request(addr, indicator, data, peer_ip=None, timeout=4):
         return session.recv_text(client, ind_token.MAX_WIRE_DECOMPRESSED_BYTES)
     finally:
         client.close()
+
+
+# Send one encrypted IND node request and close after the frame is written.
+def send_no_response(addr, indicator, data, peer_ip=None, timeout=4):
+    data = str(data)
+    if len(data.encode("utf-8")) > ind_token.MAX_WIRE_DECOMPRESSED_BYTES:
+        raise TransportError("request payload is too large")
+    client = socket.create_connection(addr, timeout=timeout)
+    try:
+        client.settimeout(timeout)
+        session = client_handshake(client, peer_ip=peer_ip)
+        session.send_text(
+            client,
+            indicator + data,
+            ind_token.MAX_WIRE_DECOMPRESSED_BYTES + 1,
+        )
+        try:
+            client.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+    finally:
+        client.close()

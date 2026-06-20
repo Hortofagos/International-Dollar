@@ -1184,7 +1184,7 @@ class TransparencyLog:
         if not isinstance(announcement, dict):
             raise LogServerError("expected an IND transfer announcement")
         if announcement.get("type") != protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE:
-            raise LogServerError(protocol_policy.legacy_disabled_message("legacy transfer append"))
+            raise LogServerError(protocol_policy.non_v3_disabled_message("non-V3 transfer append"))
         try:
             bill, _proof_bundle, _archive_segments = protocol_v3.decode_transfer_announcement(
                 announcement
@@ -1612,7 +1612,7 @@ class TransparencyLog:
         if announcement.get("type") == protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE:
             if "payload_encoding" not in announcement:
                 raise LogServerError(
-                    protocol_policy.legacy_disabled_message("legacy transfer append")
+                    protocol_policy.non_v3_disabled_message("non-V3 transfer append")
                 )
             try:
                 decoded = self._verify_transfer_announcement_for_append(announcement)
@@ -1625,7 +1625,7 @@ class TransparencyLog:
             transfer = bill["recent_transfers"][-1]
             entry_hash = protocol_v3.transfer_hash(transfer)
         else:
-            raise LogServerError(protocol_policy.legacy_disabled_message("legacy transfer append"))
+            raise LogServerError(protocol_policy.non_v3_disabled_message("non-V3 transfer append"))
         if state.sequence == 0:
             raise LogServerError("genesis bill has no transfer to log")
         claim = self._spend_claim_from_transfer(transfer)
@@ -1696,7 +1696,7 @@ class TransparencyLog:
                 raise LogServerError("expected an IND checkpoint announcement")
             if "payload_encoding" not in announcement:
                 raise LogServerError(
-                    protocol_policy.legacy_disabled_message("legacy checkpoint append")
+                    protocol_policy.non_v3_disabled_message("non-V3 checkpoint append")
                 )
             decoded = protocol_v3.verify_checkpoint_announcement(
                 announcement,

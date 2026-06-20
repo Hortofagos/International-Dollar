@@ -148,6 +148,77 @@ def test_store_v3_persists_archive_bundle_and_bill(tmp_path):
     assert state.owner_address == fixture["bob_address"]
 
 
+def test_discard_unsettled_bill_v3_restores_previous_spendable_tip(tmp_path):
+    fixture = native_v3_archive_fixture(tmp_path)
+    store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
+    store.store_archive_segment_v3(fixture["archive_segment"])
+    store.store_proof_bundle_v3(
+        fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+    )
+    bill = protocol_v3.create_bill_from_checkpoint_core(
+        fixture["genesis_ref"],
+        fixture["checkpoint_core"],
+        fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=store.archive_segment_resolver_v3,
+    )
+    original_hash = store.store_bill_v3(
+        bill,
+        proof_bundle=fixture["bundle"],
+        status="settled",
+        trusted_operator_public_key=fixture["log_public"],
+    )
+    transferred = protocol_v3.create_transfer(
+        bill,
+        fixture["bob_private"],
+        fixture["bob_public"],
+        fixture["carol_address"],
+        proof_bundle_resolver=store.proof_bundle_resolver_v3,
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=store.archive_segment_resolver_v3,
+        timestamp=BASE_TIMESTAMP + 50,
+    )
+    transferred_hash = store.store_bill_v3(
+        transferred,
+        proof_bundle=fixture["bundle"],
+        status="verified",
+        trusted_operator_public_key=fixture["log_public"],
+    )
+    transferred_state = protocol_v3.verify_bill(
+        transferred,
+        proof_bundle=fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=store.archive_segment_resolver_v3,
+    )
+
+    assert (
+        store.get_spendable_bill_v3_by_display_id(
+            transferred_state.display_id,
+            fixture["bob_address"],
+        )
+        is None
+    )
+    assert not store.discard_unsettled_bill_v3(
+        original_hash,
+        display_id=transferred_state.display_id,
+        owner_address=fixture["bob_address"],
+        sequence=transferred_state.sequence - 1,
+    )
+    assert store.discard_unsettled_bill_v3(
+        transferred_hash,
+        display_id=transferred_state.display_id,
+        owner_address=fixture["carol_address"],
+        sequence=transferred_state.sequence,
+    )
+    restored = store.get_spendable_bill_v3_by_display_id(
+        transferred_state.display_id,
+        fixture["bob_address"],
+    )
+    assert restored is not None
+    assert protocol_v3.bill_hash(restored).hex() == original_hash
+
+
 def test_store_v3_does_not_downgrade_settled_bill_status(tmp_path):
     fixture = native_v3_archive_fixture(tmp_path)
     store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)

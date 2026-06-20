@@ -92,3 +92,24 @@ def test_active_wallet_generation_has_no_ecdsa_fallbacks():
     assert not failures, "wallet generation still exposes legacy ECDSA paths: " + ", ".join(
         failures
     )
+
+
+def test_retired_json_bill_entrypoints_are_removed():
+    removed_paths = [
+        Path("confirm_validity.py"),
+        Path("ind/conflicts.py"),
+        Path("ind/genesis.py"),
+        Path("ind/receipts.py"),
+        Path("ind/transfers.py"),
+        Path("ind/validity.py"),
+        Path("tools/generate_genesis.py"),
+        Path("tools/mint_lazy_token.py"),
+        Path("tools/simulate_partition.py"),
+        Path("tools/testnet_double_spend_drill.py"),
+        Path("tools/testnet_faucet.py"),
+        Path("tools/testnet_multihop_smoke.py"),
+        Path("tools/testnet_smoke.py"),
+    ]
+    existing = [str(path) for path in removed_paths if (ROOT / path).exists()]
+
+    assert not existing, "retired JSON bill entrypoints still exist: " + ", ".join(existing)

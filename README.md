@@ -4,18 +4,19 @@ International Dollar is a fixed-supply digital bearer-bill experiment. IND does 
 
 ## Core Architecture
 
-IND is designed around a maximum supply of exactly 33,000,000,000 unique bill indexes. At genesis, the issuer can publish a signed supply manifest instead of materializing every bill. The manifest defines denomination ranges and lets bills be minted on demand when they first move.
+IND is designed around a maximum supply of exactly 33,000,000,000 unique bill indexes. At genesis, the issuer publishes a signed native V3 supply manifest. The manifest defines denomination ranges, issuer policy, and the fixed supply map that BillV3 genesis references bind to.
 
-A materialized or lazy genesis record commits to:
+A native V3 genesis reference commits to:
 
 - a bill index inside the fixed supply range
-- an owner address
-- an issuer public key and issuer signature
-- a deterministic success commitment checked by the IND verification algorithm
+- a manifest hash
+- an issuer key identity
+- an issued-at timestamp
+- proof-bundle and archive evidence for reconstruction
 
-After genesis, no further issuance occurs. A bill can be validated offline from its payload by running the IND algorithm exposed through `ind_token.py` and implemented in the `ind/` package. Lazy bills verify against the signed manifest hash, so users do not need a 20+ TB dump of every possible genesis payload.
+After genesis, no further issuance occurs. A BillV3 can be validated from its payload plus referenced proof material using the V3 implementation in `ind/protocol_v3.py` and the shared helpers in the `ind/` package.
 
-The launch constants intentionally carry the IND numerology motif: 33 billion fixed supply, 33-character current wallet addresses, a 777 angel-number marker, the 8/8888 money motif already used by the node port, and the 9 / 09.10.2003 birthday motif. New genesis and lazy-genesis metadata include a deterministic `ind_alignment` seal so the motif is committed without changing transfer validation rules.
+The launch constants intentionally carry the IND numerology motif: 33 billion fixed supply, 33-character current wallet addresses, a 777 angel-number marker, the 8/8888 money motif already used by the node port, and the 9 / 09.10.2003 birthday motif. Native V3 genesis metadata includes a deterministic `ind_alignment` seal so the motif is committed without changing transfer validation rules.
 
 Public nodes must pin accepted genesis issuer keys with `IND_TRUSTED_GENESIS_ISSUER_KEYS`, exact supply manifests with `IND_TRUSTED_GENESIS_MANIFEST_HASHES`, or both. If neither is set, genesis validation fails unless `IND_ALLOW_UNTRUSTED_GENESIS=1` is explicitly enabled for local tests.
 
@@ -45,7 +46,7 @@ V3 bills use one active protocol surface. A bill may carry full recent transfer 
 
 A compact V3 payment is therefore not "the operator says so." The recipient verifies the genesis, the checkpoint hash, the checkpoint inclusion proof against mirrored signed roots, the spend-map proof for the settled last transfer, and the recent transfer signatures after the checkpoint. The tradeoff is honest and explicit: compact V3 is not fully offline full-history verification of old transfer bodies. It is log-backed, mirror-backed, and archive-auditable. Operators or archive services should keep full transfer archives so deep audits and rebuilds remain possible.
 
-Checkpoint submissions include the source bill as validation input. The operator verifies that source bill, recomputes the checkpoint, and logs only the checkpoint hash. Nodes store history in decomposed form: genesis once, each lazy manifest once, each transfer once, compact checkpoints, and compact state/message references for current ownership and recipient inboxes. Nodes can still rebuild a full bearer bill from local or archive storage, but normal wallet sends prefer compact V3 once a valid checkpoint exists. By default, local stores create the first automatic checkpoint after 10 settled transfers, then every 10 settled transfers after the latest checkpoint. A wallet or operator can force "compact now" for a settled bill, and operators can set a high-value threshold for immediate checkpointing. Gossip messages also support a compressed `indz1:` wire format while remaining compatible with plain JSON.
+Checkpoint submissions include the source bill as validation input. The operator verifies that source bill, recomputes the checkpoint, and logs only the checkpoint hash. Nodes store history in decomposed form: native genesis references, proof bundles, archive segments, each transfer, compact checkpoints, and compact state/message references for current ownership and recipient inboxes. Nodes can still rebuild a full bearer bill from local or archive storage, but normal wallet sends prefer compact V3 once a valid checkpoint exists. By default, local stores create the first automatic checkpoint after 10 settled transfers, then every 10 settled transfers after the latest checkpoint. A wallet or operator can force "compact now" for a settled bill, and operators can set a high-value threshold for immediate checkpointing. Gossip messages also support a compressed `indz1:` wire format while remaining compatible with plain JSON.
 
 To limit intentional per-bill bloat, the protocol enforces at most 10 transfers per bill per UTC day. Transfer timestamps must be strictly increasing and cannot be more than 300 seconds in the future when verified.
 
@@ -223,7 +224,7 @@ Local mainnet node state is stored in `ind_gossip.db`; public testnet state is s
 
 ## Public Testnet
 
-The public testnet is the V3 readiness network for native BillV3 gossip, proof bundles, archive segments, conflicts, owner-addressed wallet sync, and transparency-log checks. Historical lazy-genesis faucet tooling is disabled in the active tree; use the V3 testnet smoke and BillV3 drill tools while the native funding flow is being finalized.
+The public testnet is the V3 readiness network for native BillV3 gossip, proof bundles, archive segments, conflicts, owner-addressed wallet sync, and transparency-log checks. Retired pre-V3 faucet tooling has been removed; use the V3 testnet smoke and BillV3 drill tools while the native funding flow is being finalized.
 
 Public testnet parameters are recorded in `testnet/testnet.json`:
 

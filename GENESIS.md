@@ -4,7 +4,7 @@ Status: policy draft.
 
 IND has a fixed maximum supply of 33,000,000,000 bill indexes. The protocol only accepts genesis records with indexes inside that range and positive values, but a serious public launch also needs an auditable genesis process.
 
-The V3 launch path is native BillV3: publish auditable genesis references, checkpoint/proof-bundle evidence, and archive material that can be independently reconstructed. The retired lazy-genesis JSON bill path is disabled in the active tree.
+The V3 launch path is native BillV3: publish auditable genesis references, checkpoint/proof-bundle evidence, and archive material that can be independently reconstructed. The retired pre-V3 JSON bill path has been removed from the active tree.
 
 ## Required For Public Alpha
 
@@ -31,14 +31,26 @@ Before launch, generate the intended supply manifest and publish:
 
 Anyone should be able to recompute the manifest hash and verify that no hidden launch supply map is being used.
 
-The old `tools/generate_genesis.py` and `tools/mint_lazy_token.py` entry points
-now fail closed. Native V3 genesis/proof-bundle tooling must not produce or
-accept retired ECDSA JSON bill objects.
+## Native V3 Manifest Tooling
+
+Use `tools/genesis_manifest_v3.py` to create and verify the native V3 supply
+manifest. The tool signs the canonical unsigned manifest with a V3 Ed25519
+`indsk3` issuer key and emits an `ind.genesis_manifest.v3` document whose
+`manifest_hash` can be pinned by public nodes.
+
+For an air-gapped launch ceremony, copy the standalone bundle from
+`tools/offline_genesis_bundle/` to an offline Ubuntu machine and run the
+commands in `README_OFFLINE.md`. The standalone script uses only Python's
+standard library, so it does not need `pip` or network access.
+
+Retired JSON-bill genesis generators are not part of the active tree. Native V3
+genesis/proof-bundle tooling must not produce or accept retired ECDSA JSON bill
+objects.
 
 ## Public Testnet Genesis
 
-The public testnet metadata is in `testnet/testnet.json`. The old lazy-genesis
-manifest is historical metadata and is not an active V3 issuance path.
+The public testnet metadata is in `testnet/testnet.json`. Any pre-V3 JSON
+genesis metadata is historical only and is not an active V3 issuance path.
 
 - Network: `testnet`
 - Node port: TCP `18888`

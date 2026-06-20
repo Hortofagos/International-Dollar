@@ -1,7 +1,6 @@
 # SQLite-backed local state for IND bill gossip and settlement.
 
 import contextlib
-import copy
 import logging
 import os
 import sqlite3
@@ -15,19 +14,14 @@ from . import transparency_client as log_client
 from .protocol import (
     BILL_TYPE,
     BILL_VERSION,
-    CONFLICT_PROOF_FIELDS,
     CONFLICT_PROOF_TYPE,
     DEFAULT_LOG_SUBMISSION_VERIFY_TIMEOUT_SECONDS,
     FINALITY_BUFFER_SECONDS,
-    GENESIS_MANIFEST_REF_TYPE,
     STORED_MESSAGE_REF_TYPE,
     TOKEN_STATE_REF_TYPE,
     TOKEN_TYPE,
     TOKEN_VERSION,
-    TRANSFER_ANNOUNCEMENT_FIELDS,
-    TRANSFER_ANNOUNCEMENT_OPTIONAL_FIELDS,
     TRANSFER_ANNOUNCEMENT_TYPE,
-    TRANSFER_ANNOUNCEMENT_V3_FIELDS,
     TRANSFER_ANNOUNCEMENT_V3_TYPE,
     TRANSPARENCY_EQUIVOCATION_PROOF_TYPE,
     TRANSPARENCY_OPERATOR_POLICY_VIOLATION_TYPE,
@@ -37,30 +31,18 @@ from .protocol import (
     _bill_history,
     _configured_transparency_submitter,
     _configured_transparency_verifier,
-    _conflicting_transfers,
     _env_int,
     _env_true,
     _environment_transparency_verifier,
     _last_transfer,
     _load_json,
-    _require_exact_fields,
-    _require_int,
     _state_ref_from_state,
     _store_json,
     configure_sqlite_connection,
     conflict_proof_key,
-    create_bill_checkpoint,
-    create_checkpoint_announcement,
-    create_compact_bill,
-    create_conflict_proof,
-    genesis_manifest_hash,
     message_hash,
     transfer_hash,
     unpack_wire_message,
-    verify_bill,
-    verify_checkpoint_for_genesis,
-    verify_conflict_proof,
-    verify_token,
     verify_transparency_equivocation_proof,
     verify_transparency_operator_policy_violation_proof,
     verify_transparency_root_announcement,
@@ -251,13 +233,11 @@ class INDLocalStore:
         self._validate_operator_finality_policy_v3()
         self._init_db()
 
-    def _require_legacy_bill_protocol(self, operation):
-        raise ValidationError(protocol_policy.legacy_disabled_message(operation))
+    def _reject_non_v3_bill_protocol(self, operation):
+        raise ValidationError(protocol_policy.non_v3_disabled_message(operation))
 
     def _verify_bill_for_store(self, bill, **kwargs):
-        if isinstance(bill, dict) and bill.get("type") == BILL_TYPE:
-            kwargs.setdefault("transparency_verifier", self.transparency_verifier)
-        return verify_bill(bill, **kwargs)
+        self._reject_non_v3_bill_protocol("non-V3 bill validation")
 
     # Create a short-lived SQLite connection with row dictionaries enabled.
     def _connect(self):
@@ -710,93 +690,21 @@ class INDLocalStore:
                 native_message_types,
             )
 
-    # Store a bill genesis once, keeping lazy manifests in a shared table.
+    # Retired JSON-bill genesis storage is no longer supported.
     def _store_genesis(self, conn, token, state):
-        genesis = self._compact_genesis_for_store(conn, token["genesis"])
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO token_genesis(token_id, display_id, genesis_json, value)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                state.token_id,
-                state.display_id,
-                _store_json(genesis),
-                int(state.value),
-            ),
-        )
+        self._reject_non_v3_bill_protocol("non-V3 genesis storage")
 
-    # Replace embedded lazy manifests with hash references before persistence.
+    # Retired JSON-bill manifest compaction is no longer supported.
     def _compact_genesis_for_store(self, conn, genesis):
-        manifest_ref = genesis.get("manifest_ref") if isinstance(genesis, dict) else None
-        if not isinstance(manifest_ref, dict) or "manifest" not in manifest_ref:
-            return genesis
-        manifest = manifest_ref["manifest"]
-        manifest_hash_value = genesis_manifest_hash(manifest)
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO genesis_manifests(manifest_hash, manifest_json, first_seen)
-            VALUES (?, ?, ?)
-            """,
-            (manifest_hash_value, _store_json(manifest), int(time.time())),
-        )
-        compact = copy.deepcopy(genesis)
-        compact["manifest_ref"] = {
-            "type": GENESIS_MANIFEST_REF_TYPE,
-            "manifest_hash": manifest_hash_value,
-        }
-        return compact
+        self._reject_non_v3_bill_protocol("non-V3 genesis manifest compaction")
 
-    # Restore a compact stored genesis record to the full verifiable form.
+    # Retired JSON-bill genesis expansion is no longer supported.
     def _expand_genesis_from_store(self, conn, genesis):
-        manifest_ref = genesis.get("manifest_ref") if isinstance(genesis, dict) else None
-        if not isinstance(manifest_ref, dict) or "manifest" in manifest_ref:
-            return genesis
-        manifest_hash_value = manifest_ref.get("manifest_hash")
-        row = conn.execute(
-            "SELECT manifest_json FROM genesis_manifests WHERE manifest_hash = ?",
-            (manifest_hash_value,),
-        ).fetchone()
-        if not row:
-            return genesis
-        expanded = copy.deepcopy(genesis)
-        expanded["manifest_ref"] = {
-            "type": GENESIS_MANIFEST_REF_TYPE,
-            "manifest_hash": manifest_hash_value,
-            "manifest": _load_json(row["manifest_json"]),
-        }
-        return expanded
+        self._reject_non_v3_bill_protocol("non-V3 genesis expansion")
 
     # Persist one transparency-backed compact checkpoint.
     def _store_checkpoint(self, conn, checkpoint, status="settled"):
-        now = int(time.time())
-        transparency = checkpoint.get("transparency") if isinstance(checkpoint, dict) else None
-        root = transparency.get("root") if isinstance(transparency, dict) else None
-        inclusion_proof = (
-            transparency.get("inclusion_proof") if isinstance(transparency, dict) else None
-        )
-        spend_proof = transparency.get("spend_proof") if isinstance(transparency, dict) else None
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO checkpoints(
-                checkpoint_hash, token_id, sequence, last_transfer_hash, owner_address,
-                checkpoint_json, root_json, inclusion_proof_json, spend_proof_json, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                checkpoint["checkpoint_hash"],
-                checkpoint["token_id"],
-                int(checkpoint["sequence"]),
-                checkpoint["last_transfer_hash"],
-                checkpoint["owner_address"],
-                _store_json(checkpoint),
-                _store_json(root) if root is not None else None,
-                _store_json(inclusion_proof) if inclusion_proof is not None else None,
-                _store_json(spend_proof) if spend_proof is not None else None,
-                status,
-                now,
-            ),
-        )
+        self._reject_non_v3_bill_protocol("non-V3 checkpoint storage")
 
     # Resolve an ArchiveSegmentV3 body by content hash for V3 verification.
     def archive_segment_resolver_v3(self, segment_hash):
@@ -1437,6 +1345,44 @@ class INDLocalStore:
             return None
         return protocol_v3.decode_bill(bytes(row["bill_blob"]))
 
+    # Remove one local, not-yet-settled BillV3 tip created for a cancelled outbound send.
+    def discard_unsettled_bill_v3(
+        self,
+        bill_hash,
+        *,
+        display_id=None,
+        owner_address=None,
+        sequence=None,
+    ):
+        bill_hash = str(bill_hash or "").lower().strip()
+        if not bill_hash:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT display_id, owner_address, sequence, status
+                FROM bills_v3
+                WHERE bill_hash = ?
+                """,
+                (bill_hash,),
+            ).fetchone()
+            if not row or row["status"] == "settled":
+                return False
+            if display_id is not None and str(row["display_id"]) != str(display_id):
+                return False
+            if owner_address is not None and str(row["owner_address"]) != str(owner_address):
+                return False
+            if sequence is not None and int(row["sequence"]) != int(sequence):
+                return False
+            conn.execute(
+                """
+                DELETE FROM bills_v3
+                WHERE bill_hash = ? AND status IN ('pending', 'verified')
+                """,
+                (bill_hash,),
+            )
+            return bool(conn.execute("SELECT changes() AS count_value").fetchone()["count_value"])
+
     def _bill_v3_row_tip_transfer_hash(self, row):
         from . import protocol_v3
 
@@ -1642,54 +1588,7 @@ class INDLocalStore:
 
     # Reconstruct a full bearer bill from normalized genesis and transfer rows.
     def _rebuild_token_from_store(self, conn, token_id, last_transfer_hash=None, sequence=None):
-        token_row = conn.execute(
-            "SELECT last_transfer_hash, sequence FROM tokens WHERE token_id = ?",
-            (token_id,),
-        ).fetchone()
-        genesis_row = conn.execute(
-            "SELECT genesis_json FROM token_genesis WHERE token_id = ?",
-            (token_id,),
-        ).fetchone()
-        if not token_row or not genesis_row:
-            return None
-
-        genesis = self._expand_genesis_from_store(conn, _load_json(genesis_row["genesis_json"]))
-        target_hash = last_transfer_hash or token_row["last_transfer_hash"]
-        target_sequence = int(sequence if sequence is not None else token_row["sequence"])
-        if target_sequence == 0:
-            return {
-                "type": TOKEN_TYPE,
-                "version": TOKEN_VERSION,
-                "token_id": token_id,
-                "genesis": genesis,
-                "history": [],
-            }
-
-        transfer_rows = conn.execute(
-            "SELECT transfer_hash, transfer_json FROM transfers WHERE token_id = ?",
-            (token_id,),
-        ).fetchall()
-        transfers_by_hash = {
-            row["transfer_hash"]: _load_json(row["transfer_json"]) for row in transfer_rows
-        }
-        history_reversed = []
-        current_hash = target_hash
-        for _ in range(target_sequence):
-            transfer = transfers_by_hash.get(current_hash)
-            if not transfer:
-                return None
-            history_reversed.append(transfer)
-            current_hash = transfer["previous_hash"]
-        history_reversed.reverse()
-        token = {
-            "type": TOKEN_TYPE,
-            "version": TOKEN_VERSION,
-            "token_id": token_id,
-            "genesis": genesis,
-            "history": history_reversed,
-        }
-        verify_token(token)
-        return token
+        self._reject_non_v3_bill_protocol("non-V3 token rebuild")
 
     # Resolve either a compact state reference or a full bill payload.
     def _token_from_payload(self, conn, payload, token_id=None):
@@ -2479,139 +2378,15 @@ class INDLocalStore:
 
     # Submit a compact checkpoint and return embedded transparency proof material.
     def _submit_checkpoint_to_transparency_log(self, checkpoint, bill):
-        if self.transparency_submitter is None or self.transparency_verifier is None:
-            return None
-        from . import transparency_client as log_client
-
-        announcement = create_checkpoint_announcement(
-            checkpoint,
-            bill=bill,
-            transparency_verifier=self.transparency_verifier,
-        )
-        latest_transfer = _last_transfer(bill)
-        genesis = bill["genesis"]
-        expected_hash = checkpoint["checkpoint_hash"]
-        try:
-            response = self.transparency_submitter.submit_checkpoint_announcement(announcement)
-            if not isinstance(response, dict) or not response.get("accepted"):
-                raise ValidationError("transparency log did not accept the checkpoint")
-            if str(response.get("entry_hash", "")).lower() != expected_hash:
-                raise ValidationError("transparency log appended a different checkpoint hash")
-            leaf_index = int(response["leaf_index"])
-        except Exception as exc:
-            if self.require_transparency:
-                raise ValidationError(f"checkpoint transparency submission failed: {exc}") from exc
-            logger.warning(
-                "checkpoint transparency submission failed for %s: %s", expected_hash, exc
-            )
-            return None
-
-        timeout = max(0, int(self.transparency_submission_verify_timeout_seconds))
-        deadline = time.monotonic() + timeout
-        last_error = None
-        while True:
-            try:
-                root = self.transparency_verifier.current_mirrored_root()
-                if int(root["tree_size"]) < leaf_index + 1:
-                    raise ValidationError("current transparency root does not contain checkpoint")
-                inclusion_proof = self.transparency_verifier.operator.inclusion_proof(
-                    expected_hash, int(root["tree_size"])
-                )
-                log_client.verify_inclusion_proof(
-                    expected_hash,
-                    inclusion_proof,
-                    root,
-                    operator_public_key=root.get("operator_public_key"),
-                )
-                spend_proof = self.transparency_verifier.operator.spend_map_proof(
-                    log_client.spend_key_for_transfer(latest_transfer),
-                    int(root["tree_size"]),
-                )
-                checkpoint_for_proof = copy.deepcopy(checkpoint)
-                checkpoint_for_proof["transparency"] = {
-                    "type": "ind.checkpoint_transparency.v3",
-                    "version": BILL_VERSION,
-                    "root": root,
-                    "inclusion_proof": inclusion_proof,
-                    "spend_proof": spend_proof,
-                }
-                verify_checkpoint_for_genesis(
-                    checkpoint_for_proof,
-                    genesis,
-                    require_transparency=True,
-                    transparency_verifier=self.transparency_verifier,
-                )
-                return checkpoint_for_proof["transparency"]
-            except Exception as exc:
-                last_error = exc
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                time.sleep(min(1.0, remaining))
-        if self.require_transparency:
-            raise ValidationError(
-                f"checkpoint transparency proof was not available before timeout: {last_error}"
-            )
-        logger.warning(
-            "checkpoint transparency proof was not available for %s: %s", expected_hash, last_error
-        )
-        return None
+        self._reject_non_v3_bill_protocol("non-V3 compact checkpoint")
 
     # Return whether policy says this settled bill should be compacted now.
     def _checkpoint_due_for_bill(self, conn, bill, state=None, force=False):
-        state = state or self._verify_bill_for_store(bill, require_recent_transparency=False)
-        if int(state.sequence) <= 0:
-            return False
-        if force:
-            return True
-        if self.high_value_checkpoint_threshold > 0 and int(state.value) >= int(
-            self.high_value_checkpoint_threshold
-        ):
-            return True
-        latest_sequence = self._latest_checkpoint_sequence(conn, state.token_id)
-        if latest_sequence <= 0:
-            return int(state.sequence) >= int(self.first_checkpoint_after_transfers)
-        return int(state.sequence) - int(latest_sequence) >= int(self.checkpoint_interval_transfers)
+        self._reject_non_v3_bill_protocol("non-V3 compact checkpoint policy")
 
     # Create, prove, store, and return a compact checkpoint bill when policy allows.
     def _store_compact_checkpoint_for_bill(self, conn, bill, force=False, require_proof=False):
-        state = self._verify_bill_for_store(bill, require_recent_transparency=False)
-        if not self._checkpoint_due_for_bill(conn, bill, state=state, force=force):
-            return None
-        existing = self._checkpoint_for_transfer(conn, state.token_id, state.last_transfer_hash)
-        if existing:
-            compact_bill = self._compact_bill_from_checkpoint_row(conn, state.token_id, existing)
-            if compact_bill:
-                compact_state = verify_bill(
-                    compact_bill,
-                    transparency_verifier=self.transparency_verifier,
-                )
-                self._store_token_tip(conn, compact_bill, compact_state, "settled")
-            return compact_bill
-
-        checkpoint = create_bill_checkpoint(bill)
-        transparency = self._submit_checkpoint_to_transparency_log(checkpoint, bill)
-        if not transparency:
-            if require_proof:
-                raise ValidationError(
-                    "compact checkpoint requires transparency submission and mirrored proof"
-                )
-            return None
-        checkpoint["transparency"] = transparency
-        verify_checkpoint_for_genesis(
-            checkpoint,
-            bill["genesis"],
-            require_transparency=True,
-            transparency_verifier=self.transparency_verifier,
-        )
-        self._store_checkpoint(conn, checkpoint, status="settled")
-        compact_bill = create_compact_bill(bill, checkpoint)
-        compact_state = verify_bill(
-            compact_bill,
-            transparency_verifier=self.transparency_verifier,
-        )
-        self._store_token_tip(conn, compact_bill, compact_state, "settled")
-        return compact_bill
+        self._reject_non_v3_bill_protocol("non-V3 compact checkpoint")
 
     # Persist the latest known valid state for a bill without downgrading it.
     def _store_token_tip(self, conn, token, state, status):
@@ -2710,93 +2485,11 @@ class INDLocalStore:
 
     # Search stored sibling transfers for a double-spend anywhere in this bill branch.
     def _find_conflict(self, conn, token):
-        state = self._verify_bill_for_store(token, require_recent_transparency=False)
-        if state.sequence == 0:
-            return None
-        for transfer in _bill_history(token):
-            current_hash = transfer_hash(transfer)
-            rows = conn.execute(
-                """
-                SELECT transfer_hash, sequence FROM transfers
-                WHERE token_id = ?
-                  AND previous_hash = ?
-                  AND sequence = ?
-                  AND sender_address = ?
-                  AND transfer_hash != ?
-                """,
-                (
-                    state.token_id,
-                    transfer["previous_hash"],
-                    int(transfer["sequence"]),
-                    transfer["sender_address"],
-                    current_hash,
-                ),
-            ).fetchall()
-            for row in rows:
-                other_token = self._rebuild_token_from_store(
-                    conn,
-                    state.token_id,
-                    last_transfer_hash=row["transfer_hash"],
-                    sequence=int(row["sequence"]),
-                )
-                if other_token and _conflicting_transfers(token, other_token):
-                    logger.warning(
-                        "detected IND bill conflict for %s at sequence %s",
-                        state.token_id,
-                        transfer["sequence"],
-                    )
-                    return create_conflict_proof(token, other_token)
-        return None
+        self._reject_non_v3_bill_protocol("non-V3 conflict detection")
 
     # Store verified double-spend evidence without invalidating the bill.
     def _record_conflict(self, conn, proof):
-        verify_conflict_proof(proof)
-        proof_hash_value = proof["proof_hash"]
-        proof_key = conflict_proof_key(proof)
-        existing = conn.execute(
-            """
-            SELECT proof_json FROM conflicts
-            WHERE conflict_key = ?
-            LIMIT 1
-            """,
-            (proof_key,),
-        ).fetchone()
-        inserted = existing is None
-        stored_proof = proof
-        if inserted:
-            logger.warning(
-                "recording IND conflict proof %s for bill %s", proof_hash_value, proof["token_id"]
-            )
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO conflicts(
-                    proof_hash, conflict_key, token_id, previous_hash, proof_json, detected_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    proof_hash_value,
-                    proof_key,
-                    proof["token_id"],
-                    proof["previous_hash"],
-                    _store_json(proof),
-                    int(time.time()),
-                ),
-            )
-        else:
-            try:
-                stored_proof = self._load_conflict_proof_row(existing)
-            except Exception as exc:
-                logger.warning("stored conflict proof could not be reloaded: %s", exc)
-                stored_proof = proof
-            logger.debug(
-                "deduped IND conflict proof %s for bill %s", proof_hash_value, proof["token_id"]
-            )
-        return {
-            "inserted": bool(inserted),
-            "conflict_key": proof_key,
-            "proof_hash": stored_proof.get("proof_hash", proof_hash_value),
-            "proof": stored_proof,
-        }
+        self._reject_non_v3_bill_protocol("non-V3 conflict proof")
 
     # Reject a branch that conflicts with an already known local branch.
     def _reject_conflicting_transfer(self, conn, token):
@@ -3212,42 +2905,6 @@ class INDLocalStore:
             token_row = self._token_row_for_ref(conn, ref)
             if not token_row:
                 return None
-            if token_row["status"] == "invalid":
-                return {
-                    "ref": ref,
-                    "display_id": token_row["display_id"],
-                    "token_id": token_row["token_id"],
-                    "owner_address": "",
-                    "sequence": int(token_row["sequence"]),
-                    "status": "invalid",
-                }
-            token = self._token_from_payload(conn, token_row["payload"], token_row["token_id"])
-        if not token:
-            return {
-                "ref": ref,
-                "display_id": token_row["display_id"],
-                "token_id": token_row["token_id"],
-                "owner_address": "",
-                "sequence": int(token_row["sequence"]),
-                "status": "invalid",
-            }
-        try:
-            state = self._verify_bill_for_store(token, require_recent_transparency=False)
-            confidence = self.token_confidence(
-                state.token_id,
-                expected_owner=state.owner_address,
-                min_settled_seconds=min_settled_seconds,
-            )
-            status = confidence.get("level", token_row["status"])
-            return {
-                "ref": ref,
-                "display_id": state.display_id,
-                "token_id": state.token_id,
-                "owner_address": state.owner_address,
-                "sequence": int(state.sequence),
-                "status": status,
-            }
-        except ValidationError:
             return {
                 "ref": ref,
                 "display_id": token_row["display_id"],
@@ -3258,41 +2915,7 @@ class INDLocalStore:
             }
 
     def _ingest_transfer_announcement(self, conn, message):
-        if message.get("type") == TRANSFER_ANNOUNCEMENT_V3_TYPE:
-            _require_exact_fields(
-                message, TRANSFER_ANNOUNCEMENT_V3_FIELDS, "V3 transfer announcement"
-            )
-            if _require_int(message["version"], "V3 transfer announcement version") != BILL_VERSION:
-                raise ValidationError("unsupported V3 transfer announcement version")
-            token = message["bill"]
-            state = self._verify_bill_for_store(token, require_recent_transparency=False)
-        else:
-            _require_exact_fields(
-                message,
-                TRANSFER_ANNOUNCEMENT_FIELDS,
-                "transfer announcement",
-                optional=TRANSFER_ANNOUNCEMENT_OPTIONAL_FIELDS,
-            )
-            if _require_int(message["version"], "transfer announcement version") != TOKEN_VERSION:
-                raise ValidationError("unsupported transfer announcement version")
-            token = message["token"]
-            state = verify_token(token)
-        _require_int(message["announced_at"], "transfer announcement announced_at", minimum=0)
-        self._reject_conflicting_transfer(conn, token)
-        self._store_transfer(conn, token, state, "verified")
-        self._submit_to_transparency_log(message, token)
-        if self.require_transparency:
-            verify_bill(
-                token, transparency_verifier=self.transparency_verifier, require_transparency=True
-            )
-        self._store_token_tip(conn, token, state, "verified")
-        self._record_message(conn, message, state)
-        return {
-            "accepted": True,
-            "status": "verified",
-            "state": state,
-            "gossip_messages": self._drain_transparency_gossip(),
-        }
+        self._reject_non_v3_bill_protocol("non-V3 transfer announcement ingest")
 
     def _find_conflicting_bill_v3(self, conn, bill, *, trusted_operator_public_key=None):
         from . import protocol_v3
@@ -3451,17 +3074,7 @@ class INDLocalStore:
         }
 
     def _ingest_conflict_proof(self, conn, message):
-        _require_exact_fields(message, CONFLICT_PROOF_FIELDS, "conflict proof")
-        conflict_record = self._record_conflict(conn, message)
-        result = {
-            "accepted": True,
-            "status": "conflict",
-            "duplicate_conflict": not conflict_record["inserted"],
-            "relay": bool(conflict_record["inserted"]),
-        }
-        if conflict_record["inserted"]:
-            result["conflict_proof"] = conflict_record["proof"]
-        return result
+        self._reject_non_v3_bill_protocol("non-V3 conflict proof ingest")
 
     def _ingest_conflict_proof_v3(self, conn, message):
         conflict_record = self._store_conflict_proof_v3_conn(conn, message)
@@ -3543,7 +3156,7 @@ class INDLocalStore:
             # Keep each gossip family on its own validation path; they update different tables.
             if message_type == protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE:
                 if "payload_encoding" not in message:
-                    self._require_legacy_bill_protocol("legacy transfer announcement ingest")
+                    self._reject_non_v3_bill_protocol("non-V3 transfer announcement ingest")
                 return self._ingest_transfer_announcement_v3(conn, message)
 
             if message_type == protocol_v3.PROOF_BUNDLE_ANNOUNCEMENT_TYPE:
@@ -3554,7 +3167,7 @@ class INDLocalStore:
 
             if message_type == protocol_v3.CONFLICT_PROOF_TYPE:
                 if "network_id" not in message:
-                    self._require_legacy_bill_protocol("legacy conflict proof ingest")
+                    self._reject_non_v3_bill_protocol("non-V3 conflict proof ingest")
                 return self._ingest_conflict_proof_v3(conn, message)
 
             if message_type == TRANSPARENCY_ROOT_ANNOUNCEMENT_TYPE:
@@ -3847,12 +3460,7 @@ class INDLocalStore:
 
     # Force a compact checkpoint for one locally settled bill.
     def compact_bill_now(self, token_id=None, display_id=None):
-        try:
-            return self.compact_bill_v3_now(token_id=token_id, display_id=display_id)
-        except ValidationError as exc:
-            if str(exc) != "BillV3 not found":
-                raise
-            self._require_legacy_bill_protocol("legacy compact checkpoint")
+        return self.compact_bill_v3_now(token_id=token_id, display_id=display_id)
 
     # Return a rebuilt bearer bill by protocol bill id.
     def get_token(self, token_id):
@@ -3892,13 +3500,7 @@ class INDLocalStore:
                 bill = protocol_v3.decode_bill(bytes(bill_row["bill_blob"]))
                 if not bill["recent_transfers"]:
                     return bill
-            row = conn.execute(
-                "SELECT token_id FROM tokens WHERE display_id = ?",
-                (display_id,),
-            ).fetchone()
-            if row is None:
-                return None
-            return self._compact_bill_from_latest_checkpoint(conn, row["token_id"])
+            return None
 
     # Return a compact V3 bill by protocol bill id when a checkpoint exists.
     def get_compact_bill(self, token_id):
@@ -3918,7 +3520,7 @@ class INDLocalStore:
                 bill = protocol_v3.decode_bill(bytes(bill_row["bill_blob"]))
                 if not bill["recent_transfers"]:
                     return bill
-            return self._compact_bill_from_latest_checkpoint(conn, token_id)
+            return None
 
     # Return the stored bill row used by UI and tests.
     def get_token_record(self, token_id):

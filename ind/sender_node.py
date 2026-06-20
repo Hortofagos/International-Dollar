@@ -35,6 +35,18 @@ def _env_int(name, default, minimum=None, maximum=None):
     return result
 
 
+def _env_float(name, default, minimum=None, maximum=None):
+    try:
+        result = float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        result = float(default)
+    if minimum is not None:
+        result = max(float(minimum), result)
+    if maximum is not None:
+        result = min(float(maximum), result)
+    return result
+
+
 MAX_PEERS_PER_IPV4_C_BLOCK = 3
 MAX_PEERS_PER_ADDRESS_BLOCK = MAX_PEERS_PER_IPV4_C_BLOCK
 DEFAULT_DIVERSE_PEER_SAMPLE = 12
@@ -53,6 +65,9 @@ WALLET_SYNC_REQUEST_BUDGET_SECONDS = 8
 WALLET_SYNC_FETCH_BUDGET_SECONDS = 30
 WALLET_SYNC_TOKEN_CURSOR_LIMIT = 5000
 WALLET_SEND_WINDOW_SECONDS = _env_int("IND_WALLET_SEND_WINDOW_SECONDS", 5, minimum=1)
+WALLET_MAX_BILLS_PER_SECOND = _env_float(
+    "IND_WALLET_MAX_BILLS_PER_SECOND", 2.0, minimum=0.1
+)
 WALLET_MAX_GOSSIP_PER_PEER_WINDOW = _env_int(
     "IND_WALLET_MAX_GOSSIP_PER_PEER_WINDOW", 100, minimum=1
 )
@@ -66,6 +81,12 @@ WALLET_BROADCAST_ROUTE_BUDGET_SECONDS = _env_int(
 )
 WALLET_BROADCAST_BILL_BUDGET_SECONDS = _env_int(
     "IND_WALLET_BROADCAST_BILL_BUDGET_SECONDS", 12, minimum=1, maximum=120
+)
+WALLET_FIRE_AND_FORGET_PEER_FANOUT = _env_int(
+    "IND_WALLET_FIRE_AND_FORGET_PEER_FANOUT", 1, minimum=1
+)
+WALLET_FIRE_AND_FORGET_PEER_TIMEOUT_SECONDS = _env_float(
+    "IND_WALLET_FIRE_AND_FORGET_PEER_TIMEOUT_SECONDS", 2.0, minimum=0.2, maximum=10.0
 )
 WALLET_QUEUED_RETRY_MAX_ATTEMPTS = _env_int(
     "IND_WALLET_QUEUED_RETRY_MAX_ATTEMPTS", 12, minimum=1
@@ -105,6 +126,7 @@ _last_dns_seed_refresh = 0
 _peer_backoff_until = {}
 _peer_backoff_lock = threading.Lock()
 _paced_send_lock = threading.Lock()
+_queued_send_cancel_event = threading.Event()
 _queued_gossip_retries = set()
 _queued_gossip_retry_lock = threading.Lock()
 
@@ -864,6 +886,18 @@ def _retry_delay_for_result(result):
     return 0.0
 
 
+def request_cancel_queued_bills():
+    _queued_send_cancel_event.set()
+
+
+def clear_cancel_queued_bills():
+    _queued_send_cancel_event.clear()
+
+
+def queued_bill_cancel_requested():
+    return _queued_send_cancel_event.is_set()
+
+
 class OutboundGossipPacer:
     def __init__(
         self,
@@ -931,6 +965,34 @@ class OutboundGossipPacer:
             peer = attempt.get("peer", "")
             if peer:
                 self.record(peer, now=now)
+
+
+class OutboundBillPacer:
+    def __init__(
+        self,
+        max_bills_per_second=WALLET_MAX_BILLS_PER_SECOND,
+        now_func=None,
+        sleep_func=None,
+    ):
+        self.max_bills_per_second = max(0.1, float(max_bills_per_second))
+        self.interval_seconds = 1.0 / self.max_bills_per_second
+        self.now_func = now_func or time.monotonic
+        self.sleep_func = sleep_func or time.sleep
+        self.next_send_at = 0.0
+
+    def _now(self):
+        return float(self.now_func())
+
+    def wait(self, deadline=None):
+        now = self._now()
+        if self.next_send_at > now:
+            delay = self.next_send_at - now
+            if not _can_wait_for(deadline, delay):
+                return False
+            self.sleep_func(delay)
+            now = self._now()
+        self.next_send_at = max(self.next_send_at, now) + self.interval_seconds
+        return True
 
 
 def _is_v3_transfer_announcement(message):
@@ -1096,6 +1158,122 @@ def _broadcast_gossip_to_peer_quorum(
     )
 
 
+def _send_gossip_no_response(raw, route_info, timeout):
+    peer = route_info["peer"]
+    route = route_info["route"]
+    started = time.monotonic()
+    try:
+        ind_transport.send_no_response(
+            (route, node_port()),
+            "b",
+            raw,
+            peer_ip=route,
+            timeout=timeout,
+        )
+        return _attempt_dict(
+            peer,
+            route,
+            REQUEST_OK,
+            response="",
+            elapsed_seconds=time.monotonic() - started,
+        )
+    except Exception as exc:
+        status = _classify_request_exception(exc)
+        if status == REQUEST_PEER_KEY_MISMATCH and route not in already_tried:
+            already_tried.append(route)
+        logger.debug("fire-and-forget gossip to %s failed as %s: %s", route, status, exc)
+        return _attempt_dict(
+            peer,
+            route,
+            status,
+            error=str(exc),
+            elapsed_seconds=time.monotonic() - started,
+        )
+
+
+def _broadcast_gossip_fire_and_forget(
+    raw,
+    peers,
+    *,
+    pacer=None,
+    fanout=None,
+    timeout=None,
+    deadline=None,
+):
+    peers = _dedupe_preserving_order(str(peer).strip() for peer in peers or [] if str(peer).strip())
+    if not raw or not peers:
+        return PeerRequestResult(
+            status=REQUEST_CONNECTION_CLOSED,
+            error="no peer routes available",
+        )
+
+    fanout = max(1, int(fanout or WALLET_FIRE_AND_FORGET_PEER_FANOUT))
+    timeout = float(timeout or WALLET_FIRE_AND_FORGET_PEER_TIMEOUT_SECONDS)
+    attempts = []
+    dispatched_peers = []
+    dispatched_routes = []
+    tried_routes = set()
+
+    while len(dispatched_peers) < fanout:
+        if deadline is not None and _remaining_deadline_seconds(deadline) <= 0:
+            break
+        remaining_peers = [
+            peer for peer in _ordered_peer_candidates(peers) if peer not in dispatched_peers
+        ]
+        if not remaining_peers:
+            break
+        ready_peers = remaining_peers if pacer is None else pacer.available_peers(remaining_peers)
+        if not ready_peers:
+            delay = max(0.1, pacer.wait_seconds(remaining_peers) if pacer is not None else 0.1)
+            if not _can_wait_for(deadline, delay):
+                break
+            time.sleep(delay)
+            continue
+
+        routes = [
+            route_info
+            for route_info in expanded_peer_routes(ready_peers)
+            if route_info["route"] not in tried_routes
+        ]
+        if not routes:
+            break
+        route_info = routes[0]
+        tried_routes.add(route_info["route"])
+        if pacer is not None:
+            pacer.record(route_info["peer"])
+        attempt = _send_gossip_no_response(raw, route_info, timeout)
+        attempts.append(attempt)
+        if attempt.get("status") == REQUEST_OK:
+            dispatched_peers.append(route_info["peer"])
+            dispatched_routes.append(route_info["route"])
+
+    if dispatched_peers:
+        return PeerRequestResult(
+            status=REQUEST_OK,
+            response="",
+            peer=dispatched_peers[0],
+            route=dispatched_routes[0],
+            attempts=tuple(attempts),
+            acked_peers=tuple(dispatched_peers),
+        )
+    if attempts:
+        status = attempts[-1].get("status") or REQUEST_TIMEOUT
+        return PeerRequestResult(
+            status=status,
+            response="",
+            peer=attempts[-1].get("peer", ""),
+            route=attempts[-1].get("route", ""),
+            attempts=tuple(attempts),
+            error="gossip frame was not handed to a peer",
+        )
+    return PeerRequestResult(
+        status=REQUEST_TIMEOUT,
+        response="",
+        attempts=tuple(attempts),
+        error="fire-and-forget route budget exhausted",
+    )
+
+
 def _send_progress_payload(
     event,
     *,
@@ -1166,6 +1344,7 @@ def _estimate_send_eta(sent, queued_remaining, started_at, peer_count, now=None)
         * float(WALLET_MAX_GOSSIP_PER_PEER_WINDOW)
         / float(WALLET_SEND_WINDOW_SECONDS)
     )
+    configured_rate = min(configured_rate, float(WALLET_MAX_BILLS_PER_SECOND))
     rate = observed_rate or configured_rate
     if rate <= 0:
         return 0
@@ -1368,34 +1547,14 @@ def _run_queued_gossip_retry(transaction_path, raw, peers, *, initial_delay_seco
         if not transaction_path.exists():
             return True
 
-        result = _broadcast_gossip_to_peer_quorum(
+        result = _broadcast_gossip_fire_and_forget(
             raw,
             peers,
             pacer=OutboundGossipPacer(),
         )
         if result.status == REQUEST_OK:
             if _remove_transaction_file(transaction_path):
-                logger.info("queued gossip %s accepted after background retry", transaction_path)
-            return True
-
-        try:
-            queued_message = runtime_json.read_transaction_message(transaction_path)
-        except FileNotFoundError:
-            return True
-        except Exception as exc:
-            queued_message = None
-            logger.debug(
-                "could not read queued gossip %s for reconciliation: %s",
-                transaction_path,
-                exc,
-            )
-
-        if queued_message and _remote_status_confirms_gossip(queued_message, peers):
-            if _remove_transaction_file(transaction_path):
-                logger.info(
-                    "queued gossip %s confirmed by status after background retry",
-                    transaction_path,
-                )
+                logger.info("queued gossip %s dispatched after background retry", transaction_path)
             return True
 
         if attempt >= max_attempts:
@@ -1493,7 +1652,7 @@ def public_ip():
     return None
 
 
-# Validate queued wallet gossip locally, then broadcast it to sampled peers at a polite pace.
+# Validate queued wallet gossip locally, then dispatch it to sampled peers at a polite pace.
 def send_queued_bills_paced(progress_callback=None, max_duration_seconds=None):
     if not _paced_send_lock.acquire(blocking=False):
         queued = _transaction_file_count()
@@ -1516,6 +1675,7 @@ def send_queued_bills_paced(progress_callback=None, max_duration_seconds=None):
         }
 
     try:
+        clear_cancel_queued_bills()
         ensure_runtime_files()
         started_at = time.monotonic()
         deadline = (
@@ -1529,6 +1689,7 @@ def send_queued_bills_paced(progress_callback=None, max_duration_seconds=None):
         deferred_paths = set()
         rate_limited_peers = set()
         pacer = OutboundGossipPacer()
+        bill_pacer = OutboundBillPacer()
         peer_count = 0
 
         def emit(event, message="", **extra):
@@ -1582,6 +1743,9 @@ def send_queued_bills_paced(progress_callback=None, max_duration_seconds=None):
         stop_reason = ""
 
         while True:
+            if queued_bill_cancel_requested():
+                stop_reason = "cancelled"
+                break
             if deadline is not None and _remaining_deadline_seconds(deadline) <= 0:
                 stop_reason = "send time budget exhausted"
                 break
@@ -1596,6 +1760,9 @@ def send_queued_bills_paced(progress_callback=None, max_duration_seconds=None):
                 break
 
             for transaction_path in process_paths:
+                if queued_bill_cancel_requested():
+                    stop_reason = "cancelled"
+                    break
                 if deadline is not None and _remaining_deadline_seconds(deadline) <= 0:
                     stop_reason = "send time budget exhausted"
                     break
@@ -1616,62 +1783,29 @@ def send_queued_bills_paced(progress_callback=None, max_duration_seconds=None):
                     emit("error", "Dropped one invalid queued bill.")
                     continue
 
-                while True:
-                    result = _broadcast_gossip_to_peer_quorum(
-                        wire_message,
-                        peers,
-                        pacer=pacer,
-                        deadline=deadline,
+                if not bill_pacer.wait(deadline=deadline):
+                    stop_reason = "send time budget exhausted"
+                    break
+                if queued_bill_cancel_requested():
+                    stop_reason = "cancelled"
+                    break
+
+                result = _broadcast_gossip_fire_and_forget(
+                    wire_message,
+                    peers,
+                    pacer=pacer,
+                    deadline=deadline,
+                )
+
+                if result.status == REQUEST_OK:
+                    _remove_transaction_file(transaction_path)
+                    sent += 1
+                    emit(
+                        "sending",
+                        f"Dispatched {sent} queued bill(s).",
+                        dispatched_peers=len(result.acked_peers),
                     )
-                    rate_limited_peers.update(_rate_limited_attempt_peers(result))
-
-                    if result.status == REQUEST_OK:
-                        failed_peers = _failed_peers_before_success(result)
-                        if failed_peers:
-                            _schedule_raw_gossip_retry(
-                                wire_message,
-                                failed_peers,
-                                delay_seconds=_retry_delay_for_result(result),
-                            )
-                            logger.info(
-                                "queued gossip %s accepted by %s; retrying failed peers %s in background",
-                                transaction_path,
-                                result.route or result.peer,
-                                failed_peers,
-                            )
-                        _remove_transaction_file(transaction_path)
-                        sent += 1
-                        emit(
-                            "sending",
-                            f"Broadcasted {sent} queued bill(s).",
-                            acked_peers=len(result.acked_peers),
-                            required_peer_acks=min(WALLET_BROADCAST_MIN_PEER_ACKS, len(peers)),
-                        )
-                        break
-
-                    if result.status == REQUEST_INVALID:
-                        logger.warning("dropping remotely invalid queued transaction %s", transaction_path)
-                        _remove_transaction_file(transaction_path)
-                        dropped += 1
-                        emit("error", "Dropped one rejected queued bill.")
-                        break
-
-                    if result.status == REQUEST_RATE_LIMITED:
-                        delay = max(0.1, _retry_delay_for_result(result))
-                        emit(
-                            "rate_limited",
-                            f"Peers are busy. One bill will retry in about {math.ceil(delay)}s.",
-                            retry_after_seconds=delay,
-                        )
-                        _schedule_queued_gossip_retry(
-                            transaction_path,
-                            wire_message,
-                            peers,
-                            delay_seconds=delay,
-                        )
-                        deferred_paths.add(transaction_key)
-                        break
-
+                else:
                     _schedule_queued_gossip_retry(
                         transaction_path,
                         wire_message,
@@ -1680,15 +1814,11 @@ def send_queued_bills_paced(progress_callback=None, max_duration_seconds=None):
                     )
                     deferred_paths.add(transaction_key)
                     logger.info(
-                        "kept queued transaction %s after %s network result",
+                        "kept queued transaction %s after %s handoff result",
                         transaction_path,
                         result.status,
                     )
-                    if result.status == REQUEST_TIMEOUT:
-                        emit("waiting", "Peer response timed out. One bill will retry automatically.")
-                    else:
-                        emit("waiting", "One bill is queued for automatic retry.")
-                    break
+                    emit("waiting", "One bill is queued for automatic handoff retry.")
 
                 if stop_reason:
                     break
@@ -1697,9 +1827,14 @@ def send_queued_bills_paced(progress_callback=None, max_duration_seconds=None):
                 break
 
         queued_remaining = _transaction_file_count()
-        status = "complete" if queued_remaining == 0 else "partial"
+        if stop_reason == "cancelled":
+            status = "cancelled"
+        else:
+            status = "complete" if queued_remaining == 0 else "partial"
         if status == "complete":
-            emit("complete", f"Sent {sent} queued bill(s).")
+            emit("complete", f"Dispatched {sent} queued bill(s).")
+        elif status == "cancelled":
+            emit("cancelled", f"Send cancelled. {queued_remaining} queued bill(s) were not dispatched.")
         else:
             message = f"{queued_remaining} bill(s) still queued. Retrying automatically."
             if stop_reason == "send time budget exhausted":

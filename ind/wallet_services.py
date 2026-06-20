@@ -93,7 +93,7 @@ def bill_is_spendable(store, bill, wallet_address, min_settled_seconds=0):
     if isinstance(bill, dict) and bill.get("type") == protocol_v3.BILL_TYPE:
         return bill_is_spendable_v3(store, bill, wallet_address)
     raise ind_token.ValidationError(
-        protocol_policy.legacy_disabled_message("legacy wallet spendability")
+        protocol_policy.non_v3_disabled_message("non-V3 wallet spendability")
     )
 
 
@@ -193,7 +193,7 @@ def spend_wallet_bill(wallet_lines, wallet_bill_line, recipient_address, store=N
             recipient_address,
             store=store,
         )
-    raise ind_token.ValidationError(protocol_policy.legacy_disabled_message("legacy wallet spend"))
+    raise ind_token.ValidationError(protocol_policy.non_v3_disabled_message("non-V3 wallet spend"))
 
 
 # Return a V3 wallet tuple: address, private key, public key.

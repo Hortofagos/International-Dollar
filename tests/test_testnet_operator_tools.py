@@ -1,15 +1,9 @@
-import os
 import unittest
 from unittest import mock
 
 from ind import protocol_v3
 from ind.store import INDLocalStore
-from tools import (
-    testnet_adversarial_probe,
-    testnet_report,
-    testnet_smoke,
-    v3_double_spend_drill,
-)
+from tools import testnet_adversarial_probe, testnet_report, v3_double_spend_drill
 
 from .test_archive_segment_v3 import native_v3_archive_fixture
 
@@ -67,32 +61,6 @@ class TestnetReportTests(unittest.TestCase):
             timeout=60,
             max_duration_seconds=75,
         )
-
-
-class TestnetSmokeTests(unittest.TestCase):
-    def test_temporary_env_restores_previous_values(self):
-        with mock.patch.dict(os.environ, {"IND_NETWORK": "mainnet"}, clear=False):
-            with testnet_smoke.temporary_env(
-                {"IND_NETWORK": "testnet", "IND_STORE_PATH": "test.db"}
-            ):
-                self.assertEqual(os.environ["IND_NETWORK"], "testnet")
-                self.assertEqual(os.environ["IND_STORE_PATH"], "test.db")
-
-            self.assertEqual(os.environ["IND_NETWORK"], "mainnet")
-            self.assertNotIn("IND_STORE_PATH", os.environ)
-
-    def test_validate_wallet_lines_rejects_wrong_public_key(self):
-        address, _private_key, _public_key = testnet_smoke.address_generation.generate_keypair()
-        _other_address, other_private_key, other_public_key = (
-            testnet_smoke.address_generation.generate_keypair()
-        )
-
-        with self.assertRaisesRegex(testnet_smoke.SmokeError, "public key"):
-            testnet_smoke.validate_wallet_lines(
-                address,
-                [address + "\n", other_private_key + "\n", other_public_key + "\n"],
-            )
-
 
 class TestnetAdversarialProbeTests(unittest.TestCase):
     def test_invalid_probe_payloads_include_fresh_valid_message_mutations(self):

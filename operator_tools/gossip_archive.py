@@ -14,6 +14,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from ind import settings as ind_settings
 from ind import keys_v3
+from ind import protocol_v3
 from ind import token as ind_token
 from tools import testnet_peers
 
@@ -149,16 +150,12 @@ def archive_id_for(network, message_count, segments):
 
 
 def _message_bill(message):
-    if message.get("type") in {
-        ind_token.TRANSFER_ANNOUNCEMENT_V3_TYPE,
-        ind_token.RECEIPT_ANNOUNCEMENT_V3_TYPE,
-    }:
-        return message.get("bill")
-    if message.get("type") in {
-        ind_token.TRANSFER_ANNOUNCEMENT_TYPE,
-        ind_token.RECEIPT_ANNOUNCEMENT_TYPE,
-    }:
-        return message.get("token")
+    if (
+        message.get("type") == protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE
+        and "payload_encoding" in message
+    ):
+        bill, _bundle, _segments = protocol_v3.decode_transfer_announcement(message)
+        return bill
     return None
 
 
@@ -343,13 +340,14 @@ def audit_archive(archive_dir, *, manifest_path=None, expected_public_key=None):
 def _entry_refs(entry):
     refs = set()
     message = entry.get("message", {})
-    bill = _message_bill(message)
+    try:
+        bill = _message_bill(message)
+    except Exception:
+        bill = None
     if isinstance(bill, dict):
-        try:
-            state = ind_token.verify_token(bill)
-            refs.update({state.display_id, state.token_id})
-        except Exception:
-            refs.add(str(bill.get("token_id", "")))
+        refs.add(str(bill.get("token_id", "")))
+        checkpoint = bill.get("checkpoint_core") or {}
+        refs.add(str(checkpoint.get("display_id", "")))
     if message.get("type") == ind_token.CONFLICT_PROOF_TYPE:
         refs.add(str(message.get("token_id", "")))
     return {item for item in refs if item}
