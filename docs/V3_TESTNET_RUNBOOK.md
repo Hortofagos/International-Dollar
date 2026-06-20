@@ -65,12 +65,15 @@ operator/API-origin split view.
 ## Mirror Freshness
 
 Run root publication and archive publication as separate jobs. Root mirrors are
-the current-spend safety path; a missing or delayed hash-log archive must not
-block `latest.json` from refreshing.
+the current-spend safety path; hash-log archives are the required operator audit
+path. A missing or delayed archive must not block `latest.json` from refreshing,
+but it is still a production-readiness failure for an append-capable operator.
 
 For cross-host static mirrors, use `tools/publish_testnet_static_mirror.py` with
-`--allow-missing-archive`, or `--no-archive` when the job is intentionally
-root-only. Each operator should have independent root publishers for:
+`--allow-missing-archive` only for emergency root freshness. Each append-capable
+operator must also publish `archive/manifest.json` and every segment referenced
+by it at each configured `proof_archives` URL. Each operator should have
+independent root publishers for:
 
 - local operator root to local website mirror
 - local operator root to the opposite VPS website mirror

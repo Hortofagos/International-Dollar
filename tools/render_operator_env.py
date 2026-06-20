@@ -68,8 +68,15 @@ def load_operator_set(path):
             raise OperatorSetError(
                 f"{name} mirror must not share the operator append HTTP origin"
             )
-        if not archives:
-            raise OperatorSetError(f"{name} must include at least one proof archive")
+        if len(archives) < min_root_mirrors:
+            raise OperatorSetError(
+                f"{name} has {len(archives)} proof archive(s), needs {min_root_mirrors}"
+            )
+        archive_origins = {_http_origin(archive) for archive in archives}
+        if operator_origin and operator_origin in archive_origins:
+            raise OperatorSetError(
+                f"{name} proof archive must not share the operator append HTTP origin"
+            )
         if name in names or url in urls or public_key in keys:
             raise OperatorSetError(f"{name} duplicates another operator identity")
         names.add(name)
