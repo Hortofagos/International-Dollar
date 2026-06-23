@@ -56,6 +56,11 @@ testnet/*.local.json
 genesis/*
 !genesis/.gitignore
 !genesis/README.md
+tools/offline_genesis_bundle/keys/
+tools/offline_genesis_bundle/private-backups/
+tools/offline_genesis_bundle/*.tar
+tools/offline_genesis_bundle/*.tar.gpg
+tools/offline_genesis_bundle/*.sha256
 output/
 
 # Runtime databases and node state

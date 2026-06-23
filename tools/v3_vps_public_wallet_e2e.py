@@ -879,9 +879,21 @@ def parse_args(argv=None):
     parser.add_argument("--run-id", default=time.strftime("%Y%m%d_%H%M%S"))
     parser.add_argument("--report-path", type=Path)
     parser.add_argument("--skip-iotb-issue", action="store_true")
+    parser.add_argument(
+        "--allow-synthetic-genesis-issue",
+        action="store_true",
+        help=(
+            "allow remote issue probes without genesis_manifest_file and "
+            "genesis_owner_private_key_file; unsafe outside local sandboxes"
+        ),
+    )
     parser.add_argument("--skip-issue-evidence-broadcast", action="store_true")
     parser.add_argument("--wait-final-status-seconds", type=int, default=65)
     return parser.parse_args(argv)
+
+
+def _has_trusted_genesis_context(node):
+    return bool(node.get("genesis_manifest_file") and node.get("genesis_owner_private_key_file"))
 
 
 def main(argv=None):
@@ -947,6 +959,7 @@ def main(argv=None):
         "issued_receives": [],
         "hops": [],
         "negative_cases": {},
+        "skipped_remote_issues": [],
         "failures": [],
     }
 
@@ -972,7 +985,18 @@ def main(argv=None):
             }
         )
         issues = list(primary_issue["issued"])
-        if not args.skip_iotb_issue:
+        if not args.skip_iotb_issue and not args.allow_synthetic_genesis_issue and not _has_trusted_genesis_context(iotb_node):
+            report["skipped_remote_issues"].append(
+                {
+                    "node": iotb_node["name"],
+                    "reason": (
+                        "trusted genesis context is not configured; synthetic "
+                        "operator-issued genesis probes are disabled by default"
+                    ),
+                }
+            )
+            _progress("skipping iotb-backed issue: trusted genesis context is not configured")
+        elif not args.skip_iotb_issue:
             _progress("issuing iotb-backed bills")
             iotb_issue = _issue_remote(iotb_node, args.run_id, iotb_specs)
             _progress(f"iotb issued {len(iotb_issue['issued'])} bills")
