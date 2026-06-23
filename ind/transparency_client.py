@@ -45,7 +45,6 @@ LOG_TREE_ALGORITHM = "CT_STYLE_SHA3_256_V3"
 LOG_SPEND_MAP_ALGORITHM = "IND_SPARSE_SPEND_MAP_SHA3_256_V3"
 LEGACY_LOG_TREE_ALGORITHM = "RFC6962_SHA3_256_PYMERKLE_V3"
 LOG_SIGNATURE_ALGORITHM = "ED25519_BASE85"
-LEGACY_LOG_SIGNATURE_ALGORITHM = "ECDSA_SECP256K1_SHA3_256_BASE85"
 LOG_ROOT_SIGNATURE_DOMAIN = "IND_TRANSPARENCY_ROOT_V3"
 LOG_KEY_ROTATION_SIGNATURE_DOMAIN = "IND_TRANSPARENCY_KEY_ROTATION_V3"
 LOG_KEY_REVOCATION_SIGNATURE_DOMAIN = "IND_TRANSPARENCY_KEY_REVOCATION_V3"
@@ -192,10 +191,7 @@ def log_id_from_public_key(public_key_base85):
 
 
 def _signature_algorithms_for_verification():
-    algorithms = {LOG_SIGNATURE_ALGORITHM}
-    if accept_legacy_algorithm_names():
-        algorithms.add(LEGACY_LOG_SIGNATURE_ALGORITHM)
-    return algorithms
+    return {LOG_SIGNATURE_ALGORITHM}
 
 
 def _sign_operator_payload(private_key, payload):
@@ -217,10 +213,6 @@ def _verify_operator_payload(public_key, signature, payload, signature_algorithm
         if not public_key.startswith(keys_v3.PUBLIC_KEY_PREFIX):
             return False
         return keys_v3.verify(public_key, signature_bytes, payload)
-    if signature_algorithm == LEGACY_LOG_SIGNATURE_ALGORITHM and accept_legacy_algorithm_names():
-        if public_key.startswith(keys_v3.PUBLIC_KEY_PREFIX):
-            return False
-        return ind_token.b85_verify(public_key, signature, payload)
     return False
 
 

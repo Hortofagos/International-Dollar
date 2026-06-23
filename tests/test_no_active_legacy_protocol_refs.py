@@ -36,6 +36,8 @@ SKIP_FILES = {
 ALLOWED_MATCHES = {
     # Batch gossip is a transport envelope version, not the retired V1/V2 bill protocol.
     (Path("ind/node_client.py"), "versioned type suffix", ".v1"),
+    # Probe report schema version, not the retired V1/V2 bill protocol.
+    (Path("tools/v3_operator_fanout_probe.py"), "versioned type suffix", ".v1"),
 }
 FORBIDDEN = {
     "versioned type suffix": re.compile(r"\.v[12]\b"),
@@ -92,6 +94,24 @@ def test_active_wallet_generation_has_no_ecdsa_fallbacks():
     assert not failures, "wallet generation still exposes legacy ECDSA paths: " + ", ".join(
         failures
     )
+
+
+def test_active_tree_does_not_depend_on_python_ecdsa():
+    scanned = [ROOT / "requirements.txt"]
+    scanned.extend((ROOT / "ind").rglob("*.py"))
+    scanned.extend((ROOT / "tools").rglob("*.py"))
+    failures = []
+    for path in scanned:
+        if not path.is_file():
+            continue
+        rel = path.relative_to(ROOT)
+        if any(part in SKIP_DIRS for part in rel.parts):
+            continue
+        text = path.read_text(encoding="utf-8").lower()
+        if "ecdsa" in text or "secp256" in text or "signingkey" in text or "verifyingkey" in text:
+            failures.append(str(rel))
+
+    assert not failures, "python-ecdsa references remain in active code: " + ", ".join(failures)
 
 
 def test_retired_json_bill_entrypoints_are_removed():

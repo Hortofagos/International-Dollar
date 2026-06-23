@@ -64,15 +64,7 @@ def test_v3_sign_and_verify_from_text_keys():
 
 def _deterministic_v1_keypair():
     import base64
-    from hashlib import sha3_256
 
-    import ecdsa
-
-    signing_key = ecdsa.SigningKey.from_string(
-        b"\x11" * 32,
-        curve=ecdsa.SECP256k1,
-        hashfunc=sha3_256,
-    )
-    public_key = base64.b85encode(signing_key.get_verifying_key().to_string()).decode("ascii")
-    private_key = base64.b85encode(signing_key.to_string()).decode("ascii")
+    private_key = base64.b85encode(b"\x11" * 32).decode("ascii")
+    public_key = base64.b85encode(b"\x22" * 64).decode("ascii")
     return private_key, public_key, ind_token.address_from_public_key(public_key)

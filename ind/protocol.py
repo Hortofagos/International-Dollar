@@ -11,8 +11,6 @@ from dataclasses import dataclass
 from hashlib import sha3_256
 
 import base58
-import ecdsa
-from ecdsa import util as ecdsa_util
 
 
 def _env_int(name, default):
@@ -463,48 +461,11 @@ def sha3_hex(data):
 
 
 def b85_sign(private_key_base85, data):
-    private_key_decode = base64.b85decode(private_key_base85.strip())
-    signing_key = ecdsa.SigningKey.from_string(
-        private_key_decode,
-        curve=ecdsa.SECP256k1,
-        hashfunc=sha3_256,
-    )
-    signature = signing_key.sign_deterministic(
-        data,
-        hashfunc=sha3_256,
-        sigencode=ecdsa_util.sigencode_string_canonize,
-    )
-    return base64.b85encode(signature).decode("utf-8")
+    raise ValidationError("legacy base85 signing is disabled; use V3 Ed25519 keys")
 
 
 def b85_verify(public_key_base85, signature_base85, data):
-    try:
-        public_key_base85 = public_key_base85.strip()
-        verifying_key = _VERIFY_KEY_CACHE.get(public_key_base85)
-        if verifying_key is None:
-            public_key_decode = base64.b85decode(public_key_base85)
-            verifying_key = ecdsa.VerifyingKey.from_string(
-                public_key_decode,
-                curve=ecdsa.SECP256k1,
-                hashfunc=sha3_256,
-            )
-            if len(_VERIFY_KEY_CACHE) >= MAX_VERIFY_KEY_CACHE:
-                _VERIFY_KEY_CACHE.pop(next(iter(_VERIFY_KEY_CACHE)))
-            _VERIFY_KEY_CACHE[public_key_base85] = verifying_key
-        signature_decode = base64.b85decode(signature_base85.strip())
-        if len(signature_decode) != 64:
-            return False
-        _r, s = ecdsa_util.sigdecode_string(signature_decode, ecdsa.SECP256k1.order)
-        if s > ecdsa.SECP256k1.order // 2:
-            return False
-        return verifying_key.verify(
-            signature_decode,
-            data,
-            hashfunc=sha3_256,
-            sigdecode=ecdsa_util.sigdecode_string,
-        )
-    except Exception:
-        return False
+    return False
 
 
 def signature_payload(domain, data):

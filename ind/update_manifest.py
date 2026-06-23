@@ -15,7 +15,6 @@ UPDATE_PROMOTION_TYPE = "ind.operator_update_promotion.v3"
 UPDATE_SIGNATURE_DOMAIN = "IND_UPDATE_MANIFEST_V3"
 UPDATE_PROMOTION_SIGNATURE_DOMAIN = "IND_OPERATOR_UPDATE_PROMOTION_V3"
 UPDATE_SIGNATURE_ALGORITHM = "ED25519_BASE85"
-LEGACY_UPDATE_SIGNATURE_ALGORITHM = "ECDSA_SECP256K1_SHA3_256_BASE85"
 UPDATE_STATE_PATH = Path("files/update_state.json")
 
 RUNTIME_EXCLUDE_DIRS = {
@@ -88,10 +87,6 @@ def _verify_payload(public_key, signature, payload, signature_algorithm):
         except Exception:
             return False
         return keys_v3.verify(public_key, signature_bytes, payload)
-    if signature_algorithm == LEGACY_UPDATE_SIGNATURE_ALGORITHM:
-        if public_key.startswith(keys_v3.PUBLIC_KEY_PREFIX):
-            return False
-        return ind_token.b85_verify(public_key, signature, payload)
     return False
 
 
@@ -137,7 +132,7 @@ def _verify_signature(record, trusted_keys, domain, label):
     if public_key not in trusted:
         raise UpdateManifestError(f"{label} was signed by an untrusted key")
     signature_algorithm = str(record.get("signature_algorithm", ""))
-    if signature_algorithm not in {UPDATE_SIGNATURE_ALGORITHM, LEGACY_UPDATE_SIGNATURE_ALGORITHM}:
+    if signature_algorithm != UPDATE_SIGNATURE_ALGORITHM:
         raise UpdateManifestError(f"{label} uses an unsupported signature algorithm")
     signature = str(record.get("signature", "")).strip()
     if not signature:
