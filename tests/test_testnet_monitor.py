@@ -1,4 +1,5 @@
 import json
+import types
 
 from tools import testnet_monitor
 
@@ -93,3 +94,23 @@ def test_collect_transparency_flags_same_size_mirror_hash_mismatch(tmp_path, mon
     codes = {issue["code"] for issue in report["issues"]}
     assert "mirror_root_hash_mismatch" in codes
     assert report["transparency"]["mirror_roots"][0]["ok"] is False
+
+
+def test_build_report_with_retries_stops_after_ok(monkeypatch):
+    reports = iter(
+        [
+            {"ok": False, "issues": [{"level": "error", "code": "stale"}]},
+            {"ok": True, "issues": []},
+        ]
+    )
+    monkeypatch.setattr(testnet_monitor, "build_report", lambda _args: next(reports))
+    sleeps = []
+    monkeypatch.setattr(testnet_monitor.time, "sleep", sleeps.append)
+
+    args = types.SimpleNamespace(retry_count=3, retry_delay_seconds=2)
+    report = testnet_monitor.build_report_with_retries(args)
+
+    assert report["ok"] is True
+    assert report["attempt"] == 2
+    assert report["max_attempts"] == 3
+    assert sleeps == [2.0]

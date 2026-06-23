@@ -3315,7 +3315,7 @@ def set_print_charge_ready(ready):
     try:
         charge_bills_button.config(
             state=NORMAL if ready else DISABLED,
-            text='Charge bills' if ready else 'Charge after PDF',
+            text='I printed it - Charge' if ready else 'Charge after PDF',
             cursor='hand2' if ready else 'arrow',
         )
     except Exception:
@@ -3361,6 +3361,16 @@ def select_all_print_bills():
 def text_line_at_event(widget, event):
     index = widget.index(f'@{event.x},{event.y}')
     return widget.get(f'{index} linestart', f'{index} lineend').strip()
+
+
+def copy_text_selection(event):
+    try:
+        text = event.widget.selection_get()
+    except TclError:
+        return 'break'
+    root.clipboard_clear()
+    root.clipboard_append(text)
+    return 'break'
 
 
 def add_print_bill_from_available(event):
@@ -3475,7 +3485,7 @@ def selected_print_bill_sequences():
     return list_bills_2
 
 
-# Run PDF generation off the Tk thread and unlock charging after a delay.
+# Run PDF generation off the Tk thread and unlock charging after the PDF opens.
 def start_print_pdf_job(
     print_method_name,
     creating_status,
@@ -3523,13 +3533,8 @@ def start_print_pdf_job(
             address_to_charge.extend(return_addr)
             set_print_progress(1, 1)
             set_print_status(opened_status)
-
-            def enable_charge():
-                # Charging is delayed so users have time to complete the print dialog first.
-                set_print_charge_ready(True)
-                set_print_status(ready_status, IND_ORANGE)
-
-            root.after(60000, enable_charge)
+            set_print_charge_ready(True)
+            set_print_status(ready_status, IND_ORANGE)
 
         root.after(0, finish)
 
@@ -3542,8 +3547,8 @@ def print_bills():
         'full_bill',
         'Creating full bill PDF...',
         'Print bills failed',
-        'PDF opened. Print it first; Charge unlocks after the print window has time to finish.',
-        'PDF should be ready. Charge bills after you have printed the paper copies.',
+        'PDF opened. Print or save it, then click "I printed it - Charge".',
+        'After printing, click "I printed it - Charge" to send funds to the paper wallets.',
     )
 
 
@@ -3553,8 +3558,8 @@ def print_only_qr():
         'only_qr',
         'Creating QR-only PDF...',
         'Print QR bills failed',
-        'QR PDF opened. Print it first; Charge unlocks after the print window has time to finish.',
-        'PDF should be ready. Charge bills after you have printed the QR copies.',
+        'QR PDF opened. Print or save it, then click "I printed it - Charge".',
+        'After printing, click "I printed it - Charge" to send funds to the QR wallets.',
         extra_busy_buttons=(button_only_qr,),
     )
 
@@ -3607,6 +3612,9 @@ selected_bills_text = Text(
     wrap='none',
 )
 all_bills_text.bind('<Key>', lambda e: 'break')
+all_bills_text.bind('<Control-c>', copy_text_selection)
+all_bills_text.bind('<Control-C>', copy_text_selection)
+all_bills_text.bind('<Control-Insert>', copy_text_selection)
 all_bills_text.bind('<Double-Button-1>', add_print_bill_from_available)
 selected_bills_text.bind('<Double-Button-1>', remove_print_bill_from_queue)
 selected_bills_text.bind('<<Modified>>', on_print_selection_modified)
@@ -4060,7 +4068,24 @@ WALLET_HISTORY_HOVER_FG = '#9aa3a0'
 wallet_history_cached_entries = []
 
 
+def claim_workflow_is_visible():
+    try:
+        widget = globals().get('claim_bill')
+        return bool(widget is not None and widget.winfo_ismapped())
+    except Exception:
+        log_ignored_exception()
+        return False
+
+
+def hide_wallet_history_nav():
+    next_button.place_forget()
+    previous_button.place_forget()
+
+
 def show_wallet_history_nav(button, x):
+    if claim_workflow_is_visible():
+        hide_wallet_history_nav()
+        return
     button.place(
         x=x * reso,
         y=WALLET_HISTORY_NAV_Y * reso,
@@ -4169,9 +4194,55 @@ def wallet_history_entry(
     }
 
 
+def wallet_history_sequence_number(sequence):
+    try:
+        return int(str(sequence).strip())
+    except Exception:
+        return None
+
+
+def wallet_history_seen_key(display_id, sequence):
+    return (str(display_id).strip().lstrip("-"), str(sequence).strip())
+
+
+def wallet_history_record_is_newer(record, current):
+    if current is None:
+        return True
+    record_sequence = wallet_history_sequence_number(record.get("sequence"))
+    current_sequence = wallet_history_sequence_number(current.get("sequence"))
+    if record_sequence is not None and current_sequence is not None:
+        if record_sequence != current_sequence:
+            return record_sequence > current_sequence
+    elif record_sequence is not None:
+        return True
+    elif current_sequence is not None:
+        return False
+    record_updated = int(record.get("updated_at") or record.get("first_seen") or 0)
+    current_updated = int(current.get("updated_at") or current.get("first_seen") or 0)
+    return record_updated > current_updated
+
+
+def keep_latest_wallet_history_record(records_by_display_id, record):
+    display_id = str(record["display_id"]).strip().lstrip("-")
+    current = records_by_display_id.get(display_id)
+    if wallet_history_record_is_newer(record, current):
+        records_by_display_id[display_id] = record
+
+
+def wallet_history_record_for_sequence(records_by_display_id, display_id, sequence):
+    record = records_by_display_id.get(str(display_id).strip().lstrip("-"))
+    if record is None:
+        return None
+    record_sequence = str(record.get("sequence", "")).strip()
+    line_sequence = str(sequence).strip()
+    if record_sequence and line_sequence and record_sequence != line_sequence:
+        return None
+    return record
+
+
 def wallet_history_entries():
     entries = []
-    seen_ids = set()
+    seen_records = set()
     record_by_display_id = {}
     pending_by_display_id = {}
     try:
@@ -4186,12 +4257,12 @@ def wallet_history_entries():
         pending_records = []
     try:
         for record in spendable_records:
-            record_by_display_id[str(record["display_id"])] = record
+            keep_latest_wallet_history_record(record_by_display_id, record)
     except Exception:
         log_ignored_exception()
     try:
         for record in pending_records:
-            pending_by_display_id[str(record["display_id"])] = record
+            keep_latest_wallet_history_record(pending_by_display_id, record)
     except Exception:
         log_ignored_exception()
     try:
@@ -4201,17 +4272,21 @@ def wallet_history_entries():
                 continue
             timestamp = int(parts[2])
             display_id = parts[0].lstrip("-")
-            seen_ids.add(display_id)
+            sequence = parts[1] if len(parts) > 1 else ""
+            seen_records.add(wallet_history_seen_key(display_id, sequence))
             direction = "Sent" if parts[0].startswith('-') else "Received"
             display_label = wallet_services.wallet_display_label(parts[0])
-            record = record_by_display_id.get(display_id) or pending_by_display_id.get(display_id)
+            record = (
+                wallet_history_record_for_sequence(record_by_display_id, display_id, sequence)
+                or wallet_history_record_for_sequence(pending_by_display_id, display_id, sequence)
+            )
             entries.append(
                 wallet_history_entry(
                     display_id,
                     timestamp=timestamp,
                     direction=direction,
                     status=direction,
-                    sequence=parts[1] if len(parts) > 1 else "",
+                    sequence=sequence,
                     source="Wallet history",
                     record=record,
                     display_label=display_label,
@@ -4222,7 +4297,8 @@ def wallet_history_entries():
     try:
         for record in record_by_display_id.values():
             display_id = str(record["display_id"])
-            if display_id in seen_ids:
+            sequence = record.get("sequence", "")
+            if wallet_history_seen_key(display_id, sequence) in seen_records:
                 continue
             timestamp = int(record.get("updated_at") or record.get("first_seen") or time.time())
             entries.append(
@@ -4231,18 +4307,19 @@ def wallet_history_entries():
                     timestamp=timestamp,
                     direction="Received",
                     status=str(record.get("status") or "settled"),
-                    sequence=record.get("sequence", ""),
+                    sequence=sequence,
                     source="Local store",
                     record=record,
                 )
             )
-            seen_ids.add(display_id)
+            seen_records.add(wallet_history_seen_key(display_id, sequence))
     except Exception:
         log_ignored_exception()
     try:
         for record in pending_by_display_id.values():
             display_id = str(record["display_id"])
-            if display_id in seen_ids:
+            sequence = record.get("sequence", "")
+            if wallet_history_seen_key(display_id, sequence) in seen_records:
                 continue
             timestamp = int(record.get("updated_at") or record.get("first_seen") or time.time())
             entries.append(
@@ -4251,12 +4328,12 @@ def wallet_history_entries():
                     timestamp=timestamp,
                     direction="Incoming",
                     status=str(record.get("status") or "pending"),
-                    sequence=record.get("sequence", ""),
+                    sequence=sequence,
                     source="Local store",
                     record=record,
                 )
             )
-            seen_ids.add(display_id)
+            seen_records.add(wallet_history_seen_key(display_id, sequence))
     except Exception:
         log_ignored_exception()
     return sorted(entries, key=lambda entry: entry["timestamp"], reverse=True)
@@ -6691,6 +6768,7 @@ def close():
     except Exception:
         log_ignored_exception()
     reset_wallet_qr_mode()
+    cancel_manual_bill_auto_add()
     # Widgets are manually placed per page, so navigation explicitly hides each one.
     claim_bills_amount.place_forget(), webcam_scanner.place_forget(), qr_scan_status.place_forget(), private_key_entry.place_forget()
     claim_left_separator.place_forget(), claim_right_separator.place_forget()
@@ -6743,6 +6821,7 @@ def close_amount():
 
 def close_bill_claimer():
     stop_qr_scan()
+    cancel_manual_bill_auto_add()
     serial_num.place_forget(), public_key_entry.place_forget(), check_validity_button.place_forget()
     claim_bills_amount.place_forget(), webcam_scanner.place_forget(), qr_scan_status.place_forget(), close_button.place_forget()
     claim_left_separator.place_forget(), claim_right_separator.place_forget()
@@ -6753,6 +6832,8 @@ def close_bill_claimer():
     hide_claim_background_overlay()
     claim_bill.place_forget(), add_bill_button.place_forget(), private_key_entry.place_forget()
     number_entry.place_forget()
+    if receiver_history.winfo_ismapped():
+        page(refresh_entries=False)
 
 
 send = make_asset_button(
@@ -6768,6 +6849,7 @@ close_amount_button = make_asset_button(
 
 # Open the claim workflow for manual entry, dropped images, or webcam scans.
 def plus_bills():
+    hide_wallet_history_nav()
     restore_webcam_scanner_prompt()
     update_claim_summary()
     show_claim_background_overlay()
@@ -6882,6 +6964,14 @@ QR_STATUS_RESULT_HOLD_MS = 800
 qr_scan_status_hold_until = 0.0
 
 
+def cancel_manual_bill_auto_add():
+    global manual_bill_auto_add_after_id
+    if manual_bill_auto_add_after_id is not None:
+        with contextlib.suppress(TclError):
+            root.after_cancel(manual_bill_auto_add_after_id)
+        manual_bill_auto_add_after_id = None
+
+
 # Claim scanned bills by importing transfer announcements or spending paper-wallet bills.
 def claim_bills():
     errors = []
@@ -6896,14 +6986,15 @@ def claim_bills():
         wallet_address = runtime_json.wallet_address_from_name(wallet_path.name)
         for bill in used_codes:
             claimed = False
+            preview = str(bill).splitlines()[0] if str(bill).splitlines() else "scanned bill"
             try:
                 if wallet_services.claim_bill_payload(bill, wallet_lines, wallet_address):
                     claimed = True
                     claim_count += 1
             except Exception as exc:
-                errors.append(f"{wallet_address}: {error_detail(exc)}")
+                errors.append(f"{preview}: {error_detail(exc)}")
+                continue
             if not claimed:
-                preview = str(bill).splitlines()[0] if str(bill).splitlines() else "scanned bill"
                 errors.append(f"{preview}: could not be claimed")
         if claim_count:
             start_wallet_send_worker(expected_total=claim_count)
@@ -7051,6 +7142,9 @@ def refresh_scanned_serials_list():
 
 def show_scanned_serials_list():
     try:
+        if not claim_workflow_is_visible():
+            hide_scanned_serials_list()
+            return
         refresh_scanned_serials_list()
         scanned_serials_overlay.place(
             x=SCANNED_SERIALS_OVERLAY_X * reso,

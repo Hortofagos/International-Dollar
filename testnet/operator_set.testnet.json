@@ -1,32 +1,50 @@
 {
-  "network": "testnet",
   "min_root_mirrors": 2,
+  "network": "testnet",
+  "operator_append_fanout": 5,
+  "operator_core_domains": [
+    "international-dollar.com",
+    "internetofthebots.com"
+  ],
   "operators": [
     {
-      "name": "primary",
-      "url": "https://testnet-seed.international-dollar.com/operator-api",
-      "public_key": "indpk3:x;`2)Mt$=iFdBW>=U@NjujM0LzPiq~)C8e23eH*u",
       "mirrors": [
         "https://international-dollar.com/transparency",
         "https://testnet-seed.internetofthebots.com/transparency"
       ],
+      "name": "primary",
       "proof_archives": [
         "https://international-dollar.com/transparency/archive",
         "https://testnet-seed.internetofthebots.com/transparency/archive"
-      ]
+      ],
+      "public_key": "indpk3:=B-fA7q0hRg#HKK4CBl87c!T;r&B&#5G^3#wd<@)",
+      "url": "https://testnet-seed.international-dollar.com/operator-api"
     },
     {
-      "name": "iotb",
-      "url": "https://testnet-seed.internetofthebots.com/operator-api",
-      "public_key": "indpk3:LN)QTd0?Wvc}-BYq*OyXs4rAcjtjvMz!YNdv~AnI",
       "mirrors": [
         "https://international-dollar.com/iotb-operator/transparency",
         "https://testnet-seed.international-dollar.com/iotb-operator/transparency"
       ],
+      "name": "iotb",
       "proof_archives": [
         "https://international-dollar.com/iotb-operator/transparency/archive",
         "https://testnet-seed.international-dollar.com/iotb-operator/transparency/archive"
-      ]
+      ],
+      "public_key": "indpk3:*EGNObOb5(62ZHerk?UG&Rr&^IkI%cUyS$uZ5Qno",
+      "url": "https://testnet-seed.internetofthebots.com/operator-api"
+    },
+    {
+      "mirrors": [
+        "http://167.233.115.216/operator3/transparency",
+        "http://91.99.175.174/operator3/transparency"
+      ],
+      "name": "operator3",
+      "proof_archives": [
+        "http://167.233.115.216/operator3/transparency/archive",
+        "http://91.99.175.174/operator3/transparency/archive"
+      ],
+      "public_key": "indpk3:KY$x=dWlnoIr>|D%-_QKr2#KPNuxNT(NV73KD~{}",
+      "url": "http://108.61.23.82/operator-api"
     }
   ]
 }

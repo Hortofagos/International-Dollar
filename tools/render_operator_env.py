@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_OPERATOR_SET = ROOT_DIR / "testnet" / "operator_set.testnet.json"
+DEFAULT_OPERATOR_APPEND_FANOUT = 5
+DEFAULT_OPERATOR_CORE_DOMAINS = ["international-dollar.com", "internetofthebots.com"]
 
 
 class OperatorSetError(RuntimeError):
@@ -24,6 +26,23 @@ def _as_list(value):
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _as_domain_list(value):
+    if value is None:
+        return list(DEFAULT_OPERATOR_CORE_DOMAINS)
+    if not isinstance(value, list):
+        raise OperatorSetError("operator_core_domains must be a list")
+    domains = []
+    seen = set()
+    for item in value:
+        domain = str(item).strip().lower().strip(".")
+        if domain.startswith("*."):
+            domain = domain[2:]
+        if domain and domain not in seen:
+            seen.add(domain)
+            domains.append(domain)
+    return domains
+
+
 def _http_origin(value):
     parsed = urlparse(str(value).strip())
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -34,14 +53,17 @@ def _http_origin(value):
     return f"{parsed.scheme}://{parsed.hostname.lower()}:{port}"
 
 
-def load_operator_set(path):
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+def normalize_operator_set(data):
     if not isinstance(data, dict):
         raise OperatorSetError("operator set must be a JSON object")
     operators = data.get("operators")
     if not isinstance(operators, list) or not operators:
         raise OperatorSetError("operator set must include at least one operator")
     min_root_mirrors = int(data.get("min_root_mirrors", 2))
+    operator_append_fanout = max(
+        1, int(data.get("operator_append_fanout", DEFAULT_OPERATOR_APPEND_FANOUT))
+    )
+    operator_core_domains = _as_domain_list(data.get("operator_core_domains"))
     normalized = []
     names = set()
     urls = set()
@@ -59,15 +81,11 @@ def load_operator_set(path):
         if not public_key:
             raise OperatorSetError(f"{name} is missing public_key")
         if len(mirrors) < min_root_mirrors:
-            raise OperatorSetError(
-                f"{name} has {len(mirrors)} mirror(s), needs {min_root_mirrors}"
-            )
+            raise OperatorSetError(f"{name} has {len(mirrors)} mirror(s), needs {min_root_mirrors}")
         operator_origin = _http_origin(url)
         mirror_origins = {_http_origin(mirror) for mirror in mirrors}
         if operator_origin and operator_origin in mirror_origins:
-            raise OperatorSetError(
-                f"{name} mirror must not share the operator append HTTP origin"
-            )
+            raise OperatorSetError(f"{name} mirror must not share the operator append HTTP origin")
         if len(archives) < min_root_mirrors:
             raise OperatorSetError(
                 f"{name} has {len(archives)} proof archive(s), needs {min_root_mirrors}"
@@ -94,8 +112,15 @@ def load_operator_set(path):
     return {
         "network": str(data.get("network") or "testnet"),
         "min_root_mirrors": min_root_mirrors,
+        "operator_append_fanout": operator_append_fanout,
+        "operator_core_domains": operator_core_domains,
         "operators": normalized,
     }
+
+
+def load_operator_set(path):
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return normalize_operator_set(data)
 
 
 def env_from_operator_set(operator_set):
@@ -109,12 +134,17 @@ def env_from_operator_set(operator_set):
         for item in operator_set["operators"]
     ]
     count = len(operators)
+    append_fanout = int(operator_set.get("operator_append_fanout", DEFAULT_OPERATOR_APPEND_FANOUT))
+    append_target = min(count, append_fanout)
+    core_domains = operator_set.get("operator_core_domains") or DEFAULT_OPERATOR_CORE_DOMAINS
     return {
         "IND_NETWORK": operator_set["network"],
         "IND_REQUIRE_TRANSPARENCY_LOG": "1",
         "IND_SUBMIT_TO_TRANSPARENCY_LOG": "1",
         "IND_LOG_OPERATORS": json.dumps(operators, sort_keys=True, separators=(",", ":")),
-        "IND_OPERATOR_FINALITY_MIN_PROOFS": str(count),
+        "IND_OPERATOR_APPEND_FANOUT": str(append_fanout),
+        "IND_OPERATOR_CORE_DOMAINS": ",".join(core_domains),
+        "IND_OPERATOR_FINALITY_MIN_PROOFS": str(append_target),
         "IND_LOG_MIN_MIRRORS": str(operator_set["min_root_mirrors"]),
         "IND_SETTLEMENT_QUORUM_ENABLED": "1",
         "IND_SETTLEMENT_REQUIRE_ALL_CONFIGURED_PEERS": "1",
@@ -133,15 +163,23 @@ def _systemd_envfile_quote(value):
     return "'" + value + "'"
 
 
+def _powershell_quote(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def render_env(env, output_format):
     if output_format == "json":
         return json.dumps(env, indent=2, sort_keys=True) + "\n"
     if output_format == "powershell":
-        return "".join(f"$env:{key} = {json.dumps(value)}\n" for key, value in sorted(env.items()))
+        return "".join(f"$env:{key} = {_powershell_quote(value)}\n" for key, value in sorted(env.items()))
     if output_format == "systemd":
-        return "".join(f"Environment={key}={_systemd_quote(value)}\n" for key, value in sorted(env.items()))
+        return "".join(
+            f"Environment={key}={_systemd_quote(value)}\n" for key, value in sorted(env.items())
+        )
     if output_format == "systemd-envfile":
-        return "".join(f"{key}={_systemd_envfile_quote(value)}\n" for key, value in sorted(env.items()))
+        return "".join(
+            f"{key}={_systemd_envfile_quote(value)}\n" for key, value in sorted(env.items())
+        )
     if output_format == "shell":
         return "".join(f"export {key}={shlex.quote(value)}\n" for key, value in sorted(env.items()))
     raise OperatorSetError(f"unsupported output format: {output_format}")

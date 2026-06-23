@@ -12,15 +12,39 @@ This folder contains public testnet metadata. The active testnet path is native 
 
 ```powershell
 $env:IND_NETWORK="testnet"
-$env:IND_TRUSTED_GENESIS_MANIFEST_HASHES="20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8"
 python node_client.py
 ```
+
+This repository bundles the active public-testnet native V3 genesis manifest at
+`testnet/genesis_manifest.json`. Local clients pin its hash via
+`trusted_genesis_manifest_hashes` so manifest-rooted bills must match the active
+testnet anchor.
 
 Open/forward TCP `18888` to make the node reachable. Before DNS seeds are live, share one reachable bootstrap IPv4 and have other users set:
 
 ```powershell
 $env:IND_PEER_PING_SERVERS="<public-node-ipv4>"
 ```
+
+## Headless VPS Seed
+
+For a permissionless testnet seed/mirror/auditor VPS, render the systemd/nginx
+bootstrap files first and review them:
+
+```bash
+python tools/testnet_seed_bootstrap.py \
+  --public-host <this-vps-ip-or-dns> \
+  --peer testnet-seed.international-dollar.com \
+  --peer testnet-seed.internetofthebots.com \
+  --canary-ref 1x1782156155 \
+  --canary-ref 2x1782156156
+```
+
+Run with `--install` on the VPS after `/opt/international-dollar` and its
+`.venv` are present. The generated service clears the headless runtime
+`kill_node` flag before start, serves static mirrors, monitors with retries,
+and returns `404` for `/operator-api/`. It does not make the VPS an
+append-capable operator and does not edit `operator_set.testnet.json`.
 
 ## V3 Smoke
 

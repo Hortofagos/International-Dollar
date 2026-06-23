@@ -6,13 +6,15 @@ import base64
 import contextlib
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import secrets
 import subprocess
 import sys
+import tarfile
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -112,11 +114,7 @@ def atomic_write_json(path, data):
 def load_or_create_backup_key(path):
     path = Path(path)
     if path.exists():
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        key = b64decode(payload["key_b64"])
-        if len(key) != 32:
-            raise BackupError(f"backup key at {path} is not 32 bytes")
-        return key
+        return load_backup_key(path)
     key = secrets.token_bytes(32)
     atomic_write_json(
         path,
@@ -128,6 +126,17 @@ def load_or_create_backup_key(path):
             "key_b64": b64encode(key),
         },
     )
+    return key
+
+
+def load_backup_key(path):
+    path = Path(path)
+    if not path.exists():
+        raise BackupError(f"backup key does not exist: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    key = b64decode(payload["key_b64"])
+    if len(key) != 32:
+        raise BackupError(f"backup key at {path} is not 32 bytes")
     return key
 
 
@@ -191,14 +200,160 @@ def fetch_remote_tar(args, sudo_password, key_passphrase):
 
 def encrypt_backup(tar_bytes, key, metadata):
     nonce = secrets.token_bytes(12)
-    aad = json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
-        "utf-8"
-    )
+    aad = backup_authenticated_metadata(metadata)
     ciphertext = AESGCM(key).encrypt(nonce, tar_bytes, aad)
     verified = AESGCM(key).decrypt(nonce, ciphertext, aad)
     if verified != tar_bytes:
         raise BackupError("backup encryption verification failed")
     return nonce, ciphertext
+
+
+def backup_authenticated_metadata(metadata):
+    return json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
+
+
+def encrypted_backup_metadata(payload):
+    if not isinstance(payload, dict):
+        raise BackupError("encrypted backup must be a JSON object")
+    required = {
+        "type",
+        "version",
+        "algorithm",
+        "tar_format",
+        "tar_sha3_256",
+        "tar_size_bytes",
+        "included_paths",
+        "nonce_b64",
+        "ciphertext_b64",
+    }
+    missing = sorted(field for field in required if field not in payload)
+    if missing:
+        raise BackupError(f"encrypted backup is missing fields: {', '.join(missing)}")
+    if payload["type"] != "ind.testnet_offsite_backup.v3" or int(payload["version"]) != 1:
+        raise BackupError("unsupported encrypted backup version")
+    if payload["algorithm"] != "AES-256-GCM" or payload["tar_format"] != "tar.gz":
+        raise BackupError("unsupported encrypted backup format")
+    return {
+        key: value for key, value in payload.items() if key not in {"nonce_b64", "ciphertext_b64"}
+    }
+
+
+def decrypt_backup(payload, key):
+    metadata = encrypted_backup_metadata(payload)
+    try:
+        nonce = b64decode(payload["nonce_b64"])
+        ciphertext = b64decode(payload["ciphertext_b64"])
+    except Exception as exc:
+        raise BackupError("encrypted backup has invalid base64 fields") from exc
+    try:
+        tar_bytes = AESGCM(key).decrypt(nonce, ciphertext, backup_authenticated_metadata(metadata))
+    except Exception as exc:
+        raise BackupError("encrypted backup authentication failed") from exc
+    if hashlib.sha3_256(tar_bytes).hexdigest() != str(metadata["tar_sha3_256"]).lower():
+        raise BackupError("decrypted backup tar hash mismatch")
+    if len(tar_bytes) != int(metadata["tar_size_bytes"]):
+        raise BackupError("decrypted backup tar size mismatch")
+    return tar_bytes, metadata
+
+
+def _safe_tar_member_name(name):
+    normalized = str(name).replace("\\", "/").strip("/")
+    path = PurePosixPath(normalized)
+    if not normalized or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise BackupError(f"unsafe backup tar member path: {name}")
+    return normalized
+
+
+def inspect_backup_tar(tar_bytes):
+    entries = []
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as archive:
+        for member in archive.getmembers():
+            safe_name = _safe_tar_member_name(member.name)
+            if member.isdev() or member.isfifo():
+                raise BackupError(f"unsupported special tar member: {safe_name}")
+            link_name = (
+                _safe_tar_member_name(member.linkname) if member.issym() or member.islnk() else ""
+            )
+            entries.append(
+                {
+                    "name": safe_name,
+                    "type": "dir" if member.isdir() else "file" if member.isfile() else "link",
+                    "size": int(member.size),
+                    "link_name": link_name,
+                }
+            )
+    if not entries:
+        raise BackupError("backup tar contains no entries")
+    return entries
+
+
+def extract_backup_tar(tar_bytes, output_dir):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    root = output_dir.resolve()
+    extracted = []
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as archive:
+        for member in archive.getmembers():
+            safe_name = _safe_tar_member_name(member.name)
+            if member.isdev() or member.isfifo() or member.issym() or member.islnk():
+                raise BackupError(f"refusing to extract unsafe tar member: {safe_name}")
+            target = (root / safe_name).resolve()
+            if target != root and root not in target.parents:
+                raise BackupError(f"backup tar member escapes restore directory: {safe_name}")
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                extracted.append(safe_name)
+                continue
+            if member.isfile():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source = archive.extractfile(member)
+                if source is None:
+                    raise BackupError(f"could not read backup tar member: {safe_name}")
+                with source, target.open("wb") as handle:
+                    handle.write(source.read())
+                extracted.append(safe_name)
+                continue
+            raise BackupError(f"unsupported tar member type: {safe_name}")
+    return extracted
+
+
+def load_encrypted_backup(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise BackupError(f"encrypted backup is not valid JSON: {exc}") from exc
+
+
+def verify_backup_file(backup_path, key_file):
+    payload = load_encrypted_backup(backup_path)
+    tar_bytes, metadata = decrypt_backup(payload, load_backup_key(key_file))
+    entries = inspect_backup_tar(tar_bytes)
+    return {
+        "ok": True,
+        "backup_path": str(backup_path),
+        "source_host": metadata.get("source_host", ""),
+        "tar_size_bytes": int(metadata["tar_size_bytes"]),
+        "tar_sha3_256": metadata["tar_sha3_256"],
+        "included_path_count": len(metadata.get("included_paths") or []),
+        "tar_entry_count": len(entries),
+    }
+
+
+def extract_backup_file(backup_path, key_file, restore_dir):
+    payload = load_encrypted_backup(backup_path)
+    tar_bytes, metadata = decrypt_backup(payload, load_backup_key(key_file))
+    entries = inspect_backup_tar(tar_bytes)
+    extracted = extract_backup_tar(tar_bytes, restore_dir)
+    return {
+        "ok": True,
+        "backup_path": str(backup_path),
+        "restore_dir": str(restore_dir),
+        "source_host": metadata.get("source_host", ""),
+        "tar_entry_count": len(entries),
+        "extracted_entry_count": len(extracted),
+    }
 
 
 def create_backup(args):
@@ -284,13 +439,35 @@ def parse_args(argv=None):
     parser.add_argument("--backup-dir", type=Path, default=DEFAULT_BACKUP_DIR)
     parser.add_argument("--key-file", type=Path, default=DEFAULT_KEY_FILE)
     parser.add_argument("--remote-path", action="append", default=list(DEFAULT_REMOTE_PATHS))
+    parser.add_argument(
+        "--verify-backup",
+        type=Path,
+        help="decrypt and verify an existing encrypted backup instead of creating one",
+    )
+    parser.add_argument(
+        "--extract-backup",
+        type=Path,
+        help="decrypt and extract an existing encrypted backup into --restore-dir",
+    )
+    parser.add_argument(
+        "--restore-dir",
+        type=Path,
+        help="directory for a local restore drill when --extract-backup is used",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
     try:
-        result = create_backup(args)
+        if args.verify_backup:
+            result = verify_backup_file(args.verify_backup, args.key_file)
+        elif args.extract_backup:
+            if not args.restore_dir:
+                raise BackupError("--extract-backup requires --restore-dir")
+            result = extract_backup_file(args.extract_backup, args.key_file, args.restore_dir)
+        else:
+            result = create_backup(args)
     except BackupError as exc:
         print(
             json.dumps({"ok": False, "error": str(exc)}, sort_keys=True, indent=2), file=sys.stderr

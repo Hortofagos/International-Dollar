@@ -5,7 +5,13 @@ import urllib.error
 
 import pytest
 
-from ind import protocol_v3, store as store_module, transparency_client as log_client, wallet_services
+from ind import (
+    keys_v3,
+    protocol_v3,
+    store as store_module,
+    transparency_client as log_client,
+    wallet_services,
+)
 from ind.store import INDLocalStore
 
 from .test_archive_segment_v3 import BASE_TIMESTAMP, native_v3_archive_fixture
@@ -275,15 +281,15 @@ def test_store_v3_filters_unsupported_wallet_denominations(tmp_path):
             """,
             (
                 "bad-bill",
-                    "bad-token",
-                    "3xbad",
-                    fixture["bob_address"],
-                    1,
-                    bill["checkpoint_core"]["checkpoint_hash"],
-                    None,
-                    protocol_v3.encode_bill(bill),
-                    1,
-                    1,
+                "bad-token",
+                "3xbad",
+                fixture["bob_address"],
+                1,
+                bill["checkpoint_core"]["checkpoint_hash"],
+                None,
+                protocol_v3.encode_bill(bill),
+                1,
+                1,
                 "settled",
             ),
         )
@@ -405,7 +411,7 @@ def test_status_record_for_ref_reports_verified_v3_checkpoint_without_transfer_r
     assert by_token["status"] == "verified_checkpoint"
 
 
-def test_status_record_for_checkpoint_ref_reports_v3_conflict_without_bill_row(tmp_path):
+def test_status_record_for_checkpoint_ref_rejects_v3_conflict_without_bill_row(tmp_path):
     fixture = native_v3_archive_fixture(tmp_path)
     store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
 
@@ -448,7 +454,8 @@ def test_status_record_for_checkpoint_ref_reports_v3_conflict_without_bill_row(t
         trusted_operator_public_key=fixture["log_public"],
         archive_segment_resolver=store.archive_segment_resolver_v3,
     )
-    store.store_conflict_proof_v3(proof)
+    with pytest.raises(store_module.ValidationError, match="unanchored V3 conflict proof"):
+        store.store_conflict_proof_v3(proof)
 
     by_display = store.status_record_for_ref("1x1")
     by_token = store.status_record_for_ref(fixture["token_id"])
@@ -456,10 +463,119 @@ def test_status_record_for_checkpoint_ref_reports_v3_conflict_without_bill_row(t
     for record in (by_display, by_token):
         assert record["display_id"] == "1x1"
         assert record["token_id"] == fixture["token_id"]
-        assert record["status"] == "conflict"
-        assert record["sequence"] == int(proof["sequence"])
-        assert record["owner_address"] == ""
-        assert record["conflict_proof_hash"] == proof["proof_hash"]
+        assert record["status"] == "verified_checkpoint"
+        assert "conflict_proof_hash" not in record
+
+
+def test_store_v3_rejects_unanchored_conflict_proof_attack_shape(tmp_path):
+    fixture = native_v3_archive_fixture(tmp_path)
+    store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
+    bill = protocol_v3.create_bill_from_checkpoint_core(
+        fixture["genesis_ref"],
+        fixture["checkpoint_core"],
+        fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=fixture["archive_resolver"],
+    )
+    branch_a = protocol_v3.create_transfer(
+        bill,
+        fixture["bob_private"],
+        fixture["bob_public"],
+        fixture["carol_address"],
+        proof_bundle=fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=fixture["archive_resolver"],
+        timestamp=BASE_TIMESTAMP + 50,
+    )
+    branch_b = protocol_v3.create_transfer(
+        bill,
+        fixture["bob_private"],
+        fixture["bob_public"],
+        fixture["alice_address"],
+        proof_bundle=fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=fixture["archive_resolver"],
+        timestamp=BASE_TIMESTAMP + 51,
+    )
+    proof = protocol_v3.create_conflict_proof(
+        branch_a,
+        branch_b,
+        proof_bundle_a=fixture["bundle"],
+        proof_bundle_b=fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=fixture["archive_resolver"],
+    )
+
+    with pytest.raises(store_module.ValidationError, match="unanchored V3 conflict proof"):
+        store.ingest_message(proof)
+
+    assert store.status_record_for_ref(fixture["token_id"]) is None
+
+
+def test_store_v3_rejects_conflict_proof_for_unknown_same_token_state(tmp_path):
+    fixture = native_v3_archive_fixture(tmp_path)
+    store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
+    store.store_archive_segment_v3(fixture["archive_segment"])
+    bill = protocol_v3.create_bill_from_checkpoint_core(
+        fixture["genesis_ref"],
+        fixture["checkpoint_core"],
+        fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=fixture["archive_resolver"],
+    )
+    store.store_bill_v3(
+        bill,
+        proof_bundle=fixture["bundle"],
+        status="verified",
+        trusted_operator_public_key=fixture["log_public"],
+    )
+    fake_owner, fake_private, fake_public = keys_v3.generate_keypair(
+        b"fake-conflict-owner".ljust(32, b"\0")
+    )
+    recipient_a, _private_a, _public_a = keys_v3.generate_keypair(
+        b"fake-conflict-a".ljust(32, b"\0")
+    )
+    recipient_b, _private_b, _public_b = keys_v3.generate_keypair(
+        b"fake-conflict-b".ljust(32, b"\0")
+    )
+    fake_state = {
+        "sequence": 0,
+        "owner_address": fake_owner,
+        "last_transfer_hash": "88" * 32,
+        "last_transfer_timestamp": BASE_TIMESTAMP,
+        "last_transfer_day": BASE_TIMESTAMP // 86400,
+        "transfers_in_last_day": 0,
+        "display_id": fixture["checkpoint_core"]["display_id"],
+        "value": int(fixture["checkpoint_core"]["value"]),
+    }
+    transfer_a = protocol_v3.create_transfer_from_state(
+        fixture["token_id"],
+        fake_state,
+        fake_private,
+        fake_public,
+        recipient_a,
+        timestamp=BASE_TIMESTAMP + 1,
+    )
+    transfer_b = protocol_v3.create_transfer_from_state(
+        fixture["token_id"],
+        fake_state,
+        fake_private,
+        fake_public,
+        recipient_b,
+        timestamp=BASE_TIMESTAMP + 2,
+    )
+    proof = protocol_v3.create_conflict_proof_from_transfers(
+        transfer_a,
+        transfer_b,
+        detected_at=BASE_TIMESTAMP + 3,
+    )
+
+    with pytest.raises(store_module.ValidationError, match="unanchored V3 conflict proof"):
+        store.ingest_message(proof)
+
+    record = store.status_record_for_ref(fixture["token_id"])
+    assert record["status"] == "verified"
+    assert "conflict_proof_hash" not in record
 
 
 def test_v3_finality_requires_log_proof_when_requested(tmp_path):
@@ -595,10 +711,13 @@ def test_v3_finality_settles_after_log_proof_and_peer_quorum(tmp_path):
     )
 
     assert finalized == [fixture["token_id"]]
-    assert store.status_record_for_ref(
-        fixture["token_id"],
-        min_settled_seconds=-10**12,
-    )["status"] == "strong_local"
+    assert (
+        store.status_record_for_ref(
+            fixture["token_id"],
+            min_settled_seconds=-(10**12),
+        )["status"]
+        == "strong_local"
+    )
 
 
 def test_v3_finality_requires_operator_witness_quorum(tmp_path):
@@ -632,7 +751,7 @@ def test_v3_finality_requires_operator_witness_quorum(tmp_path):
     assert finalized == [fixture["token_id"]]
 
 
-def test_strict_v3_finality_rejects_threshold_below_append_operator_count(
+def test_strict_v3_finality_allows_threshold_below_operator_count_when_within_fanout(
     tmp_path, monkeypatch
 ):
     class Operator:
@@ -644,7 +763,28 @@ def test_strict_v3_finality_rejects_threshold_below_append_operator_count(
     )
 
     monkeypatch.setenv("IND_OPERATOR_FINALITY_MIN_PROOFS", "1")
-    with pytest.raises(Exception, match="every configured append-capable operator"):
+    store = INDLocalStore(
+        db_path=tmp_path / "wallet-v3.db",
+        require_transparency=True,
+        transparency_submitter=submitter,
+        transparency_verifier=object(),
+    )
+
+    assert store._operator_finality_required_proofs_v3() == 1
+
+
+def test_strict_v3_finality_rejects_threshold_above_append_fanout(tmp_path, monkeypatch):
+    class Operator:
+        def __init__(self, public_key):
+            self.operator_public_key = public_key
+
+    submitter = log_client.MultiTransparencySubmitter(
+        [Operator("operator-a-key"), Operator("operator-b-key")],
+        append_fanout=1,
+    )
+
+    monkeypatch.setenv("IND_OPERATOR_FINALITY_MIN_PROOFS", "2")
+    with pytest.raises(Exception, match="must not exceed"):
         INDLocalStore(
             db_path=tmp_path / "wallet-v3.db",
             require_transparency=True,
@@ -653,9 +793,7 @@ def test_strict_v3_finality_rejects_threshold_below_append_operator_count(
         )
 
 
-def test_strict_v3_finality_zero_threshold_tracks_append_operator_count(
-    tmp_path, monkeypatch
-):
+def test_strict_v3_finality_zero_threshold_tracks_append_operator_count(tmp_path, monkeypatch):
     class Operator:
         def __init__(self, public_key):
             self.operator_public_key = public_key
@@ -718,8 +856,7 @@ def test_v3_finality_freezes_divergent_operator_witnesses(tmp_path, monkeypatch)
 def test_transfer_log_status_v3_migrates_to_operator_rows(tmp_path):
     db_path = tmp_path / "wallet-v3.db"
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE transfer_log_status_v3 (
                 transfer_hash TEXT PRIMARY KEY,
                 token_id TEXT NOT NULL,
@@ -733,8 +870,7 @@ def test_transfer_log_status_v3_migrates_to_operator_rows(tmp_path):
                 error TEXT,
                 updated_at INTEGER NOT NULL
             )
-            """
-        )
+            """)
         conn.execute(
             """
             INSERT INTO transfer_log_status_v3(
@@ -853,8 +989,7 @@ def test_store_migration_removes_receipt_storage(tmp_path):
     db_path = tmp_path / "wallet-v3.db"
     INDLocalStore(db_path=db_path, require_transparency=False)
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE receipts_v3 (
                 receipt_hash TEXT PRIMARY KEY,
                 token_id TEXT NOT NULL,
@@ -864,8 +999,7 @@ def test_store_migration_removes_receipt_storage(tmp_path):
                 receipt_json TEXT NOT NULL,
                 first_seen INTEGER NOT NULL
             )
-            """
-        )
+            """)
         conn.execute(
             """
             INSERT INTO receipts_v3(
@@ -975,9 +1109,10 @@ def test_wallet_bill_sync_records_import_without_receipts(tmp_path):
     assert len(response["records"]) == 1
     result = client_store.ingest_wallet_bill_sync_record(response["records"][0])
     assert result["status"] == "verified"
-    assert client_store.status_record_for_ref(fixture["token_id"])["owner_address"] == fixture[
-        "carol_address"
-    ]
+    assert (
+        client_store.status_record_for_ref(fixture["token_id"])["owner_address"]
+        == fixture["carol_address"]
+    )
 
     followup = node_store.wallet_bill_sync_response(
         client_store.wallet_delta_sync_request(fixture["carol_address"])
@@ -1216,16 +1351,15 @@ def test_store_v3_compacts_verified_native_bill_after_interval(tmp_path):
     )
     finalized = store.finalize_pending(now=2_000_000_000, buffer_seconds=0)
     compact = store.get_bill_v3_by_token_id(fixture["token_id"])
-    compact_bundle = store.get_proof_bundle_v3(
-        compact["proof_bundle_ref"]["proof_bundle_hash"]
-    )
+    compact_bundle = store.get_proof_bundle_v3(compact["proof_bundle_ref"]["proof_bundle_hash"])
 
     assert finalized == []
     assert compact["recent_transfers"] == []
     assert compact["checkpoint_core"]["sequence"] == 2
-    assert compact["checkpoint_core"]["previous_checkpoint_hash"] == fixture["checkpoint_core"][
-        "checkpoint_hash"
-    ]
+    assert (
+        compact["checkpoint_core"]["previous_checkpoint_hash"]
+        == fixture["checkpoint_core"]["checkpoint_hash"]
+    )
     assert compact_bundle["source_evidence"]["archive_segment"] is None
     assert store.get_compact_bill(fixture["token_id"]) == compact
     state = protocol_v3.verify_bill(
@@ -1298,7 +1432,9 @@ def test_store_v3_recent_messages_preserve_native_transfer_envelope(tmp_path):
 
     store.ingest_message(announcement)
     [stored] = store.recent_messages(limit=1)
-    replay_store = INDLocalStore(db_path=tmp_path / "wallet-v3-replay.db", require_transparency=False)
+    replay_store = INDLocalStore(
+        db_path=tmp_path / "wallet-v3-replay.db", require_transparency=False
+    )
     replay = replay_store.ingest_message(stored)
 
     assert stored["payload_encoding"] == protocol_v3.V3_PAYLOAD_ENCODING
@@ -1321,6 +1457,12 @@ def test_conflict_messages_are_v3_only(tmp_path):
         fixture["bundle"],
         trusted_operator_public_key=fixture["log_public"],
         archive_segment_resolver=store.archive_segment_resolver_v3,
+    )
+    store.store_bill_v3(
+        bill,
+        proof_bundle=fixture["bundle"],
+        status="verified",
+        trusted_operator_public_key=fixture["log_public"],
     )
     branch_a = protocol_v3.create_transfer(
         bill,
@@ -1618,6 +1760,55 @@ def test_multi_submitter_fans_out_to_all_append_operators():
     assert results[1]["error"] == "offline"
 
 
+def test_multi_submitter_caps_fanout_and_keeps_core_domains():
+    calls = []
+
+    class Operator:
+        def __init__(self, label, public_key, url):
+            self.label = label
+            self.operator_public_key = public_key
+            self.url = url
+
+        def status(self):
+            return {"state": "active"}
+
+        def submit_transfer_announcement(self, announcement):
+            calls.append(self.label)
+            return {
+                "accepted": True,
+                "entry_hash": "a" * 64,
+                "leaf_index": 0,
+                "tree_size": 1,
+                "spend_key": "b" * 64,
+            }
+
+    operators = [
+        Operator("other-1", "other-1-key", "https://one.example.test/operator-api"),
+        Operator(
+            "ind",
+            "ind-key",
+            "https://testnet-seed.international-dollar.com/operator-api",
+        ),
+        Operator("other-2", "other-2-key", "https://two.example.test/operator-api"),
+        Operator(
+            "iotb",
+            "iotb-key",
+            "https://testnet-seed.internetofthebots.com/operator-api",
+        ),
+        Operator("other-3", "other-3-key", "https://three.example.test/operator-api"),
+        Operator("other-4", "other-4-key", "https://four.example.test/operator-api"),
+        Operator("other-5", "other-5-key", "https://five.example.test/operator-api"),
+    ]
+    submitter = log_client.MultiTransparencySubmitter(operators, append_fanout=5)
+
+    results = submitter.submit_transfer_announcement_to_all({"type": "transfer", "nonce": "a"})
+
+    assert len(results) == 5
+    assert len(calls) == 5
+    assert "ind" in calls
+    assert "iotb" in calls
+
+
 def test_operator_transparency_url_is_static_root_mirror():
     mirror = log_client._coerce_mirror("https://example.invalid/operator-transparency")
 
@@ -1677,6 +1868,12 @@ def test_store_v3_persists_conflict_proofs(tmp_path):
         fixture["bundle"],
         trusted_operator_public_key=fixture["log_public"],
         archive_segment_resolver=store.archive_segment_resolver_v3,
+    )
+    store.store_bill_v3(
+        bill,
+        proof_bundle=fixture["bundle"],
+        status="verified",
+        trusted_operator_public_key=fixture["log_public"],
     )
     transferred = protocol_v3.create_transfer(
         bill,

@@ -10,7 +10,6 @@ import base64
 import json
 import secrets
 import sys
-import time
 from hashlib import sha3_256, sha512
 from pathlib import Path
 
@@ -189,14 +188,14 @@ def decode_public_key(text):
 P = 2**255 - 19
 Q = 2**252 + 27742317777372353535851937790883648493
 D = (-121665 * pow(121666, P - 2, P)) % P
-I = pow(2, (P - 1) // 4, P)
+SQRT_M1 = pow(2, (P - 1) // 4, P)
 
 
 def xrecover(y):
     xx = (y * y - 1) * pow(D * y * y + 1, P - 2, P)
     x = pow(xx, (P + 3) // 8, P)
     if (x * x - xx) % P != 0:
-        x = (x * I) % P
+        x = (x * SQRT_M1) % P
     if x % 2 != 0:
         x = P - x
     return x
@@ -442,7 +441,7 @@ def validate_ranges(ranges):
         total_count += count
         total_value += count * value
     normalized.sort(key=lambda item: (item["value"], item["start_serial"]))
-    for previous, current in zip(normalized, normalized[1:]):
+    for previous, current in zip(normalized, normalized[1:], strict=False):
         if previous["value"] == current["value"] and current["start_serial"] <= previous["end_serial"]:
             raise ToolError("genesis manifest ranges overlap")
     if total_count > TOTAL_SUPPLY:
@@ -465,8 +464,19 @@ def manifest_ranges(normalized):
 
 def full_supply_ranges(owner_address, seed_prefix="IND-MAINNET-GENESIS-V3"):
     owner_address = validate_address(owner_address, "genesis owner address")
+    return full_supply_ranges_by_denomination(
+        {value: owner_address for value in ALLOWED_BILL_VALUES},
+        seed_prefix=seed_prefix,
+    )
+
+
+def full_supply_ranges_by_denomination(owner_addresses, seed_prefix="IND-MAINNET-GENESIS-V3"):
+    if not isinstance(owner_addresses, dict):
+        raise ToolError("denomination owner addresses must be a mapping")
     ranges = []
     for value in ALLOWED_BILL_VALUES:
+        owner_address = owner_addresses.get(value, owner_addresses.get(str(value)))
+        owner_address = validate_address(owner_address, f"genesis owner address for {value}x")
         count = DENOMINATION_SERIAL_CAPS[value]
         ranges.append(
             {
@@ -687,11 +697,55 @@ def cmd_keygen(args):
     print(json.dumps(result, indent=2, sort_keys=True))
 
 
+def cmd_keygen_denominations(args):
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    addresses = {}
+    public_keys = {}
+    for value in ALLOWED_BILL_VALUES:
+        seed = secrets.token_bytes(32)
+        private_key = encode_private_key(seed)
+        public_key = public_key_text_from_private(private_key)
+        address = address_from_public_key(public_key)
+        prefix = f"{args.prefix}_{value}"
+        (out_dir / f"{prefix}_private.local.txt").write_text(
+            private_key + "\n",
+            encoding="utf-8",
+        )
+        (out_dir / f"{prefix}_public.txt").write_text(public_key + "\n", encoding="utf-8")
+        (out_dir / f"{prefix}_address.txt").write_text(address + "\n", encoding="utf-8")
+        addresses[str(value)] = address
+        public_keys[str(value)] = public_key
+    write_json(out_dir / "denomination_owner_addresses.json", addresses)
+    write_json(out_dir / "denomination_owner_public_keys.json", public_keys)
+    print(json.dumps(addresses, indent=2, sort_keys=True))
+
+
 def cmd_create_mainnet(args):
     private_key = read_text_arg(args.issuer_private_key, args.issuer_private_key_file, "issuer private key")
     owner_address = read_text_arg(args.owner_address, args.owner_address_file, "owner address")
     metadata = read_json(args.metadata_file) if args.metadata_file else None
     ranges = full_supply_ranges(owner_address, seed_prefix=args.range_seed_prefix)
+    manifest = make_manifest(
+        ranges,
+        private_key,
+        issued_at=args.issued_at,
+        network="mainnet",
+        network_id=args.network_id,
+        metadata=metadata,
+    )
+    write_json(args.output, manifest)
+    print(manifest["manifest_hash"])
+
+
+def cmd_create_mainnet_denominations(args):
+    private_key = read_text_arg(args.issuer_private_key, args.issuer_private_key_file, "issuer private key")
+    owner_addresses = read_json(args.owner_addresses_file)
+    metadata = read_json(args.metadata_file) if args.metadata_file else None
+    ranges = full_supply_ranges_by_denomination(
+        owner_addresses,
+        seed_prefix=args.range_seed_prefix,
+    )
     manifest = make_manifest(
         ranges,
         private_key,
@@ -740,6 +794,14 @@ def build_parser():
     keygen.add_argument("--prefix", default="issuer")
     keygen.set_defaults(func=cmd_keygen)
 
+    keygen_denoms = sub.add_parser(
+        "keygen-denominations",
+        help="generate one owner keypair per IND denomination",
+    )
+    keygen_denoms.add_argument("--out-dir", required=True)
+    keygen_denoms.add_argument("--prefix", default="owner")
+    keygen_denoms.set_defaults(func=cmd_keygen_denominations)
+
     create = sub.add_parser("create-mainnet", help="create a full-supply mainnet manifest")
     create.add_argument("--issuer-private-key")
     create.add_argument("--issuer-private-key-file")
@@ -751,6 +813,20 @@ def build_parser():
     create.add_argument("--metadata-file")
     create.add_argument("--output", required=True)
     create.set_defaults(func=cmd_create_mainnet)
+
+    create_denoms = sub.add_parser(
+        "create-mainnet-denominations",
+        help="create a full-supply manifest with one owner address per denomination",
+    )
+    create_denoms.add_argument("--issuer-private-key")
+    create_denoms.add_argument("--issuer-private-key-file")
+    create_denoms.add_argument("--owner-addresses-file", required=True)
+    create_denoms.add_argument("--issued-at", type=int, required=True)
+    create_denoms.add_argument("--network-id", type=int, default=1)
+    create_denoms.add_argument("--range-seed-prefix", default="IND-MAINNET-GENESIS-V3")
+    create_denoms.add_argument("--metadata-file")
+    create_denoms.add_argument("--output", required=True)
+    create_denoms.set_defaults(func=cmd_create_mainnet_denominations)
 
     verify = sub.add_parser("verify", help="verify a signed genesis manifest")
     verify.add_argument("manifest")
@@ -784,4 +860,4 @@ if __name__ == "__main__":
         main(sys.argv[1:])
     except ToolError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(2)
+        raise SystemExit(2) from None

@@ -40,22 +40,46 @@ def wallet_line_is_sent(wallet_bill_line):
 
 
 def wallet_sent_display_ids(wallet_lines):
-    sent_ids = set()
+    return set(wallet_sent_sequences(wallet_lines))
+
+
+def wallet_sent_sequences(wallet_lines):
+    sent_sequences = {}
     for line in runtime_json.wallet_bill_lines(wallet_lines):
         if wallet_line_is_sent(line):
-            sent_ids.add(wallet_line_display_id(line))
-    return sent_ids
+            display_id = wallet_line_display_id(line)
+            parts = str(line).split()
+            try:
+                sequence = int(parts[1])
+            except (IndexError, TypeError, ValueError):
+                sequence = None
+            if display_id not in sent_sequences or sequence is None:
+                sent_sequences[display_id] = sequence
+            elif sent_sequences[display_id] is not None:
+                sent_sequences[display_id] = max(sent_sequences[display_id], sequence)
+    return sent_sequences
 
 
 def filter_locally_sent_records(records, wallet_lines):
-    sent_ids = wallet_sent_display_ids(wallet_lines)
-    if not sent_ids:
+    sent_sequences = wallet_sent_sequences(wallet_lines)
+    if not sent_sequences:
         return list(records)
-    return [
-        record
-        for record in records
-        if str(record.get("display_id", "")).strip() not in sent_ids
-    ]
+    visible = []
+    for record in records:
+        display_id = str(record.get("display_id", "")).strip()
+        if display_id not in sent_sequences:
+            visible.append(record)
+            continue
+        sent_sequence = sent_sequences[display_id]
+        if sent_sequence is None:
+            continue
+        try:
+            record_sequence = int(record.get("sequence"))
+        except (TypeError, ValueError):
+            continue
+        if record_sequence > sent_sequence:
+            visible.append(record)
+    return visible
 
 
 def wallet_display_label(display_id):
@@ -342,10 +366,16 @@ def compact_wallet_bill(wallet_lines, wallet_bill_line, store=None):
     return compact_bill
 
 
+def claim_store():
+    from . import sender_node
+
+    return sender_node.wallet_sync_store()
+
+
 def _claim_wire_message(message, wallet_lines):
     wallet_address = wallet_lines[0].strip() if wallet_lines else ""
     if message.get("type") == protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE:
-        store = ind_token.INDLocalStore()
+        store = claim_store()
         try:
             bill, proof_bundle, archive_segments = protocol_v3.decode_transfer_announcement(message)
             for segment in archive_segments:
@@ -382,8 +412,53 @@ def _claim_wire_message(message, wallet_lines):
     return False
 
 
+PAPER_WALLET_KEY_CHECK_MESSAGE = b"IND paper wallet key check v1"
+
+
+def _paper_wallet_payload_parts(bill_payload):
+    lines = [line.strip() for line in str(bill_payload).splitlines()]
+    if len(lines) < 3:
+        raise ind_token.ValidationError(
+            "paper wallet payload must include bill id, private key, and public key"
+        )
+    display_id, private_key, public_key = lines[:3]
+    sequence = lines[3] if len(lines) > 3 else ""
+    protocol_v3.parse_display_id(display_id, "paper wallet bill display id")
+    keys_v3.decode_private_key(private_key)
+    keys_v3.decode_public_key(public_key)
+    signature = keys_v3.sign(private_key, PAPER_WALLET_KEY_CHECK_MESSAGE)
+    if not keys_v3.verify(public_key, signature, PAPER_WALLET_KEY_CHECK_MESSAGE):
+        raise ind_token.ValidationError("paper wallet private key does not match public key")
+    return display_id, private_key, public_key, sequence
+
+
 def _claim_paper_wallet_payload(bill_payload, wallet_address):
-    return False
+    try:
+        recipient_address = validate_recipient_address(wallet_address)
+        display_id, private_key, public_key, _sequence = _paper_wallet_payload_parts(bill_payload)
+        paper_wallet_address = keys_v3.address_from_public_key(public_key)
+        store = claim_store()
+        bill = store.get_spendable_bill_v3_by_display_id(display_id, paper_wallet_address)
+        if not bill:
+            raise ind_token.ValidationError(
+                f"{display_id} is not spendable for the scanned paper wallet on this network. "
+                "Charge the printed PDF first, wait for the send to queue, then sync before claiming."
+            )
+        paper_wallet_lines = [
+            paper_wallet_address + "\n",
+            private_key + "\n",
+            public_key + "\n",
+        ]
+        return bool(
+            spend_wallet_bill_v3(
+                paper_wallet_lines,
+                bill,
+                recipient_address,
+                store=store,
+            )
+        )
+    except (KeyError, TypeError, protocol_v3.ProtocolV3Error) as exc:
+        raise ind_token.ValidationError(f"paper wallet claim failed: {exc}") from exc
 
 
 # Convert a scanned bill, announcement, or paper-wallet payload into a queued claim message.

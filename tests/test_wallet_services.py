@@ -54,6 +54,25 @@ def test_filter_locally_sent_records_excludes_wallet_marked_sent_bills():
     ]
 
 
+def test_filter_locally_sent_records_keeps_newer_returned_bill_sequence():
+    records = [
+        {"display_id": "2x23", "sequence": 3},
+        {"display_id": "2x23", "sequence": 4},
+        {"display_id": "2x24", "sequence": 4},
+    ]
+    wallet_lines = [
+        "x324sq85mgDVTGK4oHXw2b2LHh4YFriSx\n",
+        "private\n",
+        "public\n",
+        "-2x23 3 1781546900\n",
+    ]
+
+    assert wallet_services.filter_locally_sent_records(records, wallet_lines) == [
+        {"display_id": "2x23", "sequence": 4},
+        {"display_id": "2x24", "sequence": 4},
+    ]
+
+
 def test_wallet_record_queries_are_unlimited_by_default():
     address, _private_key, _public_key = keys_v3.generate_keypair(b"wallet-record-limit-test-0000001")
     calls = []
@@ -120,6 +139,74 @@ def test_claim_bill_payload_v3_uses_embedded_proof_context(tmp_path, monkeypatch
     )
     assert list(runtime_json.transaction_files()) == []
     store = INDLocalStore(db_path=tmp_path / "wallet.sqlite3", require_transparency=False)
+    record = store.status_record_for_ref(fixture["token_id"])
+    assert record["owner_address"] == fixture["carol_address"]
+    assert record["status"] == "verified"
+
+
+def test_claim_bill_payload_spends_paper_wallet_to_active_wallet(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IND_NETWORK", "testnet")
+    monkeypatch.setenv("IND_NODE_PORT", "18888")
+    monkeypatch.setenv("IND_STORE_PATH", str(tmp_path / "wallet.sqlite3"))
+    store = INDLocalStore(db_path=tmp_path / "wallet.sqlite3", require_transparency=False)
+    fixture = native_v3_archive_fixture(tmp_path / "fixture")
+    store.store_archive_segment_v3(fixture["archive_segment"])
+    store.store_proof_bundle_v3(
+        fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+    )
+    bill = protocol_v3.create_bill_from_checkpoint_core(
+        fixture["genesis_ref"],
+        fixture["checkpoint_core"],
+        fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=fixture["archive_resolver"],
+    )
+    paper_address, paper_private, paper_public = keys_v3.generate_keypair(b"\x24" * 32)
+    paper_bill = protocol_v3.create_transfer(
+        bill,
+        fixture["bob_private"],
+        fixture["bob_public"],
+        paper_address,
+        proof_bundle=fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=fixture["archive_resolver"],
+        timestamp=1_700_000_050,
+    )
+    paper_state = protocol_v3.verify_bill(
+        paper_bill,
+        proof_bundle=fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=fixture["archive_resolver"],
+    )
+    store.store_bill_v3(
+        paper_bill,
+        proof_bundle=fixture["bundle"],
+        status="verified",
+        trusted_operator_public_key=fixture["log_public"],
+    )
+    paper_payload = "\n".join(
+        [
+            paper_state.display_id,
+            paper_private,
+            paper_public,
+            str(paper_state.sequence),
+        ]
+    )
+
+    assert wallet_services.claim_bill_payload(
+        paper_payload,
+        [fixture["carol_address"], fixture["carol_private"], fixture["carol_public"]],
+        fixture["carol_address"],
+    )
+    queued = [runtime_json.read_transaction_message(path) for path in runtime_json.transaction_files()]
+    assert [message["type"] for message in queued] == [protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE]
+    decoded = protocol_v3.verify_transfer_announcement(
+        queued[0],
+        trusted_operator_public_key=fixture["log_public"],
+    )
+    assert decoded["state"].owner_address == fixture["carol_address"]
     record = store.status_record_for_ref(fixture["token_id"])
     assert record["owner_address"] == fixture["carol_address"]
     assert record["status"] == "verified"

@@ -511,6 +511,18 @@ def parse_args(argv=None):
         help="JSON/text file containing canary refs",
     )
     parser.add_argument("--convergence-finality-buffer-seconds", type=int, default=60)
+    parser.add_argument(
+        "--retry-count",
+        type=int,
+        default=1,
+        help="retry a failing monitor snapshot this many times before writing the final status",
+    )
+    parser.add_argument(
+        "--retry-delay-seconds",
+        type=float,
+        default=20,
+        help="delay between retry attempts when the monitor snapshot is not ok",
+    )
     parser.add_argument("--json", action="store_true", help="print the status JSON to stdout")
     parser.add_argument(
         "--strict", action="store_true", help="exit non-zero when an error-level issue is present"
@@ -518,9 +530,24 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def build_report_with_retries(args):
+    retry_count = max(1, int(args.retry_count))
+    retry_delay = max(0.0, float(args.retry_delay_seconds))
+    report = None
+    for attempt in range(1, retry_count + 1):
+        report = build_report(args)
+        report["attempt"] = attempt
+        report["max_attempts"] = retry_count
+        if report["ok"] or attempt == retry_count:
+            return report
+        if retry_delay:
+            time.sleep(retry_delay)
+    return report
+
+
 def main(argv=None):
     args = parse_args(argv)
-    report = build_report(args)
+    report = build_report_with_retries(args)
     atomic_write_json(args.status_file, report)
     if args.json:
         print(json.dumps(report, sort_keys=True, indent=2, ensure_ascii=True))

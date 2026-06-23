@@ -46,6 +46,16 @@ def _env_float(name, default, minimum=None, maximum=None):
     return result
 
 
+def _env_enabled(name):
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _runtime_kill_requested():
+    if _env_enabled("IND_IGNORE_RUNTIME_KILL_FLAG"):
+        return False
+    return runtime_json.get_kill_node()
+
+
 NODE_CAPACITY_PROFILES = {"desktop", "operator"}
 
 
@@ -799,6 +809,13 @@ def _retry_after_for_transient_ingest():
 def _prevalidate_v3_gossip_envelope(message):
     from . import protocol_v3
 
+    message_type = message.get("type") if isinstance(message, dict) else None
+    if message_type in {
+        ind_token.TRANSPARENCY_ROOT_ANNOUNCEMENT_TYPE,
+        ind_token.TRANSPARENCY_EQUIVOCATION_PROOF_TYPE,
+        ind_token.TRANSPARENCY_OPERATOR_POLICY_VIOLATION_TYPE,
+    }:
+        return
     protocol_v3.validate_gossip_envelope_shape(message)
 
 
@@ -847,6 +864,12 @@ def _gossip_type_can_ack_before_ingest(message_type):
         "TRANSFER_ANNOUNCEMENT_V3_TYPE",
         "ind.transfer_announcement.v3",
     )
+
+
+def _gossip_type_requires_sync_ingest(message_type):
+    from . import protocol_v3
+
+    return message_type == protocol_v3.CONFLICT_PROOF_TYPE
 
 
 def _ingest_prepared_gossip(
@@ -1062,6 +1085,25 @@ def _incoming_gossip_result(
         prepared["message"].get("type")
     ):
         return {"status": "rate_limited", "retry_after_seconds": 1}
+    if _gossip_type_requires_sync_ingest(prepared["message"].get("type")):
+        ingest_result = _ingest_prepared_gossip(
+            peer_ip,
+            prepared,
+            seen_gossip,
+            store,
+            gossip_pool,
+            penalties,
+        )
+        if ingest_result.get("status") == "retryable":
+            return {
+                "status": "rate_limited",
+                "message_hash": prepared.get("message_hash", ""),
+                "retry_after_seconds": ingest_result.get("retry_after_seconds", 1),
+                "error": ingest_result.get("error", ""),
+            }
+        if ingest_result.get("status") != "accepted":
+            return {"status": "rejected", "message_hash": prepared.get("message_hash", "")}
+        return {"status": "accepted", "message_hash": prepared.get("message_hash", "")}
     if ingest_queue is not None:
         decision = ingest_queue.enqueue(peer_ip, prepared)
         if not decision.allowed:
@@ -1730,7 +1772,7 @@ def node_protocol(rfb, rfb_response, gossip_pool, _unused_bill_pool):
         try:
             conn1, addr1 = server.accept()
             peer_ip = _normalized_ip(addr1[0])
-            if runtime_json.get_kill_node():
+            if _runtime_kill_requested():
                 record_server_close("shutdown", peer_ip)
                 conn1.close()
                 break
@@ -1764,7 +1806,7 @@ def database(_rfb, _rfb_response, gossip_pool):
         append_gossip(gossip_pool, ind_token.pack_wire_message(message), high_priority=True)
     while True:
         time.sleep(1)
-        if runtime_json.get_kill_node():
+        if _runtime_kill_requested():
             break
         try:
             _finalize_pending_for_node(store, gossip_pool=gossip_pool)
@@ -1835,7 +1877,7 @@ def maintain_connections(gossip_pool):
     while True:
         time.sleep(NODE_REBROADCAST_INTERVAL_SECONDS)
         try:
-            if runtime_json.get_kill_node():
+            if _runtime_kill_requested():
                 break
             if not gossip_pool:
                 continue
@@ -1884,9 +1926,20 @@ def main():
         rf1 = manager.list()
         rf2 = manager.dict()
         gossip = manager.list()
-        Process(target=database, args=(rf1, rf2, gossip)).start()
-        Process(target=maintain_connections, args=(gossip,)).start()
-        node_protocol(rf1, rf2, gossip, gossip)
+        processes = [
+            Process(target=database, args=(rf1, rf2, gossip)),
+            Process(target=maintain_connections, args=(gossip,)),
+        ]
+        for process in processes:
+            process.start()
+        try:
+            node_protocol(rf1, rf2, gossip, gossip)
+        finally:
+            for process in processes:
+                if process.is_alive():
+                    process.terminate()
+            for process in processes:
+                process.join(timeout=5)
 
 
 if __name__ == "__main__":

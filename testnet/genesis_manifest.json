@@ -1,9 +1,11 @@
 {
-  "issued_at": 1779568974,
-  "issuer_public_key": "QHA-6<HYqB+$NDGJOh(La|qt(PH}|?><^_fNfD`SDUdsv2-C{4ES`on0WCo}_kUxLoe<7q{O95Y%>U;a",
-  "manifest_hash": "20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8",
+  "genesis_algorithm": "IND_GENESIS_REF_SHA3_256_V3",
+  "issued_at": 1782043703,
+  "issuer_key_id": "df4b1e3d8621c07574fc89ac96534842906bf8f7544c193f19d07f39a063a873",
+  "issuer_public_key": "indpk3:7L`OuXdODXVcT^#5XESK?evqSnK^BVy~4&r?*>?E",
+  "manifest_hash": "7cd4efbc3d2ffaadca8c6f6d75f6899738371e820b8cf54dbcb78484d27ee538",
   "metadata": {
-    "generated_at": 1779568974,
+    "generated_at": 1782043703,
     "ind_alignment": {
       "address_length": 33,
       "angel_number": 777,
@@ -16,35 +18,129 @@
     },
     "network": "testnet",
     "project": "IND",
-    "purpose": "public testnet supply for real IND protocol transfers without mainnet value",
-    "release": "public-testnet-v3"
+    "purpose": "fresh public testnet native V3 genesis supply manifest",
+    "release": "genesis_20260621_120823"
   },
+  "network": "testnet",
+  "network_id": 1,
   "ranges": [
     {
-      "count": 11000000000,
-      "nonce_seed": "a96c8097a45facc9fe2fd3735f038fd48dac5bff043ad4b654b4b88a5835fcff",
-      "owner_address": "x1F75rwW6ah8jBByt4dJLsWRyd22aQFKx",
-      "start_index": 0,
+      "count": 6000000000,
+      "nonce_seed": "758b59730d2f1de33c7b93408ef2dacd01eced9947f905a9b589985b8c9d492a",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
       "value": 1
     },
     {
-      "count": 11000000000,
-      "nonce_seed": "4b6c3e83b15f5c0b304be9aedff9e3f1c1b37786f4baa23170c323559caea1af",
-      "owner_address": "x1F75rwW6ah8jBByt4dJLsWRyd22aQFKx",
-      "start_index": 11000000000,
+      "count": 5500000000,
+      "nonce_seed": "da8b6e279be2491bec60473d8cf13aa1a5cda55a8d5bcf1c33c67a91f46a5712",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
       "value": 2
     },
     {
-      "count": 11000000000,
-      "nonce_seed": "a405b0f72372c1cd904b1d50b815598617fb82557d6bbd8eb83c1792b133cf5c",
-      "owner_address": "x1F75rwW6ah8jBByt4dJLsWRyd22aQFKx",
-      "start_index": 22000000000,
-      "value": 8
+      "count": 5000000000,
+      "nonce_seed": "206e2cfc80e46124865914cdfe15a7f4783773f803635ba82485243660efa5ef",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
+      "value": 5
+    },
+    {
+      "count": 4500000000,
+      "nonce_seed": "d7e0dd9a6f7fc91dde1905cc580aca544b0c6202001c2dd4e3ca40424f62f66c",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
+      "value": 10
+    },
+    {
+      "count": 4000000000,
+      "nonce_seed": "c3f2790e8d99f0ced7a020c49eab824b1599f7a43e03f71ac13a6ffe2984a683",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
+      "value": 20
+    },
+    {
+      "count": 2000000000,
+      "nonce_seed": "75ede70147a8d28e2ac4465a200eef2a74870d004fc08e75f76f1851706a79ae",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
+      "value": 50
+    },
+    {
+      "count": 1500000000,
+      "nonce_seed": "ad31248dcd87f69c6554d38524bc419f1ef1a358b832ea81bbcd2406a9f968dd",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
+      "value": 100
+    },
+    {
+      "count": 1000000000,
+      "nonce_seed": "901abd0f8d8c071f64850e9f19f9bd57d08b9658e2b5c1a3af449b96de90d374",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
+      "value": 200
+    },
+    {
+      "count": 800000000,
+      "nonce_seed": "b5fbe749af1e4add4a55c6509cf18002c413e870cdf3b029708b06cfd257204c",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
+      "value": 500
+    },
+    {
+      "count": 700000000,
+      "nonce_seed": "9fe8d5c59416c18a31f3d811b4dc4c12330cf8880c04bac9f7ca605d9f03a42d",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
+      "value": 1000
+    },
+    {
+      "count": 600000000,
+      "nonce_seed": "93218d16d81ca8d40a120b40da1f2bd49abaa3269d6b8f4af4308a95b9a54e94",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
+      "value": 2000
+    },
+    {
+      "count": 500000000,
+      "nonce_seed": "cb4224f93e2c26fe4468e1a623212238fc35ad7affa1f7e04fe7d80ee52d1120",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
+      "value": 5000
+    },
+    {
+      "count": 400000000,
+      "nonce_seed": "3f2dfe387a3dc83b14fd2102a2d649aac674e17e50e327dca135ef2e04e59ece",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
+      "value": 10000
+    },
+    {
+      "count": 250000000,
+      "nonce_seed": "5c709e895243a5f475e4c76ba1e9d3061d02f702a0b27fe64794e542375b11dc",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
+      "value": 20000
+    },
+    {
+      "count": 150000000,
+      "nonce_seed": "2ad66a23dded82b498d358ec1b01324ccc9edbd8c8c416d9067db3d91def0eb8",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
+      "value": 50000
+    },
+    {
+      "count": 100000000,
+      "nonce_seed": "d578e8169a62278442523130407d9ff565f32293235b894b5004176bafa0e910",
+      "owner_address": "x37smgcuMPuhTZG3MmJ98iefM57SjUPLx",
+      "start_serial": 1,
+      "value": 100000
     }
   ],
-  "signature": "_dW>+)oJ{_FQXw$Z&$;51FTV^69$<%^MA7iA_{^RduZ#ZfOl4A)k?@mul~*)J*IOFAMSsAyjrsQ&+cq;",
+  "signature": "112153e4104813287909b5acd03a98dae80d07d311c0315d6fa9a6bfcaa78c4d61dee40e4c3f9d8657f605bd320ba61678678b9e339fa67dcfbf557e6986d909",
+  "signature_algorithm": 1,
   "total_token_count": 33000000000,
-  "total_value": 121000000000,
+  "total_value": 31917000000000,
   "type": "ind.genesis_manifest.v3",
-  "version": 1
+  "version": 3
 }

@@ -36,6 +36,12 @@ DEFAULT_TESTNET_DNS_SEED_HOSTS = [
     "testnet-seed.international-dollar.com",
     "testnet-seed.internetofthebots.com",
 ]
+DEFAULT_OPERATOR_APPEND_FANOUT = 5
+MAX_OPERATOR_APPEND_FANOUT = 50
+DEFAULT_OPERATOR_CORE_DOMAINS = [
+    "international-dollar.com",
+    "internetofthebots.com",
+]
 
 DEFAULT_SECURITY_SETTINGS = {
     "network": MAINNET_NETWORK,
@@ -65,6 +71,8 @@ DEFAULT_SECURITY_SETTINGS = {
     "transparency_consistency_max_stale_seconds": 3600,
     "transparency_root_gossip": True,
     "operator_finality_min_proofs": 0,
+    "operator_append_fanout": DEFAULT_OPERATOR_APPEND_FANOUT,
+    "operator_core_domains": DEFAULT_OPERATOR_CORE_DOMAINS,
     "finality_buffer_seconds": DEFAULT_FINALITY_BUFFER_SECONDS,
     "settlement_quorum_enabled": False,
     "settlement_peers": [],
@@ -358,6 +366,15 @@ def normalize_security_settings(settings):
         minimum=0,
         maximum=10,
     )
+    normalized["operator_append_fanout"] = _as_int(
+        merged.get("operator_append_fanout"),
+        DEFAULT_OPERATOR_APPEND_FANOUT,
+        minimum=1,
+        maximum=MAX_OPERATOR_APPEND_FANOUT,
+    )
+    normalized["operator_core_domains"] = _dedupe(
+        _normalize_domain(item) for item in _as_lines(merged.get("operator_core_domains"))
+    )
     normalized["finality_buffer_seconds"] = _as_int(
         merged.get("finality_buffer_seconds"),
         DEFAULT_FINALITY_BUFFER_SECONDS,
@@ -440,9 +457,7 @@ def production_security_issues(settings, role=None):
         issues.append("transparency operator public key must be pinned")
     configured_min_mirrors = min_root_mirrors(settings)
     configured_root_mirrors = trusted_root_mirrors(settings)
-    operator_mirror_counts = [
-        len(operator.get("mirrors", [])) for operator in configured_operators
-    ]
+    operator_mirror_counts = [len(operator.get("mirrors", [])) for operator in configured_operators]
     if configured_min_mirrors < 2:
         issues.append("min_root_mirrors must be at least 2")
     if len(configured_root_mirrors) < configured_min_mirrors and not any(
@@ -463,8 +478,9 @@ def production_security_issues(settings, role=None):
         )
     append_operator_count = append_capable_operator_count(settings)
     configured_finality = operator_finality_min_proofs(settings)
-    if append_operator_count > 0 and configured_finality < append_operator_count:
-        issues.append("operator_finality_min_proofs must require every append-capable operator")
+    append_fanout = operator_append_fanout(settings)
+    if append_operator_count > 0 and configured_finality > append_fanout:
+        issues.append("operator_finality_min_proofs must not exceed operator_append_fanout")
     if not transparency_proof_archives(settings):
         issues.append("at least one transparency proof archive mirror should be configured")
     return issues
@@ -575,7 +591,35 @@ def operator_finality_min_proofs(settings=None):
     )
     if configured > 0:
         return configured
-    return append_capable_operator_count(settings)
+    operator_count = append_capable_operator_count(settings)
+    if operator_count <= 0:
+        return 0
+    return min(operator_count, operator_append_fanout(settings))
+
+
+def operator_append_fanout(settings=None):
+    settings = settings or load_security_settings()
+    return _as_int(
+        os.environ.get(
+            "IND_OPERATOR_APPEND_FANOUT",
+            settings.get("operator_append_fanout", DEFAULT_OPERATOR_APPEND_FANOUT),
+        ),
+        settings.get("operator_append_fanout", DEFAULT_OPERATOR_APPEND_FANOUT),
+        minimum=1,
+        maximum=MAX_OPERATOR_APPEND_FANOUT,
+    )
+
+
+def operator_core_domains(settings=None):
+    settings = settings or load_security_settings()
+    env_raw = os.environ.get("IND_OPERATOR_CORE_DOMAINS", "").strip()
+    if env_raw:
+        return _dedupe(
+            _normalize_domain(item)
+            for item in env_raw.replace("\n", ",").split(",")
+            if item.strip()
+        )
+    return list(settings.get("operator_core_domains", DEFAULT_OPERATOR_CORE_DOMAINS))
 
 
 def settlement_quorum_enabled(settings=None):

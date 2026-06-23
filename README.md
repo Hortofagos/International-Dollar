@@ -96,7 +96,9 @@ Useful environment switches:
 - `IND_LOG_OPERATOR_URL`: HTTP URL for the operator proof/append API
 - `IND_LOG_MIRROR_URLS`: comma-separated HTTP URLs or local mirror directories used for signed historical roots
 - `IND_LOG_OPERATOR_PUBLIC_KEY`: expected operator signing key
-- `IND_OPERATOR_FINALITY_MIN_PROOFS`: distinct append-capable operator proofs required for V3 `strong_local`; `0` means all configured append-capable operators
+- `IND_OPERATOR_APPEND_FANOUT`: maximum append-capable operators contacted for one transfer, default `5`
+- `IND_OPERATOR_CORE_DOMAINS`: operator URL domains always pinned into the append pool, default `international-dollar.com,internetofthebots.com`
+- `IND_OPERATOR_FINALITY_MIN_PROOFS`: distinct append-capable operator proofs required for V3 `strong_local`; `0` means all selected append-capable operators
 - `IND_ALLOW_UNTRUSTED_EMBEDDED_ROOTS=1`: dev/test-only escape hatch for compact bills; production compact verification must use a mirrored verifier or pinned operator key
 - `IND_LOG_MIN_MIRRORS`: required count of independent signed-root mirrors, default `2`
 - `IND_LOG_UNSAFE_SINGLE_MIRROR=1`: local development escape hatch for one mirror; incompatible with `IND_REQUIRE_TRANSPARENCY_LOG=1`

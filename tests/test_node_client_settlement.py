@@ -7,6 +7,7 @@ from ind import keys_v3
 from ind import protocol_v3
 from ind import proof_bundle_v3
 from ind import token as ind_token
+from ind.store import INDLocalStore
 
 from .test_archive_segment_v3 import native_v3_archive_fixture
 
@@ -515,6 +516,36 @@ def test_transient_transparency_lag_is_retryable_not_peer_penalty():
     assert store.ingested
 
 
+def test_transparency_root_gossip_does_not_penalize_peer():
+    rate_limiter = node_client.PeerRateLimiter(window_seconds=60)
+    penalties = node_client.PeerPenaltyBook(threshold=1)
+    seen = node_client.BoundedSeenSet()
+    store = FakeGossipStore()
+    gossip_pool = []
+    root_message = ind_token.pack_wire_message(
+        {
+            "type": ind_token.TRANSPARENCY_ROOT_ANNOUNCEMENT_TYPE,
+            "version": 3,
+            "root": {},
+            "observed_at": 1,
+        }
+    )
+
+    response = node_client.handle_incoming_gossip(
+        "peer-a",
+        root_message,
+        seen,
+        rate_limiter,
+        store,
+        gossip_pool,
+        penalties,
+    )
+
+    assert response == "ok"
+    assert penalties.allow("peer-a")
+    assert store.ingested[0][0]["type"] == ind_token.TRANSPARENCY_ROOT_ANNOUNCEMENT_TYPE
+
+
 def test_bounded_ingest_queue_backpressures_without_blocking_critical():
     rate_limiter = node_client.PeerRateLimiter()
     penalties = node_client.PeerPenaltyBook()
@@ -558,6 +589,115 @@ def test_bounded_ingest_queue_backpressures_without_blocking_critical():
         )
         == "ok"
     )
+
+
+def test_invalid_peer_penalty_blocks_only_that_peer_not_relayed_transfer():
+    rate_limiter = node_client.PeerRateLimiter(window_seconds=60)
+    penalties = node_client.PeerPenaltyBook(threshold=1)
+    seen = node_client.BoundedSeenSet()
+    store = FakeGossipStore()
+    gossip_pool = []
+    transfer = _v3_transfer_wire()
+
+    penalties.penalize("attacker")
+
+    blocked = node_client.handle_incoming_gossip(
+        "attacker",
+        transfer,
+        seen,
+        rate_limiter,
+        store,
+        gossip_pool,
+        penalties,
+        async_transfer_ingest=False,
+    )
+    relayed = node_client.handle_incoming_gossip(
+        "honest-relay",
+        transfer,
+        seen,
+        rate_limiter,
+        store,
+        gossip_pool,
+        penalties,
+        async_transfer_ingest=False,
+    )
+
+    assert blocked.startswith("rate_limited:")
+    assert relayed == "ok"
+    assert store.ingested == [(ind_token.unpack_wire_message(transfer), "honest-relay")]
+
+
+def test_invalid_peer_penalty_does_not_block_v3_conflict_proof():
+    rate_limiter = node_client.PeerRateLimiter(window_seconds=60)
+    penalties = node_client.PeerPenaltyBook(threshold=1)
+    seen = node_client.BoundedSeenSet()
+    store = FakeGossipStore()
+    gossip_pool = []
+    proof = ind_token.pack_wire_message(_v3_conflict_proof_message())
+
+    penalties.penalize("attacker")
+
+    response = node_client.handle_incoming_gossip(
+        "attacker",
+        proof,
+        seen,
+        rate_limiter,
+        store,
+        gossip_pool,
+        penalties,
+    )
+
+    assert response == "ok"
+    assert store.ingested == [(ind_token.unpack_wire_message(proof), "attacker")]
+
+
+def test_invalid_rate_limit_lane_does_not_starve_critical_conflict_lane():
+    limits = node_client._lane_limit_config("desktop")
+    limits["invalid"]["ip"] = (1, 1)
+    limits["invalid"]["subnet"] = (1, 1)
+    limits["invalid"]["global"] = (1, 1)
+    rate_limiter = node_client.PeerRateLimiter(
+        window_seconds=60,
+        limits=limits,
+        now_func=lambda: 1.0,
+    )
+    penalties = node_client.PeerPenaltyBook(threshold=1)
+    seen = node_client.BoundedSeenSet()
+    store = FakeGossipStore()
+    gossip_pool = []
+    proof = ind_token.pack_wire_message(_v3_conflict_proof_message())
+
+    assert node_client.handle_incoming_gossip(
+        "attacker",
+        "not json",
+        seen,
+        rate_limiter,
+        store,
+        gossip_pool,
+        penalties,
+    ) == "invalid"
+    assert node_client.handle_incoming_gossip(
+        "attacker",
+        "still not json",
+        seen,
+        rate_limiter,
+        store,
+        gossip_pool,
+        penalties,
+    ).startswith("rate_limited:")
+
+    response = node_client.handle_incoming_gossip(
+        "attacker",
+        proof,
+        seen,
+        rate_limiter,
+        store,
+        gossip_pool,
+        penalties,
+    )
+
+    assert response == "ok"
+    assert store.ingested == [(ind_token.unpack_wire_message(proof), "attacker")]
 
 
 def test_batch_gossip_reports_mixed_results():
@@ -761,6 +901,43 @@ def test_v3_conflict_proof_extra_top_level_field_rejected_before_queue():
 
     assert response == "invalid"
     assert store.ingested == []
+    assert len(ingest_queue.queues["critical"].queue) == 0
+
+
+def test_v3_unanchored_conflict_proof_rejected_by_public_gossip(tmp_path):
+    rate_limiter = node_client.PeerRateLimiter(window_seconds=60)
+    penalties = node_client.PeerPenaltyBook()
+    seen = node_client.BoundedSeenSet()
+    store = INDLocalStore(db_path=tmp_path / "node.db", require_transparency=False)
+    gossip_pool = []
+    ingest_queue = node_client.GossipIngestQueue(
+        store,
+        gossip_pool,
+        seen,
+        penalties,
+        workers=0,
+        gossip_max=10,
+        critical_max=10,
+    )
+    message = _v3_conflict_proof_message()
+
+    response = node_client.handle_incoming_gossip(
+        "peer-a",
+        ind_token.pack_wire_message(message),
+        seen,
+        rate_limiter,
+        store,
+        gossip_pool,
+        penalties,
+        ingest_queue=ingest_queue,
+    )
+
+    assert response == "invalid"
+    assert store.status_record_for_ref(message["token_id"]) is None
+    with store._connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS count_value FROM conflicts_v3").fetchone()
+    assert int(row["count_value"]) == 0
+    assert gossip_pool == []
     assert len(ingest_queue.queues["critical"].queue) == 0
 
 

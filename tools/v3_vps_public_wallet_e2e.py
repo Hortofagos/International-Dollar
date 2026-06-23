@@ -42,6 +42,8 @@ from tools.v3_public_wallet_e2e import (
 
 DEFAULT_NODE_CONFIG = ROOT_DIR / "files" / "testnet" / "v3_vps_public_wallet_e2e.local.json"
 NODE_CONFIG_ENV = "IND_V3_VPS_E2E_NODE_CONFIG"
+OPERATOR_ROOT_WAIT_ATTEMPTS = 90
+OPERATOR_ROOT_WAIT_INTERVAL_SECONDS = 2
 REQUIRED_NODE_FIELDS = {
     "name",
     "host",
@@ -63,6 +65,7 @@ REMOTE_ISSUE_PROGRAM = r"""
 import base64
 import json
 import os
+import re
 import sys
 import time
 from hashlib import sha3_256
@@ -72,6 +75,9 @@ os.environ["IND_NETWORK"] = "testnet"
 os.environ["IND_NODE_PORT"] = "18888"
 
 from ind import archive_segment_v3
+from ind import crypto_ed25519
+from ind import genesis_manifest_v3
+from ind import keys_v3
 from ind import proof_bundle_v3
 from ind import protocol_v3
 from ind import spend_map_v3
@@ -92,8 +98,68 @@ def _sha3_text(text):
     return sha3_256(str(text).encode("ascii")).hexdigest()
 
 
+def _nested_strings(value):
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _nested_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _nested_strings(item)
+    elif isinstance(value, str):
+        yield value
+
+
+def _load_private_key_text(path):
+    text = open(path, encoding="utf-8").read()
+    stripped = text.strip()
+    if stripped.startswith(keys_v3.PRIVATE_KEY_PREFIX):
+        return stripped
+    try:
+        data = json.loads(text)
+    except Exception:
+        data = None
+    if data is not None:
+        for item in _nested_strings(data):
+            item = item.strip()
+            if item.startswith(keys_v3.PRIVATE_KEY_PREFIX):
+                return item
+    match = re.search(r"indsk3:[!-~]+", text)
+    if match:
+        return match.group(0)
+    raise RuntimeError(f"V3 private key not found in {path}")
+
+
 def _archive_resolver(segment):
     return lambda value: segment if value == segment["segment_hash"] else None
+
+
+def _load_trusted_genesis_context():
+    manifest_file = payload.get("genesis_manifest_file")
+    owner_private_key_file = payload.get("genesis_owner_private_key_file")
+    if not manifest_file and not owner_private_key_file:
+        return None
+    if not manifest_file or not owner_private_key_file:
+        raise RuntimeError(
+            "genesis_manifest_file and genesis_owner_private_key_file must be set together"
+        )
+    manifest = json.load(open(manifest_file, encoding="utf-8"))
+    owner_private_key = _load_private_key_text(owner_private_key_file)
+    owner_seed = keys_v3.decode_private_key(owner_private_key)
+    owner_public_key = keys_v3.encode_public_key(
+        crypto_ed25519.public_key_from_private_seed(owner_seed)
+    )
+    owner_address = keys_v3.address_from_public_key(owner_public_key)
+    genesis_manifest_v3.verify_manifest(
+        manifest,
+        expected_network="testnet",
+        expected_network_id=protocol_v3.DEFAULT_NETWORK_ID,
+    )
+    return {
+        "manifest": manifest,
+        "owner_address": owner_address,
+        "owner_private_key": owner_private_key,
+        "owner_public_key": owner_public_key,
+    }
 
 
 def _deindex_invalid_historical_claims():
@@ -154,6 +220,7 @@ def _deindex_invalid_historical_claims():
 
 
 historical_claim_cleanup = _deindex_invalid_historical_claims()
+trusted_genesis = _load_trusted_genesis_context()
 
 issued = []
 base_time = int(time.time()) - 20
@@ -163,29 +230,59 @@ for index, spec in enumerate(payload["bills"], start=1):
     recipient_address = str(spec["recipient_address"])
     issued_at = base_time + index * 3
     parsed = protocol_v3.parse_display_id(display_id)
-    issuer = wallet_services.generate_wallet_v3(os.urandom(32))
-    genesis_hash = _sha3_text(f"{payload['run_id']}:{payload['node']}:{display_id}:genesis:{time.time_ns()}")
-    token_id = _sha3_text(f"{payload['run_id']}:{payload['node']}:{display_id}:token:{time.time_ns()}")
-    genesis_ref = {
-        "type": protocol_v3.GENESIS_REF_TYPE,
-        "version": protocol_v3.VERSION,
-        "network_id": int(protocol_v3.DEFAULT_NETWORK_ID),
-        "genesis_hash": genesis_hash,
-        "manifest_hash": None,
-        "issuer_key_id": None,
-        "issue_index": int(parsed["serial"]),
-        "issued_at": issued_at,
-    }
-    base_state = {
-        "sequence": 0,
-        "owner_address": issuer[0],
-        "last_transfer_hash": genesis_hash,
-        "last_transfer_timestamp": issued_at,
-        "last_transfer_day": issued_at // 86400,
-        "transfers_in_last_day": 0,
-        "display_id": display_id,
-        "value": value,
-    }
+    if trusted_genesis is not None:
+        manifest = trusted_genesis["manifest"]
+        genesis_ref = genesis_manifest_v3.derive_genesis_ref(
+            manifest,
+            value,
+            int(parsed["serial"]),
+        )
+        base_state = genesis_manifest_v3.derive_base_state(
+            manifest,
+            value,
+            int(parsed["serial"]),
+        )
+        if base_state["display_id"] != display_id:
+            raise RuntimeError("genesis manifest derived an unexpected display id")
+        if base_state["owner_address"] != trusted_genesis["owner_address"]:
+            raise RuntimeError("genesis owner private key does not match manifest owner")
+        issuer = (
+            trusted_genesis["owner_address"],
+            trusted_genesis["owner_private_key"],
+            trusted_genesis["owner_public_key"],
+        )
+        token_id = _sha3_text(f"IND:testnet:token:v3:{genesis_ref['genesis_hash']}")
+        issued_at = max(issued_at, int(base_state["last_transfer_timestamp"]) + 1)
+        genesis_mode = "trusted_manifest"
+    else:
+        issuer = wallet_services.generate_wallet_v3(os.urandom(32))
+        genesis_hash = _sha3_text(
+            f"{payload['run_id']}:{payload['node']}:{display_id}:genesis:{time.time_ns()}"
+        )
+        token_id = _sha3_text(
+            f"{payload['run_id']}:{payload['node']}:{display_id}:token:{time.time_ns()}"
+        )
+        genesis_ref = {
+            "type": protocol_v3.GENESIS_REF_TYPE,
+            "version": protocol_v3.VERSION,
+            "network_id": int(protocol_v3.DEFAULT_NETWORK_ID),
+            "genesis_hash": genesis_hash,
+            "manifest_hash": None,
+            "issuer_key_id": None,
+            "issue_index": int(parsed["serial"]),
+            "issued_at": issued_at,
+        }
+        base_state = {
+            "sequence": 0,
+            "owner_address": issuer[0],
+            "last_transfer_hash": genesis_hash,
+            "last_transfer_timestamp": issued_at,
+            "last_transfer_day": issued_at // 86400,
+            "transfers_in_last_day": 0,
+            "display_id": display_id,
+            "value": value,
+        }
+        genesis_mode = "synthetic_untrusted"
     transfer = protocol_v3.create_transfer_from_state(
         token_id,
         base_state,
@@ -281,6 +378,8 @@ for index, spec in enumerate(payload["bills"], start=1):
             "archive_segment_hash": archive_segment["segment_hash"],
             "checkpoint_hash": checkpoint_core["checkpoint_hash"],
             "transfer_hash": transfer_hash,
+            "genesis_mode": genesis_mode,
+            "genesis_manifest_hash": genesis_ref.get("manifest_hash"),
             "transfer_append": {
                 "accepted": bool(transfer_append.get("accepted")),
                 "entry_hash": transfer_append.get("entry_hash"),
@@ -451,6 +550,8 @@ def _remote_issue_command(node, payload):
             "db": node["db"],
             "private_key_file": node["private_key_file"],
             "public_key_file": node["public_key_file"],
+            "genesis_manifest_file": node.get("genesis_manifest_file"),
+            "genesis_owner_private_key_file": node.get("genesis_owner_private_key_file"),
         }
     )
     encoded = base64.b64encode(json.dumps(payload, sort_keys=True).encode("utf-8")).decode(
@@ -553,7 +654,7 @@ def _publish_latest_root_mirror(node, run_id, exact_roots=None):
         "source = OperatorRootSource('http://127.0.0.1:8890', timeout=10)\n"
         "roots = []\n"
         "last_error = ''\n"
-        "for _attempt in range(12):\n"
+        f"for _attempt in range({OPERATOR_ROOT_WAIT_ATTEMPTS}):\n"
         "    try:\n"
         "        roots = verify_roots(source.roots(limit=1))\n"
         "        if roots:\n"
@@ -561,7 +662,7 @@ def _publish_latest_root_mirror(node, run_id, exact_roots=None):
         "        last_error = 'no roots returned'\n"
         "    except Exception as exc:\n"
         "        last_error = f'{type(exc).__name__}: {exc}'\n"
-        "    time.sleep(2)\n"
+        f"    time.sleep({OPERATOR_ROOT_WAIT_INTERVAL_SECONDS})\n"
         "if not roots:\n"
         "    raise SystemExit(f'operator root unavailable after restart: {last_error}')\n"
         "root = sorted(roots, key=lambda item: (int(item['timestamp']), int(item['tree_size'])))[-1]\n"

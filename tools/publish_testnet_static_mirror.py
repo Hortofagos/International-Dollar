@@ -37,13 +37,59 @@ def write_bytes(path, data):
     path.write_bytes(data)
 
 
+def _root_tuple(root):
+    if not isinstance(root, dict):
+        return None
+    try:
+        return (
+            int(root["tree_size"]),
+            str(root["root_hash"]).strip().lower(),
+            int(root["timestamp"]),
+        )
+    except Exception:
+        return None
+
+
+def _existing_latest(transparency_dir):
+    latest_path = Path(transparency_dir) / "latest.json"
+    if not latest_path.exists() or not latest_path.is_file():
+        return None
+    try:
+        return json.loads(latest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def reject_latest_rollback(existing, latest):
+    old = _root_tuple(existing)
+    new = _root_tuple(latest)
+    if old is None or new is None:
+        return
+    old_size, old_hash, old_timestamp = old
+    new_size, new_hash, new_timestamp = new
+    if new_size < old_size:
+        raise MirrorPublishError(
+            f"refusing to roll static mirror back from tree_size {old_size} to {new_size}"
+        )
+    if new_size == old_size and new_hash != old_hash:
+        raise MirrorPublishError(
+            "refusing to replace static mirror root with a different hash at the same tree_size"
+        )
+    if new_size == old_size and new_timestamp < old_timestamp:
+        raise MirrorPublishError("refusing to replace static mirror latest.json with an older root")
+
+
 def copy_root_files(source_url, transparency_dir):
     latest = None
+    fetched = {}
     for name in ("latest.json", "manifest.json", "roots.jsonl"):
         data = fetch_bytes(f"{source_url}/{name}")
-        write_bytes(transparency_dir / name, data)
+        fetched[name] = data
         if name == "latest.json":
             latest = json.loads(data.decode("utf-8"))
+    reject_latest_rollback(_existing_latest(transparency_dir), latest)
+    for name, data in fetched.items():
+        write_bytes(transparency_dir / name, data)
     return latest
 
 

@@ -57,6 +57,36 @@ def test_native_v3_genesis_manifest_derives_genesis_ref_and_base_state():
     assert base_state["sequence"] == 0
 
 
+def test_native_v3_genesis_manifest_supports_owner_per_denomination():
+    owner_addresses = {}
+    for index, value in enumerate(ind_token.ALLOWED_BILL_VALUES, start=1):
+        address, _private_key, _public_key = _keypair(0x50 + index)
+        owner_addresses[str(value)] = address
+    _issuer_address, issuer_private, _issuer_public = _keypair(0x70)
+
+    manifest = genesis_manifest_v3.make_manifest(
+        genesis_manifest_v3.full_supply_ranges_by_denomination(owner_addresses),
+        issuer_private,
+        issued_at=ISSUED_AT,
+        network="mainnet",
+        network_id=1,
+        metadata={"purpose": "unit test denomination owners"},
+    )
+    verified = genesis_manifest_v3.verify_manifest(manifest, require_full_supply=True)
+
+    assert verified["total_token_count"] == ind_token.TOTAL_SUPPLY
+    for item in manifest["ranges"]:
+        assert item["owner_address"] == owner_addresses[str(item["value"])]
+    assert (
+        genesis_manifest_v3.derive_base_state(manifest, 1, 1)["owner_address"]
+        == owner_addresses["1"]
+    )
+    assert (
+        genesis_manifest_v3.derive_base_state(manifest, 100000, 1)["owner_address"]
+        == owner_addresses["100000"]
+    )
+
+
 def test_native_v3_genesis_manifest_rejects_bad_signature():
     manifest = _manifest()
     bad = copy.deepcopy(manifest)

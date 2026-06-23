@@ -29,9 +29,7 @@ def _json_bytes(data):
     return (json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
 
 
-def test_copy_public_transparency_can_publish_roots_when_archive_is_missing(
-    tmp_path, monkeypatch
-):
+def test_copy_public_transparency_can_publish_roots_when_archive_is_missing(tmp_path, monkeypatch):
     root = _root(timestamp=1_700_000_100)
     target = tmp_path / "mirror"
     old_archive = target / "transparency" / "archive" / "manifest.json"
@@ -96,9 +94,7 @@ def test_copy_public_transparency_replaces_archive_after_manifest_fetch(tmp_path
     stale_file = target / "transparency" / "archive" / "stale.json"
     stale_file.parent.mkdir(parents=True)
     stale_file.write_text("{}\n", encoding="utf-8")
-    archive_manifest = {
-        "segments": [{"path": "entries/entries_000000000000_000000000009.jsonl"}]
-    }
+    archive_manifest = {"segments": [{"path": "entries/entries_000000000000_000000000009.jsonl"}]}
 
     def fake_fetch(url):
         if url.endswith("/latest.json"):
@@ -125,3 +121,61 @@ def test_copy_public_transparency_replaces_archive_after_manifest_fetch(tmp_path
     assert result["archive_ok"] is True
     assert not stale_file.exists()
     assert (target / "transparency" / "archive" / "manifest.json").exists()
+
+
+def test_copy_public_transparency_rejects_latest_tree_rollback(tmp_path, monkeypatch):
+    target = tmp_path / "mirror"
+    existing = _root(timestamp=1_700_000_200, tree_size=20, root_hash="bb")
+    incoming = _root(timestamp=1_700_000_300, tree_size=10, root_hash="aa")
+    latest_path = target / "transparency" / "latest.json"
+    latest_path.parent.mkdir(parents=True)
+    latest_path.write_bytes(_json_bytes(existing))
+
+    def fake_fetch(url):
+        if url.endswith("/latest.json"):
+            return _json_bytes(incoming)
+        if url.endswith("/manifest.json") and "/archive/" not in url:
+            return _json_bytes(_mirror_manifest(incoming))
+        if url.endswith("/roots.jsonl"):
+            return _json_bytes(incoming)
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(publish_testnet_static_mirror, "fetch_bytes", fake_fetch)
+
+    with pytest.raises(publish_testnet_static_mirror.MirrorPublishError, match="roll"):
+        publish_testnet_static_mirror.copy_public_transparency(
+            "https://source.example/transparency",
+            target,
+            include_archive=False,
+        )
+
+    assert json.loads(latest_path.read_text(encoding="utf-8"))["tree_size"] == 20
+
+
+def test_copy_public_transparency_rejects_same_size_root_swap(tmp_path, monkeypatch):
+    target = tmp_path / "mirror"
+    existing = _root(timestamp=1_700_000_200, tree_size=20, root_hash="bb")
+    incoming = _root(timestamp=1_700_000_300, tree_size=20, root_hash="aa")
+    latest_path = target / "transparency" / "latest.json"
+    latest_path.parent.mkdir(parents=True)
+    latest_path.write_bytes(_json_bytes(existing))
+
+    def fake_fetch(url):
+        if url.endswith("/latest.json"):
+            return _json_bytes(incoming)
+        if url.endswith("/manifest.json") and "/archive/" not in url:
+            return _json_bytes(_mirror_manifest(incoming))
+        if url.endswith("/roots.jsonl"):
+            return _json_bytes(incoming)
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(publish_testnet_static_mirror, "fetch_bytes", fake_fetch)
+
+    with pytest.raises(publish_testnet_static_mirror.MirrorPublishError, match="different hash"):
+        publish_testnet_static_mirror.copy_public_transparency(
+            "https://source.example/transparency",
+            target,
+            include_archive=False,
+        )
+
+    assert json.loads(latest_path.read_text(encoding="utf-8"))["root_hash"] == existing["root_hash"]

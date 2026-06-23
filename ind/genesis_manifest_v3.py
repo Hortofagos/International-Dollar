@@ -204,8 +204,22 @@ def _manifest_ranges(normalized):
 
 def full_supply_ranges(owner_address, seed_prefix="IND-MAINNET-GENESIS-V3"):
     owner_address = keys_v3.validate_address(owner_address, "genesis owner address")
+    return full_supply_ranges_by_denomination(
+        {value: owner_address for value in ind_token.ALLOWED_BILL_VALUES},
+        seed_prefix=seed_prefix,
+    )
+
+
+def full_supply_ranges_by_denomination(owner_addresses, seed_prefix="IND-MAINNET-GENESIS-V3"):
+    if not isinstance(owner_addresses, dict):
+        raise GenesisManifestV3Error("denomination owner addresses must be a mapping")
     ranges = []
     for value in ind_token.ALLOWED_BILL_VALUES:
+        owner_address = owner_addresses.get(value, owner_addresses.get(str(value)))
+        owner_address = keys_v3.validate_address(
+            owner_address,
+            f"genesis owner address for {value}x",
+        )
         count = int(ind_token.DENOMINATION_SERIAL_CAPS[value])
         ranges.append(
             {

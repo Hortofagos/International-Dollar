@@ -54,13 +54,132 @@ operator uses it to verify that historical checkpoints were signed by any
 configured operator in the network.
 
 Each operator entry with a `url` is append-capable and counts toward
-`IND_OPERATOR_FINALITY_MIN_PROOFS`. To add operators, append another object with
-`url`, `public_key`, at least two independent `mirrors`, and `proof_archives`;
-the renderer will raise if the set is incomplete.
+the append operator directory. Wallets/nodes submit each transfer to at most
+`IND_OPERATOR_APPEND_FANOUT` selected operators, default 5. Operators whose
+append URLs are under `international-dollar.com` or `internetofthebots.com` are
+pinned into that selected pool when configured, then the remaining slots rotate
+across the rest of the operator set. `IND_OPERATOR_FINALITY_MIN_PROOFS=0`
+requires proofs from every selected append operator, not every known operator.
+To add operators, append another object with `url`, `public_key`, at least two
+independent `mirrors`, and `proof_archives`; the renderer will raise if the set
+is incomplete.
 
 Do not count a mirror hosted on the same HTTP origin as the operator append API.
 Strict verification rejects that shape because it cannot defend against an
 operator/API-origin split view.
+
+## Operator Admission
+
+Normal nodes are permissionless. Anyone can run the GUI node or `node_client.py`
+and join gossip if their TCP port is reachable. That does not give finality
+weight and does not make the node an append-capable operator.
+
+For a headless public-testnet VPS that should join as seed/mirror/auditor only,
+use the seed bootstrap renderer from the synced repo:
+
+```bash
+python tools/testnet_seed_bootstrap.py \
+  --public-host <this-vps-ip-or-dns> \
+  --peer testnet-seed.international-dollar.com \
+  --peer testnet-seed.internetofthebots.com \
+  --canary-ref 1x1782156155 \
+  --canary-ref 2x1782156156
+```
+
+Review the rendered files, then run the same command with `--install` on the
+VPS after `/opt/international-dollar/.venv` exists. The generated service
+initializes the testnet runtime state with `kill_node=false`, installs an
+`ExecStartPre` guard so restarts stay up, uses a systemd EnvironmentFile for
+operator-set verification variables, configures explicit peers without editing
+the committed operator set, serves only static mirror paths, blocks
+`/operator-api/`, and filters the VPS public host out of on-box convergence
+checks to avoid false self-query failures. Monitor units run with small retry
+windows so ordinary mirror propagation lag does not create noisy failures.
+
+After install, run the generated local check on the VPS:
+
+```bash
+/usr/local/bin/ind-testnet-seed-local-verify
+```
+
+From another host, verify public reachability and convergence with the new seed
+included:
+
+```powershell
+$env:IND_NETWORK='testnet'
+$env:IND_NODE_PORT='18888'
+.\.venv\Scripts\python.exe tools\testnet_convergence_monitor.py --json --strict `
+  --peer testnet-seed.international-dollar.com `
+  --peer testnet-seed.internetofthebots.com `
+  --peer <new-seed-ip-or-dns> `
+  --ref 1x1782156155 `
+  --ref 2x1782156156
+```
+
+Append-capable transparency operators are admitted through a signed operator-set
+update. The intended public flow is:
+
+1. Anyone runs a GUI/gossip node.
+2. A candidate opts into operator-candidate mode and runs mirrors first.
+3. The candidate produces an admission bundle naming their operator public key,
+   append URL, mirrors, proof archives, uptime proof, and audit report.
+4. The candidate signs that bundle with the proposed operator key.
+5. Existing maintainers verify mirror/auditor burn-in.
+6. A maintainer signs an operator-set update.
+7. Nodes upgrade to the new operator set together.
+
+Create a candidate bundle:
+
+```powershell
+python tools/operator_admission.py candidate-bundle `
+  --name candidate-name `
+  --network testnet `
+  --public-key indpk3:... `
+  --append-url https://candidate.example/operator-api `
+  --mirror https://mirror-a.example/transparency `
+  --mirror https://mirror-b.example/transparency `
+  --proof-archive https://archive-a.example/transparency/archive `
+  --proof-archive https://archive-b.example/transparency/archive `
+  --stage burn_in_passed `
+  --uptime-status passed `
+  --audit-status passed `
+  --private-key-file candidate_operator_private_key.local `
+  --output files/testnet/candidate-operator-bundle.local.json
+```
+
+Verify the bundle before it can affect finality:
+
+```powershell
+python tools/operator_admission.py verify-bundle `
+  files/testnet/candidate-operator-bundle.local.json `
+  --operator-set testnet/operator_set.testnet.json `
+  --require-burn-in
+```
+
+Sign an add-operator proposal after burn-in:
+
+```powershell
+python tools/operator_admission.py propose-update `
+  files/testnet/candidate-operator-bundle.local.json `
+  --operator-set testnet/operator_set.testnet.json `
+  --signing-private-key-file maintainer_operator_set_signing_key.local `
+  --signing-public-key indpk3:... `
+  --output files/testnet/operator-set-update.local.json
+```
+
+Verify and write the proposed operator set:
+
+```powershell
+python tools/operator_admission.py apply-update `
+  files/testnet/operator-set-update.local.json `
+  --bundle files/testnet/candidate-operator-bundle.local.json `
+  --operator-set testnet/operator_set.testnet.json `
+  --trusted-signing-key indpk3:... `
+  --output files/testnet/operator_set.next.local.json
+```
+
+Do not distribute the new operator-set environment until the new operator has
+passed the full burn-in round and every configured mirror/archive URL is live.
 
 ## Mirror Freshness
 
@@ -85,6 +204,33 @@ heartbeat roots fail loudly:
 $env:IND_TESTNET_MONITOR_MIRROR_ROOT_URLS = "https://mirror-a.example/transparency,https://mirror-b.example/transparency"
 python tools/testnet_monitor.py --json --strict
 ```
+
+## Backup And Restore Drills
+
+Encrypted off-server backups are not considered healthy until they pass a local
+restore drill. `tools/testnet_backup.py` can now verify an existing encrypted
+backup without contacting the VPS:
+
+```powershell
+python tools/testnet_backup.py `
+  --verify-backup files/testnet/backups/ind-testnet-offsite-YYYYMMDD-HHMMSS.tar.gz.aesgcm.json `
+  --key-file files/testnet/offsite_backup_key.local.json
+```
+
+For a restore drill, extract only into a disposable local directory:
+
+```powershell
+python tools/testnet_backup.py `
+  --extract-backup files/testnet/backups/ind-testnet-offsite-YYYYMMDD-HHMMSS.tar.gz.aesgcm.json `
+  --key-file files/testnet/offsite_backup_key.local.json `
+  --restore-dir files/testnet/restore-drills/YYYYMMDD-HHMMSS
+```
+
+The verifier checks AES-GCM authentication, the decrypted tar SHA3-256 digest,
+declared tar size, non-empty tar contents, and unsafe tar paths before any
+extract. Extraction refuses path traversal, device files, FIFOs, hard links, and
+symlinks. A production operator should run this drill after backup changes and
+before any mainnet genesis material depends on that operator.
 
 ## Operator Gate
 

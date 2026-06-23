@@ -59,15 +59,12 @@ BILL_V3_STATUS_RANK = {
     "verified": 3,
     "settled": 3,
 }
+V3_CONFLICT_ANCHOR_STATUSES = ("pending", "verified", "settled")
 V3_LOG_PROVEN_STATUS = "log_proven"
 V3_LOG_PENDING_STATUS = "log_pending"
 V3_LOG_UNLOGGED_STATUS = "unlogged"
-V3_LOG_PROOF_RETRY_INITIAL_SECONDS = max(
-    1, _env_int("IND_V3_LOG_PROOF_RETRY_INITIAL_SECONDS", 60)
-)
-V3_LOG_PROOF_RETRY_MAX_SECONDS = max(
-    1, _env_int("IND_V3_LOG_PROOF_RETRY_MAX_SECONDS", 3600)
-)
+V3_LOG_PROOF_RETRY_INITIAL_SECONDS = max(1, _env_int("IND_V3_LOG_PROOF_RETRY_INITIAL_SECONDS", 60))
+V3_LOG_PROOF_RETRY_MAX_SECONDS = max(1, _env_int("IND_V3_LOG_PROOF_RETRY_MAX_SECONDS", 3600))
 V3_LOG_PROOF_STALE_HTTP_400_ATTEMPTS = max(
     1, _env_int("IND_V3_LOG_PROOF_STALE_HTTP_400_ATTEMPTS", 3)
 )
@@ -96,9 +93,8 @@ def _bill_v3_record_has_allowed_value(record):
         bill = protocol_v3.decode_bill(bytes(record["bill_blob"]))
         protocol_v3.validate_bill_display_id(bill)
         display_id = str(bill["checkpoint_core"]["display_id"])
-        return (
-            str(record.get("display_id")) == display_id
-            and str(record.get("token_id")) == str(bill["token_id"])
+        return str(record.get("display_id")) == display_id and str(record.get("token_id")) == str(
+            bill["token_id"]
         )
     except Exception:
         logger.debug("filtering invalid BillV3 wallet record", exc_info=True)
@@ -221,10 +217,7 @@ class INDLocalStore:
         try:
             settings = ind_settings.load_security_settings()
             self.operator_finality_min_proofs = _policy_int(
-                os.environ.get(
-                    "IND_OPERATOR_FINALITY_MIN_PROOFS",
-                    settings.get("operator_finality_min_proofs", 0),
-                ),
+                ind_settings.operator_finality_min_proofs(settings),
                 0,
                 minimum=0,
             )
@@ -520,12 +513,10 @@ class INDLocalStore:
         return [name for _order, name in sorted(pk_rows)]
 
     def _migrate_transfer_log_status_v3_operator_rows(self, conn):
-        exists = conn.execute(
-            """
+        exists = conn.execute("""
             SELECT 1 FROM sqlite_master
             WHERE type = 'table' AND name = 'transfer_log_status_v3'
-            """
-        ).fetchone()
+            """).fetchone()
         if not exists:
             return
         if self._table_primary_key_columns(conn, "transfer_log_status_v3") == [
@@ -535,8 +526,7 @@ class INDLocalStore:
             return
         rows = conn.execute("SELECT * FROM transfer_log_status_v3").fetchall()
         conn.execute("ALTER TABLE transfer_log_status_v3 RENAME TO transfer_log_status_v3_legacy")
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE transfer_log_status_v3 (
                 transfer_hash TEXT NOT NULL,
                 token_id TEXT NOT NULL,
@@ -551,8 +541,7 @@ class INDLocalStore:
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY(transfer_hash, log_id)
             )
-            """
-        )
+            """)
         for row in rows:
             record = dict(row)
             operator_public_key = str(record.get("operator_public_key") or "").strip()
@@ -657,12 +646,10 @@ class INDLocalStore:
 
     def _migrate_remove_receipt_storage(self, conn):
         with contextlib.suppress(sqlite3.OperationalError):
-            conn.execute(
-                """
+            conn.execute("""
                 DELETE FROM messages
                 WHERE message_type = 'ind.receipt_announcement.v3'
-                """
-            )
+                """)
         with contextlib.suppress(sqlite3.OperationalError):
             conn.execute("DROP TABLE IF EXISTS receipts_v3")
 
@@ -1010,7 +997,9 @@ class INDLocalStore:
             leaf_index = int(response["leaf_index"])
         except Exception as exc:
             if self.require_transparency:
-                raise ValidationError(f"V3 checkpoint transparency submission failed: {exc}") from exc
+                raise ValidationError(
+                    f"V3 checkpoint transparency submission failed: {exc}"
+                ) from exc
             logger.warning(
                 "V3 checkpoint transparency submission failed for %s: %s",
                 expected_hash,
@@ -1025,7 +1014,9 @@ class INDLocalStore:
             try:
                 root = verifier.current_mirrored_root()
                 if int(root["tree_size"]) < leaf_index + 1:
-                    raise ValidationError("current transparency root does not contain V3 checkpoint")
+                    raise ValidationError(
+                        "current transparency root does not contain V3 checkpoint"
+                    )
                 operator_key = root.get("operator_public_key") or getattr(
                     verifier,
                     "operator_public_key",
@@ -1613,9 +1604,14 @@ class INDLocalStore:
 
     # Store gossip messages as compact references when the bill is already known.
     def _stored_message_payload(self, message, state=None):
-        if state and message.get("type") in {
-            TRANSFER_ANNOUNCEMENT_V3_TYPE,
-        } and ("payload_encoding" in message or "network_id" in message):
+        if (
+            state
+            and message.get("type")
+            in {
+                TRANSFER_ANNOUNCEMENT_V3_TYPE,
+            }
+            and ("payload_encoding" in message or "network_id" in message)
+        ):
             return message
         if state and message.get("type") in {
             TRANSFER_ANNOUNCEMENT_TYPE,
@@ -1772,7 +1768,9 @@ class INDLocalStore:
         if isinstance(response, dict):
             response_log_id = str(response.get("log_id") or "").strip()
             response_public_key = str(response.get("operator_public_key") or "").strip()
-        operator_public_key = str(identity.get("operator_public_key") or response_public_key).strip()
+        operator_public_key = str(
+            identity.get("operator_public_key") or response_public_key
+        ).strip()
         log_id = str(identity.get("log_id") or response_log_id).strip()
         if not log_id and operator_public_key:
             log_id = log_client.log_id_from_public_key(operator_public_key)
@@ -1803,26 +1801,36 @@ class INDLocalStore:
     def _validate_operator_finality_policy_v3(self):
         if not self.require_transparency:
             return
-        operator_count = len(self._append_operator_identities_v3())
+        operator_count = self._append_operator_target_count_v3()
         configured = int(self.operator_finality_min_proofs or 0)
-        if operator_count > 1 and configured and configured < operator_count:
+        if operator_count > 0 and configured and configured > operator_count:
             raise ValidationError(
-                "IND_OPERATOR_FINALITY_MIN_PROOFS must require every configured "
-                "append-capable operator when transparency is required; use 0 to "
-                "derive the threshold from IND_LOG_OPERATORS"
+                "IND_OPERATOR_FINALITY_MIN_PROOFS must not exceed the selected "
+                "append-capable operator fanout; use 0 to derive the threshold"
             )
+
+    def _append_operator_target_count_v3(self):
+        submitter = self.transparency_submitter
+        if submitter is None:
+            return 0
+        target_method = getattr(submitter, "operator_append_target_count", None)
+        if callable(target_method):
+            return int(target_method())
+        return len(self._append_operator_identities_v3())
 
     def _operator_finality_required_proofs_v3(self):
         configured = int(self.operator_finality_min_proofs or 0)
         if configured > 0:
             return configured
-        operator_count = len(self._append_operator_identities_v3())
+        operator_count = self._append_operator_target_count_v3()
         return max(1, operator_count)
 
     def _submit_v3_transfer_to_all_operators(self, message):
         if self.transparency_submitter is None:
             return []
-        submit_all = getattr(self.transparency_submitter, "submit_transfer_announcement_to_all", None)
+        submit_all = getattr(
+            self.transparency_submitter, "submit_transfer_announcement_to_all", None
+        )
         if callable(submit_all):
             return submit_all(message)
         identity = log_client.operator_identity(self.transparency_submitter)
@@ -1962,9 +1970,8 @@ class INDLocalStore:
                 (transfer_hash_value, log_id),
             ).fetchone()
             attempts = int(row["attempts"] if row else 0) + 1
-            terminal = (
-                self._v3_log_proof_error_is_stale_http_400(exc)
-                and attempts >= int(V3_LOG_PROOF_STALE_HTTP_400_ATTEMPTS)
+            terminal = self._v3_log_proof_error_is_stale_http_400(exc) and attempts >= int(
+                V3_LOG_PROOF_STALE_HTTP_400_ATTEMPTS
             )
             next_attempt_at = 0 if terminal else now + self._v3_log_proof_retry_delay(attempts)
             conn.execute(
@@ -2029,7 +2036,9 @@ class INDLocalStore:
         root = verifier.current_mirrored_root()
         if identity["log_id"] and root.get("log_id") != identity["log_id"]:
             raise ValidationError("current transparency root is for a different operator")
-        leaf_index = int(record["leaf_index"]) if record and record["leaf_index"] is not None else None
+        leaf_index = (
+            int(record["leaf_index"]) if record and record["leaf_index"] is not None else None
+        )
         if leaf_index is not None and int(root["tree_size"]) < leaf_index + 1:
             raise ValidationError("current transparency root does not contain V3 transfer")
         proof = verifier.operator.inclusion_proof(transfer_hash_value, int(root["tree_size"]))
@@ -2129,7 +2138,9 @@ class INDLocalStore:
                     )
                 else:
                     logger.debug(
-                        "V3 transfer proof recovery failed for %s", identity["log_id"], exc_info=True
+                        "V3 transfer proof recovery failed for %s",
+                        identity["log_id"],
+                        exc_info=True,
                     )
         if not statuses and not self._append_operator_identities_v3() and proof_bundle:
             identity = self._proof_bundle_operator_identity_v3(proof_bundle)
@@ -2343,12 +2354,8 @@ class INDLocalStore:
         last_error = None
         while True:
             try:
-                root = verifier.mirrored_root_containing_leaf(
-                    transfer_timestamp, leaf_index
-                )
-                proof = verifier.operator.inclusion_proof(
-                    entry_hash, int(root["tree_size"])
-                )
+                root = verifier.mirrored_root_containing_leaf(transfer_timestamp, leaf_index)
+                proof = verifier.operator.inclusion_proof(entry_hash, int(root["tree_size"]))
                 log_client.verify_inclusion_proof(
                     entry_hash,
                     proof,
@@ -2533,12 +2540,73 @@ class INDLocalStore:
         protocol_v3.verify_conflict_proof(proof)
         return proof
 
+    def _bill_v3_matches_conflict_anchor(self, bill, state, proof):
+        from . import protocol_v3
+
+        branch_hashes = {
+            str(proof.get("transfer_hash_a") or ""),
+            str(proof.get("transfer_hash_b") or ""),
+        } - {""}
+        for transfer in bill.get("recent_transfers") or []:
+            try:
+                if protocol_v3.transfer_hash(transfer) in branch_hashes:
+                    return True
+            except Exception:
+                logger.debug("skipping invalid V3 transfer while anchoring conflict", exc_info=True)
+        return (
+            int(getattr(state, "sequence", -1)) == int(proof["sequence"]) - 1
+            and str(getattr(state, "last_transfer_hash", "")) == str(proof["previous_hash"])
+            and str(getattr(state, "owner_address", "")) == str(proof["sender_address"])
+        )
+
+    def _conflict_proof_has_local_v3_anchor(self, conn, proof):
+        from . import protocol_v3
+
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM bills_v3
+            WHERE token_id = ?
+              AND status IN ({",".join("?" for _ in V3_CONFLICT_ANCHOR_STATUSES)})
+            ORDER BY sequence DESC, updated_at DESC
+            """,
+            (str(proof["token_id"]), *V3_CONFLICT_ANCHOR_STATUSES),
+        ).fetchall()
+        for row in rows:
+            record = dict(row)
+            try:
+                bill = protocol_v3.decode_bill(bytes(row["bill_blob"]))
+                invalid_reason = _invalid_bill_v3_reason(record)
+                if invalid_reason:
+                    raise ValidationError(invalid_reason)
+                state = protocol_v3.verify_bill(
+                    bill,
+                    proof_bundle_resolver=self.proof_bundle_resolver_v3,
+                    transparency_verifier=self.transparency_verifier,
+                    trusted_operator_public_key=self._trusted_operator_key_from_bill_v3(bill),
+                    archive_segment_resolver=self.archive_segment_resolver_v3,
+                )
+                if self._bill_v3_matches_conflict_anchor(bill, state, proof):
+                    return True
+            except Exception:
+                logger.debug(
+                    "stored BillV3 row did not anchor conflict proof %s",
+                    proof.get("proof_hash", ""),
+                    exc_info=True,
+                )
+        return False
+
+    def _require_conflict_proof_v3_anchor(self, conn, proof):
+        if not self._conflict_proof_has_local_v3_anchor(conn, proof):
+            raise ValidationError("unanchored V3 conflict proof")
+
     def _store_conflict_proof_v3_conn(self, conn, proof, *, expected_network_id=None):
         from . import protocol_v3
 
         if expected_network_id is None:
             expected_network_id = protocol_v3.DEFAULT_NETWORK_ID
         protocol_v3.verify_conflict_proof(proof, expected_network_id=expected_network_id)
+        self._require_conflict_proof_v3_anchor(conn, proof)
         proof_hash_value = proof["proof_hash"]
         conflict_key_value = protocol_v3.conflict_proof_key(proof)
         inserted = (
@@ -2582,7 +2650,9 @@ class INDLocalStore:
         ).fetchall()
         for row in rows:
             try:
-                return self._load_conflict_proof_v3_row(row)
+                proof = self._load_conflict_proof_v3_row(row)
+                self._require_conflict_proof_v3_anchor(conn, proof)
+                return proof
             except Exception as exc:
                 conn.execute(
                     "DELETE FROM conflicts_v3 WHERE proof_hash = ?",
@@ -2717,14 +2787,14 @@ class INDLocalStore:
                 token_ids = sorted({item["token_id"] for item in invalid})
                 for item in invalid:
                     conn.execute("DELETE FROM bills_v3 WHERE bill_hash = ?", (item["bill_hash"],))
-                    deleted_bills += conn.execute(
-                        "SELECT changes() AS count_value"
-                    ).fetchone()["count_value"]
+                    deleted_bills += conn.execute("SELECT changes() AS count_value").fetchone()[
+                        "count_value"
+                    ]
                 for token_id in token_ids:
                     conn.execute("DELETE FROM messages WHERE token_id = ?", (token_id,))
-                    deleted_messages += conn.execute(
-                        "SELECT changes() AS count_value"
-                    ).fetchone()["count_value"]
+                    deleted_messages += conn.execute("SELECT changes() AS count_value").fetchone()[
+                        "count_value"
+                    ]
         return {
             "checked": len(rows),
             "invalid": len(invalid),
@@ -2748,7 +2818,9 @@ class INDLocalStore:
             ).fetchall()
             for row in rows:
                 try:
-                    messages.append(self._load_conflict_proof_v3_row(row))
+                    proof = self._load_conflict_proof_v3_row(row)
+                    self._require_conflict_proof_v3_anchor(conn, proof)
+                    messages.append(proof)
                 except Exception as exc:
                     conn.execute(
                         "DELETE FROM conflicts_v3 WHERE proof_hash = ?",
@@ -2935,7 +3007,9 @@ class INDLocalStore:
             try:
                 existing = protocol_v3.decode_bill(bytes(row["bill_blob"]))
             except Exception:
-                logger.debug("skipping invalid stored V3 bill while checking conflicts", exc_info=True)
+                logger.debug(
+                    "skipping invalid stored V3 bill while checking conflicts", exc_info=True
+                )
                 continue
             operator_key = (
                 trusted_operator_public_key
@@ -3363,9 +3437,13 @@ class INDLocalStore:
             if require_v3_log_proof and not self._bill_v3_tip_log_proven(bill):
                 proof_bundle = self._proof_bundle_for_bill_v3(bill)
                 try:
-                    self._verify_v3_transfer_log_proof_once(bill["recent_transfers"][-1], proof_bundle)
+                    self._verify_v3_transfer_log_proof_once(
+                        bill["recent_transfers"][-1], proof_bundle
+                    )
                 except Exception as exc:
-                    logger.info("V3 settlement awaiting transparency proof for %s: %s", row["token_id"], exc)
+                    logger.info(
+                        "V3 settlement awaiting transparency proof for %s: %s", row["token_id"], exc
+                    )
                     continue
                 if not self._bill_v3_tip_log_proven(bill):
                     continue

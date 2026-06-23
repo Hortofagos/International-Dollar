@@ -63,6 +63,9 @@ DEFAULT_CONSISTENCY_MAX_STALE_SECONDS = 3600
 DEFAULT_KEY_ROTATION_OVERLAP_SECONDS = 7 * 24 * 60 * 60
 DEFAULT_PEER_ROOT_CAP_PER_LOG_ID = 5000
 DEFAULT_UNKNOWN_PEER_ROOT_CAP_PER_LOG_ID = 100
+DEFAULT_OPERATOR_APPEND_FANOUT = 5
+MAX_OPERATOR_APPEND_FANOUT = 50
+DEFAULT_OPERATOR_CORE_DOMAINS = ("international-dollar.com", "internetofthebots.com")
 UNSAFE_SINGLE_MIRROR_ENV = "IND_LOG_UNSAFE_SINGLE_MIRROR"
 ACCEPT_LEGACY_ALGORITHM_NAMES_ENV = "IND_LOG_ACCEPT_LEGACY_ALGORITHM_NAMES"
 STRICT_UNSAFE_SINGLE_MIRROR_ERROR = (
@@ -1154,9 +1157,7 @@ def make_recovery_witness(
         "feed_id": str(feed_id),
         "feed_public_key": str(feed_public_key).strip(),
         "first_seen": int(first_seen),
-        "source_segment_hash": _hex32(
-            source_segment_hash, "recovery witness source segment hash"
-        ),
+        "source_segment_hash": _hex32(source_segment_hash, "recovery witness source segment hash"),
     }
     witness["signature"] = _sign_operator_payload(
         feed_private_key, recovery_witness_signature_payload(witness)
@@ -1264,12 +1265,8 @@ def recovery_witness_quorum(
             errors.append(str(exc))
     if len(accepted) < min_witnesses:
         detail = "; ".join(errors) if errors else "not enough recovery witnesses"
-        raise RootVerificationError(
-            f"operator recovery witness quorum not satisfied: {detail}"
-        )
-    return sorted(
-        accepted.values(), key=lambda item: (item["feed_id"], item["feed_public_key"])
-    )
+        raise RootVerificationError(f"operator recovery witness quorum not satisfied: {detail}")
+    return sorted(accepted.values(), key=lambda item: (item["feed_id"], item["feed_public_key"]))
 
 
 # Build the peer-gossip proof that an operator signed conflicting roots.
@@ -3006,9 +3003,7 @@ class HTTPTransparencyOperator:
         self.identity_id = self.http.identity_id
         self.operator_public_key = str(operator_public_key or "").strip() or None
         self.log_id = (
-            log_id_from_public_key(self.operator_public_key)
-            if self.operator_public_key
-            else None
+            log_id_from_public_key(self.operator_public_key) if self.operator_public_key else None
         )
 
     def inclusion_proof(self, entry_hash, tree_size):
@@ -3066,7 +3061,9 @@ class HTTPRootMirror:
 class VerifyOnlyTransparencyOperator:
     def __init__(self, operator_public_key):
         self.operator_public_key = str(operator_public_key or "").strip()
-        self.log_id = log_id_from_public_key(self.operator_public_key) if self.operator_public_key else ""
+        self.log_id = (
+            log_id_from_public_key(self.operator_public_key) if self.operator_public_key else ""
+        )
         label = self.operator_public_key or "unconfigured"
         self.identity_id = ("verify-only-operator", label)
 
@@ -3310,9 +3307,82 @@ class LocalTransparencyOperator:
         return {"state": "active", "tree_size": int(self.log.tree_size())}
 
 
+def _clamp_operator_append_fanout(value):
+    try:
+        fanout = int(str(value).strip())
+    except Exception:
+        fanout = DEFAULT_OPERATOR_APPEND_FANOUT
+    return max(1, min(MAX_OPERATOR_APPEND_FANOUT, fanout))
+
+
+def _normalize_operator_core_domains(domains):
+    result = []
+    seen = set()
+    for domain in domains or []:
+        value = str(domain).strip().lower()
+        if "://" in value:
+            value = urllib.parse.urlparse(value).hostname or ""
+        value = value.split("/")[0].split(":")[0].strip(".")
+        if value.startswith("*."):
+            value = value[2:]
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _operator_url(operator):
+    http_client = getattr(operator, "http", None)
+    base_url = getattr(http_client, "base_url", "") if http_client is not None else ""
+    if base_url:
+        return str(base_url)
+    for attr in ("url", "base_url", "operator_url"):
+        value = getattr(operator, attr, "")
+        if value:
+            return str(value)
+    return ""
+
+
+def _hostname_matches_domain(hostname, domain):
+    hostname = str(hostname or "").strip().lower().rstrip(".")
+    domain = str(domain or "").strip().lower().rstrip(".")
+    return bool(hostname and domain and (hostname == domain or hostname.endswith("." + domain)))
+
+
+def _operator_matches_core_domain(operator, core_domains):
+    parsed = urllib.parse.urlparse(_operator_url(operator))
+    hostname = parsed.hostname or ""
+    return any(_hostname_matches_domain(hostname, domain) for domain in core_domains)
+
+
+def _operator_selection_key(operator, announcement):
+    identity = operator_identity(operator)
+    label = (
+        identity.get("log_id")
+        or identity.get("operator_public_key")
+        or _operator_url(operator)
+        or _source_label(operator)
+    )
+    try:
+        seed = canonical_json(announcement)
+    except Exception:
+        seed = repr(announcement)
+    return sha3_256(f"{seed}\n{label}".encode()).hexdigest()
+
+
 class MultiTransparencySubmitter:
-    def __init__(self, operators):
+    def __init__(
+        self,
+        operators,
+        *,
+        append_fanout=DEFAULT_OPERATOR_APPEND_FANOUT,
+        core_domains=None,
+    ):
         self.operators = [_coerce_operator(operator) for operator in operators]
+        self.append_fanout = _clamp_operator_append_fanout(append_fanout)
+        self.core_domains = _normalize_operator_core_domains(
+            core_domains or DEFAULT_OPERATOR_CORE_DOMAINS
+        )
         self.identity_id = ("multi-operator", str(len(self.operators)))
 
     def operator_identities(self):
@@ -3322,8 +3392,34 @@ class MultiTransparencySubmitter:
             if identity.get("log_id")
         ]
 
-    def _active_operators(self):
+    def _append_operator_candidates(self, announcement=None):
+        if len(self.operators) <= self.append_fanout:
+            return list(self.operators)
+        core = []
+        non_core = []
         for operator in self.operators:
+            if _operator_matches_core_domain(operator, self.core_domains):
+                core.append(operator)
+            else:
+                non_core.append(operator)
+        rotated = sorted(
+            non_core, key=lambda operator: _operator_selection_key(operator, announcement)
+        )
+        return core + rotated
+
+    def selected_append_operators(self, announcement=None):
+        limit = min(self.append_fanout, len(self.operators))
+        if limit <= 0:
+            return []
+        candidates = self._append_operator_candidates(announcement)
+        return candidates[:limit]
+
+    def operator_append_target_count(self):
+        return min(self.append_fanout, len(self.operators))
+
+    def _active_operators(self, operators=None):
+        active_operators = operators if operators is not None else self.selected_append_operators()
+        for operator in active_operators:
             status_method = getattr(operator, "status", None)
             if callable(status_method):
                 try:
@@ -3348,7 +3444,8 @@ class MultiTransparencySubmitter:
 
     def _submit(self, method_name, announcement, *, operator_public_key=None, log_id=None):
         errors = []
-        for operator in self._active_operators():
+        operators = self.operators if operator_public_key or log_id else None
+        for operator in self._active_operators(operators):
             if not self._operator_matches(
                 operator,
                 operator_public_key=operator_public_key,
@@ -3368,7 +3465,13 @@ class MultiTransparencySubmitter:
 
     def submit_transfer_announcement_to_all(self, announcement):
         results = []
-        for operator in self.operators:
+        limit = self.operator_append_target_count()
+        selected_count = 0
+        for operator in self._append_operator_candidates(announcement):
+            if selected_count >= limit:
+                break
+            is_core = _operator_matches_core_domain(operator, self.core_domains)
+            counted = False
             identity = operator_identity(operator)
             result = {
                 "log_id": identity.get("log_id", ""),
@@ -3383,11 +3486,19 @@ class MultiTransparencySubmitter:
                     status = status_method()
                     state = str(status.get("state", "active")).strip().lower()
                     if state != "active":
+                        if not is_core:
+                            continue
+                        selected_count += 1
+                        counted = True
                         raise TransparencyLogError(f"operator is {state or 'not active'}")
+                selected_count += 1
+                counted = True
                 response = operator.submit_transfer_announcement(announcement)
                 result["response"] = response
                 result["accepted"] = bool(isinstance(response, dict) and response.get("accepted"))
             except Exception as exc:
+                if not counted:
+                    selected_count += 1
                 result["error"] = str(exc)
             results.append(result)
         return results
@@ -4422,9 +4533,7 @@ class TransparencyVerifier:
         timestamp = int(transfer["timestamp"])
         entry_hash = transfer_entry_hash(transfer)
         if recovery_witnesses is None and recovery_message_hash is None:
-            recovery_witnesses, recovery_message_hash = self._transfer_recovery_witnesses(
-                transfer
-            )
+            recovery_witnesses, recovery_message_hash = self._transfer_recovery_witnesses(transfer)
         recovery_message_hash = recovery_message_hash or entry_hash
         leaf_index = self._leaf_index_for_entry(entry_hash)
         root = self.mirrored_root_containing_leaf(
@@ -4725,13 +4834,30 @@ def _operator_configs_from_env_json():
     return operator_configs
 
 
-def _with_legacy_operator_config(operator_configs, operator_url, public_key, mirrors, proof_archives):
+def _operator_append_fanout_from_env(default=DEFAULT_OPERATOR_APPEND_FANOUT):
+    return _clamp_operator_append_fanout(os.environ.get("IND_OPERATOR_APPEND_FANOUT", default))
+
+
+def _operator_core_domains_from_env(default=DEFAULT_OPERATOR_CORE_DOMAINS):
+    env_raw = os.environ.get("IND_OPERATOR_CORE_DOMAINS", "").strip()
+    if env_raw:
+        return _normalize_operator_core_domains(
+            item for item in env_raw.replace("\n", ",").split(",") if item.strip()
+        )
+    return _normalize_operator_core_domains(default)
+
+
+def _with_legacy_operator_config(
+    operator_configs, operator_url, public_key, mirrors, proof_archives
+):
     operator_configs = [dict(item) for item in operator_configs]
     operator_url = str(operator_url or "").strip()
     if not operator_url:
         return operator_configs
     normalized_url = operator_url.rstrip("/")
-    if any(str(item.get("url", "")).strip().rstrip("/") == normalized_url for item in operator_configs):
+    if any(
+        str(item.get("url", "")).strip().rstrip("/") == normalized_url for item in operator_configs
+    ):
         return operator_configs
     operator_configs.insert(
         0,
@@ -4781,8 +4907,7 @@ def _build_transparency_verifier_from_config(
         operator_public_key = str(default_public_key or "").strip()
     mirrors = list(config.get("mirrors") or (default_mirrors if use_default_sources else []))
     proof_archives = list(
-        config.get("proof_archives")
-        or (default_proof_archives if use_default_sources else [])
+        config.get("proof_archives") or (default_proof_archives if use_default_sources else [])
     )
     if require_pinned_operator and not operator_public_key:
         raise TransparencyLogError("multi-operator transparency config must pin public_key")
@@ -4790,11 +4915,7 @@ def _build_transparency_verifier_from_config(
         raise TransparencyLogError("verify-only transparency operator must pin public_key")
     if not mirrors:
         return None
-    operator = (
-        operator_url
-        if operator_url
-        else VerifyOnlyTransparencyOperator(operator_public_key)
-    )
+    operator = operator_url if operator_url else VerifyOnlyTransparencyOperator(operator_public_key)
     return TransparencyVerifier(
         operator,
         mirrors,
@@ -4942,6 +5063,8 @@ def submitter_from_environment():
     ind_settings = _settings_module()
     if ind_settings is not None:
         settings = ind_settings.load_security_settings()
+        append_fanout = ind_settings.operator_append_fanout(settings)
+        core_domains = ind_settings.operator_core_domains(settings)
         operator_configs = ind_settings.transparency_operators(settings)
         operator_configs = _with_legacy_operator_config(
             operator_configs,
@@ -4951,6 +5074,8 @@ def submitter_from_environment():
             ind_settings.transparency_proof_archives(settings),
         )
     else:
+        append_fanout = _operator_append_fanout_from_env()
+        core_domains = _operator_core_domains_from_env()
         operator_configs = _operator_configs_from_env_json()
         operator_configs = _with_legacy_operator_config(
             operator_configs,
@@ -4968,4 +5093,8 @@ def submitter_from_environment():
             item["url"],
             operator_public_key=str(item.get("public_key") or "").strip() or None,
         )
-    return MultiTransparencySubmitter(operator_items)
+    return MultiTransparencySubmitter(
+        operator_items,
+        append_fanout=append_fanout,
+        core_domains=core_domains,
+    )

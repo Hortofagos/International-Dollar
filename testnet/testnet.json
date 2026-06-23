@@ -3,17 +3,14 @@
     "testnet-seed.international-dollar.com",
     "testnet-seed.internetofthebots.com"
   ],
-  "faucet_owner_address": "x1F75rwW6ah8jBByt4dJLsWRyd22aQFKx",
-  "genesis_manifest": "testnet/genesis_manifest.json",
-  "issued_at": 1779568974,
+  "genesis_manifest": "genesis_manifest.json",
   "network": "testnet",
   "node_port": 18888,
-  "total_token_count": 33000000000,
-  "total_value": 121000000000,
+  "status": "native-v3-gossip-testnet",
   "trusted_genesis_issuer_keys": [
-    "QHA-6<HYqB+$NDGJOh(La|qt(PH}|?><^_fNfD`SDUdsv2-C{4ES`on0WCo}_kUxLoe<7q{O95Y%>U;a"
+    "indpk3:7L`OuXdODXVcT^#5XESK?evqSnK^BVy~4&r?*>?E"
   ],
   "trusted_genesis_manifest_hashes": [
-    "20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8"
+    "7cd4efbc3d2ffaadca8c6f6d75f6899738371e820b8cf54dbcb78484d27ee538"
   ]
 }
