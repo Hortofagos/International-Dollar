@@ -1,0 +1,8 @@
+signed-transfer-bundles/
+private-backups/
+keys/
+issued_serials.local.json
+*_private.local.txt
+*passphrase*
+*.local
+*.local.*

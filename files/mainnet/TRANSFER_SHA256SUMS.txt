@@ -1,0 +1,2 @@
+d4cbceedde012b525731d159157b41c899e5d73135a74b8cdfce27b668c50bba  genesis_manifest.mainnet.json
+ee28dbd50e10a3aafd17e05f1d90f024a33384a731b9e66d08e8d0bfbfc4e6c4  signed-transfer-bundles/ind-mainnet-treasury-transfer-07018d098c2f97c0.json
