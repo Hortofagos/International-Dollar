@@ -88,6 +88,7 @@ DEFAULT_SECURITY_SETTINGS = {
     "update_channel": DEFAULT_UPDATE_CHANNEL,
     "trusted_update_signing_keys": [],
     "update_check_on_startup": False,
+    "auto_sync_on_wallet_sign_in": True,
 }
 
 
@@ -426,6 +427,9 @@ def normalize_security_settings(settings):
         str(item).strip() for item in _as_lines(merged.get("trusted_update_signing_keys"))
     )
     normalized["update_check_on_startup"] = _as_bool(merged.get("update_check_on_startup"), False)
+    normalized["auto_sync_on_wallet_sign_in"] = _as_bool(
+        merged.get("auto_sync_on_wallet_sign_in"), True
+    )
     return normalized
 
 
@@ -1000,3 +1004,11 @@ def update_check_on_startup(settings=None):
     if env_value:
         return _as_bool(env_value, True)
     return bool(settings["update_check_on_startup"])
+
+
+def auto_sync_on_wallet_sign_in(settings=None):
+    settings = settings or load_security_settings()
+    env_value = os.environ.get("IND_AUTO_SYNC_ON_WALLET_SIGN_IN", "").strip()
+    if env_value:
+        return _as_bool(env_value, True)
+    return bool(settings.get("auto_sync_on_wallet_sign_in", True))

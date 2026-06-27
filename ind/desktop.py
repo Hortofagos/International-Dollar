@@ -354,29 +354,48 @@ NODE_LOG_WIDTH = NODE_CONSOLE_WIDTH - 36
 NODE_LOG_HEIGHT = NODE_PANEL_HEIGHT - 92
 WALLET_SEND_Y_OFFSET = 30
 PRINT_LEFT_PANEL_X = 64
-PRINT_RIGHT_PANEL_X = 614
+PRINT_RIGHT_PANEL_X = 628
 PRINT_PANEL_Y = 190
-PRINT_LEFT_PANEL_WIDTH = 520
-PRINT_RIGHT_PANEL_WIDTH = 536
+PRINT_LEFT_PANEL_WIDTH = 500
+PRINT_RIGHT_PANEL_WIDTH = 522
 PRINT_PANEL_HEIGHT = 450
 PRINT_PANEL_BOTTOM = PRINT_PANEL_Y + PRINT_PANEL_HEIGHT
 PRINT_AVAILABLE_X = PRINT_LEFT_PANEL_X + 24
 PRINT_QUEUE_X = PRINT_RIGHT_PANEL_X + 24
-PRINT_AVAILABLE_LIST_Y = PRINT_PANEL_Y + 104
+PRINT_CENTER_ARROW_X = (PRINT_LEFT_PANEL_X + PRINT_LEFT_PANEL_WIDTH + PRINT_RIGHT_PANEL_X) // 2
+PRINT_AVAILABLE_FILTER_Y = PRINT_PANEL_Y + 86
+PRINT_AVAILABLE_FILTER_WIDTH = PRINT_LEFT_PANEL_WIDTH - 178
+PRINT_AVAILABLE_FILTER_HEIGHT = 28
+PRINT_AVAILABLE_FILTER_SCROLL_Y = PRINT_AVAILABLE_FILTER_Y + PRINT_AVAILABLE_FILTER_HEIGHT + 6
+PRINT_AVAILABLE_FILTER_SCROLL_WIDTH = PRINT_LEFT_PANEL_WIDTH - 48
+PRINT_AVAILABLE_FILTER_SCROLL_HEIGHT = 16
+PRINT_AVAILABLE_TABLE_HEADER_Y = PRINT_PANEL_Y + 166
+PRINT_AVAILABLE_LIST_Y = PRINT_PANEL_Y + 186
 PRINT_QUEUE_LIST_Y = PRINT_PANEL_Y + 88
 PRINT_AVAILABLE_LIST_WIDTH = PRINT_LEFT_PANEL_WIDTH - 48
 PRINT_QUEUE_LIST_WIDTH = PRINT_RIGHT_PANEL_WIDTH - 48
-PRINT_AVAILABLE_LIST_HEIGHT = 322
-PRINT_QUEUE_LIST_HEIGHT = 150
+PRINT_AVAILABLE_LIST_HEIGHT = PRINT_PANEL_BOTTOM - PRINT_AVAILABLE_LIST_Y - 42
+PRINT_QUEUE_LIST_HEIGHT = 190
 PRINT_SELECT_ALL_X = PRINT_LEFT_PANEL_X + PRINT_LEFT_PANEL_WIDTH - 146
-PRINT_SELECT_ALL_Y = PRINT_PANEL_Y + 27
+PRINT_SELECT_ALL_Y = PRINT_AVAILABLE_FILTER_Y
 PRINT_SELECT_ALL_WIDTH = 122
 PRINT_SELECT_ALL_HEIGHT = 32
+PRINT_SELECT_COUNT_BUTTON_WIDTH = 132
+PRINT_SELECT_COUNT_ENTRY_WIDTH = 54
+PRINT_SELECT_COUNT_GAP = 8
+PRINT_SELECT_COUNT_HEIGHT = 28
+PRINT_SELECT_COUNT_Y = PRINT_PANEL_BOTTOM - 34
+PRINT_SELECT_COUNT_BUTTON_X = (
+    PRINT_LEFT_PANEL_X + PRINT_LEFT_PANEL_WIDTH - 24 - PRINT_SELECT_COUNT_BUTTON_WIDTH
+)
+PRINT_SELECT_COUNT_ENTRY_X = (
+    PRINT_SELECT_COUNT_BUTTON_X - PRINT_SELECT_COUNT_GAP - PRINT_SELECT_COUNT_ENTRY_WIDTH
+)
 PRINT_OUTPUT_FULL_X = PRINT_RIGHT_PANEL_X + 24
 PRINT_OUTPUT_QR_X = PRINT_RIGHT_PANEL_X + 24
-PRINT_OUTPUT_LABEL_Y = PRINT_PANEL_Y + 252
-PRINT_OUTPUT_FULL_Y = PRINT_PANEL_Y + 286
-PRINT_OUTPUT_QR_Y = PRINT_PANEL_Y + 320
+PRINT_OUTPUT_LABEL_Y = PRINT_QUEUE_LIST_Y + PRINT_QUEUE_LIST_HEIGHT + 20
+PRINT_OUTPUT_FULL_Y = PRINT_OUTPUT_LABEL_Y + 34
+PRINT_OUTPUT_QR_Y = PRINT_OUTPUT_LABEL_Y + 68
 PRINT_OUTPUT_WIDTH = 168
 PRINT_OUTPUT_HEIGHT = 30
 PRINT_SUMMARY_X = PRINT_RIGHT_PANEL_X + PRINT_RIGHT_PANEL_WIDTH - 150
@@ -384,7 +403,7 @@ PRINT_SUMMARY_Y = PRINT_PANEL_Y + 20
 PRINT_SUMMARY_WIDTH = 126
 PRINT_SUMMARY_HEIGHT = 64
 PRINT_PAGES_X = PRINT_RIGHT_PANEL_X + PRINT_RIGHT_PANEL_WIDTH - 156
-PRINT_PAGES_Y = PRINT_PANEL_Y + 279
+PRINT_PAGES_Y = PRINT_OUTPUT_LABEL_Y + 27
 PRINT_PAGES_WIDTH = 110
 PRINT_PAGES_HEIGHT = 58
 PRINT_ACTION_STRIP_X = 64
@@ -399,6 +418,7 @@ PRINT_PROGRESS_X = PRINT_STATUS_X
 PRINT_PROGRESS_Y = PRINT_ACTION_STRIP_Y + 70
 PRINT_PROGRESS_WIDTH = PRINT_STATUS_WIDTH
 PRINT_PROGRESS_HEIGHT = 7
+PRINT_BILLS_PER_PRINT_PAGE = 6
 PRINT_PRIMARY_BUTTON_X = PRINT_ACTION_STRIP_X + 698
 PRINT_PRIMARY_BUTTON_WIDTH = 176
 PRINT_CHARGE_BUTTON_X = PRINT_ACTION_STRIP_X + 894
@@ -420,10 +440,12 @@ GENERATE_WALLET_SUBMIT_BUTTON_X = (
     GENERATE_WALLET_PANEL_LEFT
     + (GENERATE_WALLET_PANEL_WIDTH - GENERATE_WALLET_SUBMIT_BUTTON_WIDTH) // 2
 )
-GENERATE_WALLET_ADDRESS_Y = 312
-GENERATE_WALLET_PUBLIC_KEY_Y = 405
-GENERATE_WALLET_PRIVATE_KEY_Y = 498
-GENERATE_WALLET_PASSWORD_Y = 591
+GENERATE_WALLET_ADDRESS_Y = 302
+GENERATE_WALLET_PUBLIC_KEY_Y = 380
+GENERATE_WALLET_PRIVATE_KEY_Y = 458
+GENERATE_WALLET_NAME_Y = 536
+GENERATE_WALLET_PASSWORD_Y = 614
+GENERATE_WALLET_SUBMIT_BUTTON_Y = 681
 GENERATE_WALLET_KEY_FIELD_HEIGHT = 38
 GENERATE_WALLET_FIELD_HEIGHT = 42
 CLAIM_COLUMN_GAP = 24
@@ -571,6 +593,7 @@ GUI_TEXT = {
     'generate_wallet_address': 'Wallet address',
     'generate_public_key': 'Public key',
     'generate_private_key': 'Private key',
+    'generate_wallet_name': 'Wallet name (optional)',
     'generate_password': 'Choose password',
     'settings_title': 'Settings',
     'settings_subtitle': 'Network, bill safety, transparency, and updates.',
@@ -597,6 +620,7 @@ GUI_TEXT = {
     'settings_update_source': 'Update source',
     'settings_update_startup': 'Check on startup',
     'settings_update_status': 'Status',
+    'settings_auto_sync_signin': 'Auto sync on wallet sign in',
     'claim_title': 'Claim bills',
     'claim_serial': 'Serial number',
     'claim_public': 'Public key',
@@ -627,11 +651,13 @@ SETTINGS_TAB_NETWORK = 'network'
 SETTINGS_TAB_BILL_SAFETY = 'bill_safety'
 SETTINGS_TAB_TRANSPARENCY = 'transparency'
 SETTINGS_TAB_UPDATES = 'updates'
+SETTINGS_TAB_GENERAL = 'general'
 SETTINGS_TABS = (
     (SETTINGS_TAB_NETWORK, 'Network'),
     (SETTINGS_TAB_BILL_SAFETY, 'Bill Safety'),
     (SETTINGS_TAB_TRANSPARENCY, 'Transparency'),
     (SETTINGS_TAB_UPDATES, 'Updates'),
+    (SETTINGS_TAB_GENERAL, 'General Settings'),
 )
 settings_active_tab = SETTINGS_TAB_NETWORK
 SETTINGS_TAB_X = 62
@@ -689,25 +715,200 @@ def show_error_popup(title, error):
 
 
 WALLET_VIEW_REFRESH_DELAY_MS = 400
+WALLET_COUNT_REFRESH_DELAY_MS = 750
 wallet_view_refresh_after_id = None
+wallet_count_refresh_after_id = None
+wallet_view_load_generation = 0
+wallet_count_load_generation = 0
+wallet_balance_loading_after_id = None
+wallet_balance_loading_dot_count = 0
+WALLET_BALANCE_LOADING_INTERVAL_MS = 450
+
+
+def wallet_tab_is_visible():
+    try:
+        return bool(receiver_history.winfo_ismapped())
+    except Exception:
+        log_ignored_exception()
+        return False
+
+
+def next_wallet_view_load_generation():
+    global wallet_view_load_generation
+    wallet_view_load_generation += 1
+    return wallet_view_load_generation
+
+
+def next_wallet_count_load_generation():
+    global wallet_count_load_generation
+    wallet_count_load_generation += 1
+    return wallet_count_load_generation
+
+
+def show_wallet_history_loading():
+    if not wallet_tab_is_visible():
+        return
+    try:
+        receiver_history.config(cursor='')
+        receiver_history.delete(1.0, END)
+        receiver_history.tag_config('empty', foreground=IND_MUTED, justify='center')
+        receiver_history.tag_config('empty_top', spacing1=px(170))
+        receiver_history.insert(INSERT, 'Loading wallet history...', ('empty', 'empty_top'))
+        hide_wallet_history_nav()
+    except Exception:
+        log_ignored_exception()
+
+
+def show_wallet_balance_loading():
+    global wallet_balance_loading_after_id, wallet_balance_loading_dot_count
+    stop_wallet_balance_loading()
+    wallet_balance_loading_dot_count = 1
+
+    def animate():
+        global wallet_balance_loading_after_id, wallet_balance_loading_dot_count
+        try:
+            if not wallet_tab_is_visible():
+                wallet_balance_loading_after_id = None
+                return
+            dots = '.' * wallet_balance_loading_dot_count
+            b.delete(1.0, END)
+            b.insert(1.0, f'Balance loading {dots}')
+            wallet_balance_loading_dot_count = 1 + (wallet_balance_loading_dot_count % 3)
+            wallet_balance_loading_after_id = root.after(
+                WALLET_BALANCE_LOADING_INTERVAL_MS,
+                animate,
+            )
+        except Exception:
+            wallet_balance_loading_after_id = None
+            log_ignored_exception()
+
+    animate()
+
+
+def stop_wallet_balance_loading():
+    global wallet_balance_loading_after_id
+    after_id = wallet_balance_loading_after_id
+    wallet_balance_loading_after_id = None
+    if after_id is not None:
+        try:
+            root.after_cancel(after_id)
+        except Exception:
+            log_ignored_exception()
+
+
+def finish_wallet_count_refresh(generation, snapshot=None, error=None, preserve_selection=True):
+    if generation != wallet_count_load_generation or not wallet_tab_is_visible():
+        return
+    if error is not None:
+        log_ignored_exception("wallet count refresh failed")
+        return
+    apply_wallet_balance_snapshot(snapshot, preserve_selection=preserve_selection)
+
+
+def start_wallet_count_refresh_worker(preserve_selection=True):
+    generation = next_wallet_count_load_generation()
+
+    def worker():
+        try:
+            snapshot = wallet_balance_snapshot()
+            error = None
+        except Exception as exc:
+            snapshot = None
+            error = exc
+        root.after(
+            0,
+            lambda refresh_generation=generation, balance_snapshot=snapshot, refresh_error=error: (
+                finish_wallet_count_refresh(
+                    refresh_generation,
+                    balance_snapshot,
+                    refresh_error,
+                    preserve_selection=preserve_selection,
+                )
+            ),
+        )
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def finish_wallet_view_refresh(generation, result=None, error=None, preserve_selection=False):
+    global wallet_history_cached_entries, wallet_history_cached_total
+    if generation != wallet_view_load_generation or not wallet_tab_is_visible():
+        return
+    if error is not None:
+        show_error_popup('Wallet refresh failed', error)
+        return
+    result = result or {}
+    apply_wallet_balance_snapshot(
+        result.get("balance_snapshot"),
+        preserve_selection=preserve_selection,
+    )
+    wallet_history_cached_entries = list(result.get("history_entries") or [])
+    wallet_history_cached_total = int(result.get("history_total") or 0)
+    page(refresh_entries=False)
+
+
+def start_wallet_view_refresh_worker(preserve_selection=False, force_history_metadata=True):
+    if not wallet_tab_is_visible():
+        return
+    generation = next_wallet_view_load_generation()
+    if not wallet_history_cached_entries and wallet_history_cached_total == 0:
+        show_wallet_history_loading()
+
+    def worker():
+        try:
+            clear_wallet_record_cache()
+            balance_snapshot = wallet_balance_snapshot()
+            history_entries, history_total = wallet_history_page_entries(
+                page_wallet,
+                force_metadata=force_history_metadata,
+            )
+            result = {
+                "balance_snapshot": balance_snapshot,
+                "history_entries": history_entries,
+                "history_total": history_total,
+            }
+            error = None
+        except Exception as exc:
+            result = None
+            error = exc
+        root.after(
+            0,
+            lambda refresh_generation=generation, refresh_result=result, refresh_error=error: (
+                finish_wallet_view_refresh(
+                    refresh_generation,
+                    refresh_result,
+                    refresh_error,
+                    preserve_selection=preserve_selection,
+                )
+            ),
+        )
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 # Refresh visible wallet state and report refresh failures.
 def refresh_wallet_view():
-    if not receiver_history.winfo_ismapped():
+    if not wallet_tab_is_visible():
         return
-    try:
-        clear_wallet_record_cache()
-        update_balance()
-        page()
-    except Exception as exc:
-        show_error_popup('Wallet refresh failed', exc)
+    start_wallet_view_refresh_worker()
+
+
+def refresh_wallet_counts_only():
+    if not wallet_tab_is_visible():
+        return
+    start_wallet_count_refresh_worker(preserve_selection=True)
 
 
 def _run_scheduled_wallet_view_refresh():
     global wallet_view_refresh_after_id
     wallet_view_refresh_after_id = None
     refresh_wallet_view()
+
+
+def _run_scheduled_wallet_count_refresh():
+    global wallet_count_refresh_after_id
+    wallet_count_refresh_after_id = None
+    refresh_wallet_counts_only()
 
 
 def schedule_wallet_view_refresh(delay_ms=WALLET_VIEW_REFRESH_DELAY_MS):
@@ -723,8 +924,33 @@ def schedule_wallet_view_refresh(delay_ms=WALLET_VIEW_REFRESH_DELAY_MS):
         log_ignored_exception()
 
 
+def schedule_wallet_count_refresh(delay_ms=WALLET_COUNT_REFRESH_DELAY_MS):
+    global wallet_count_refresh_after_id
+    if wallet_count_refresh_after_id is not None:
+        return
+    try:
+        wallet_count_refresh_after_id = root.after(
+            max(1, int(delay_ms)),
+            _run_scheduled_wallet_count_refresh,
+        )
+    except Exception:
+        log_ignored_exception()
+
+
+def cancel_wallet_count_refresh():
+    global wallet_count_refresh_after_id
+    after_id = wallet_count_refresh_after_id
+    wallet_count_refresh_after_id = None
+    if after_id is not None:
+        try:
+            root.after_cancel(after_id)
+        except Exception:
+            log_ignored_exception()
+
+
 def flush_wallet_view_refresh():
     global wallet_view_refresh_after_id
+    cancel_wallet_count_refresh()
     after_id = wallet_view_refresh_after_id
     wallet_view_refresh_after_id = None
     if after_id is not None:
@@ -1049,11 +1275,53 @@ class GuiScreen(Canvas):
         )
         self.line(
             PRINT_AVAILABLE_X,
-            PRINT_PANEL_Y + 86,
+            PRINT_AVAILABLE_TABLE_HEADER_Y - 12,
             PRINT_LEFT_PANEL_X + PRINT_LEFT_PANEL_WIDTH - 24,
-            PRINT_PANEL_Y + 86,
+            PRINT_AVAILABLE_TABLE_HEADER_Y - 12,
             color='#333c3b',
             width=1,
+        )
+        canvas_text(
+            self,
+            PRINT_AVAILABLE_X + 40,
+            PRINT_AVAILABLE_TABLE_HEADER_Y,
+            'Serial',
+            12,
+            fill='#7e918d',
+        )
+        canvas_text(
+            self,
+            PRINT_AVAILABLE_X + 230,
+            PRINT_AVAILABLE_TABLE_HEADER_Y,
+            'Value',
+            12,
+            fill='#7e918d',
+        )
+        canvas_text(
+            self,
+            PRINT_AVAILABLE_X + 314,
+            PRINT_AVAILABLE_TABLE_HEADER_Y,
+            'Status',
+            12,
+            fill='#7e918d',
+        )
+        self.line(
+            PRINT_LEFT_PANEL_X,
+            PRINT_PANEL_BOTTOM - 42,
+            PRINT_LEFT_PANEL_X + PRINT_LEFT_PANEL_WIDTH,
+            PRINT_PANEL_BOTTOM - 42,
+            color='#222d2b',
+            width=1,
+        )
+        canvas_text(
+            self,
+            PRINT_CENTER_ARROW_X,
+            PRINT_PANEL_Y + (PRINT_PANEL_HEIGHT // 2),
+            '>',
+            44,
+            fill='#6effbd',
+            anchor='center',
+            weight='bold',
         )
         canvas_text(
             self,
@@ -1072,11 +1340,43 @@ class GuiScreen(Canvas):
             outline='#48504f',
             width=1,
         )
+        canvas_text(
+            self,
+            PRINT_QUEUE_X + 24,
+            PRINT_QUEUE_LIST_Y + 8,
+            'Serial',
+            12,
+            fill='#7e918d',
+        )
+        canvas_text(
+            self,
+            PRINT_QUEUE_X + 300,
+            PRINT_QUEUE_LIST_Y + 8,
+            'Value',
+            12,
+            fill='#7e918d',
+        )
+        canvas_text(
+            self,
+            PRINT_QUEUE_X + PRINT_QUEUE_LIST_WIDTH - 50,
+            PRINT_QUEUE_LIST_Y + 8,
+            'Remove',
+            12,
+            fill='#7e918d',
+        )
         self.line(
             PRINT_QUEUE_X,
-            PRINT_PANEL_Y + 238,
+            PRINT_QUEUE_LIST_Y + 32,
+            PRINT_QUEUE_X + PRINT_QUEUE_LIST_WIDTH,
+            PRINT_QUEUE_LIST_Y + 32,
+            color='#1e2927',
+            width=1,
+        )
+        self.line(
+            PRINT_QUEUE_X,
+            PRINT_OUTPUT_LABEL_Y - 12,
             PRINT_RIGHT_PANEL_X + PRINT_RIGHT_PANEL_WIDTH - 24,
-            PRINT_PANEL_Y + 238,
+            PRINT_OUTPUT_LABEL_Y - 12,
             color='#333c3b',
             width=1,
         )
@@ -1185,6 +1485,12 @@ class GuiScreen(Canvas):
             field_label(
                 SETTINGS_CONTENT_X, SETTINGS_BOTTOM_LABEL_Y, GUI_TEXT['settings_update_status']
             )
+        elif settings_active_tab == SETTINGS_TAB_GENERAL:
+            field_label(
+                SETTINGS_CONTENT_X,
+                SETTINGS_TOP_LABEL_Y,
+                GUI_TEXT['settings_auto_sync_signin'],
+            )
 
     def draw_sign_in_panel(self, generate=False):
         self.rect(282, 190, 933, 740, fill=IND_BLACK, outline=IND_WHITE, width=3)
@@ -1194,16 +1500,10 @@ class GuiScreen(Canvas):
                 (GUI_TEXT['generate_wallet_address'], GENERATE_WALLET_ADDRESS_Y),
                 (GUI_TEXT['generate_public_key'], GENERATE_WALLET_PUBLIC_KEY_Y),
                 (GUI_TEXT['generate_private_key'], GENERATE_WALLET_PRIVATE_KEY_Y),
+                (GUI_TEXT['generate_wallet_name'], GENERATE_WALLET_NAME_Y),
                 (GUI_TEXT['generate_password'], GENERATE_WALLET_PASSWORD_Y),
             ):
                 canvas_text(self, GENERATE_WALLET_FIELD_X, y - 36, label, 19, fill=IND_MUTED)
-            for y in (
-                GENERATE_WALLET_ADDRESS_Y + 58,
-                GENERATE_WALLET_PUBLIC_KEY_Y + 58,
-                GENERATE_WALLET_PRIVATE_KEY_Y + 58,
-                GENERATE_WALLET_PASSWORD_Y + 58,
-            ):
-                self.line(348, y, 872, y, color='#242424', width=1)
         else:
             canvas_text(
                 self, 607, 297, GUI_TEXT['signin_wallet_label'], 28, anchor='n', justify='center'
@@ -1463,10 +1763,10 @@ def source_asset_image_path(folder, name):
 # Image button that redraws bitmap assets at the active UI scale.
 class ScaledAssetButton(Button):
     def __init__(self, master, image_path, command, bg=IND_BLACK):
-        with Image.open(image_path) as source:
-            self.source_image = source.convert('RGBA')
+        self.source_image = None
         self.current_image = None
         self.current_size = None
+        self.set_source_asset(image_path, redraw=False)
         super().__init__(
             master,
             command=command,
@@ -1481,6 +1781,13 @@ class ScaledAssetButton(Button):
             pady=0,
         )
         self.bind('<Configure>', self.resize_asset)
+
+    def set_source_asset(self, image_path, redraw=True):
+        with Image.open(image_path) as source:
+            self.source_image = source.convert('RGBA')
+        self.current_size = None
+        if redraw:
+            self.resize_asset()
 
     def resize_asset(self, event=None):
         width = event.width if event else self.winfo_width()
@@ -1546,11 +1853,22 @@ def selected_wallet_address():
 
 
 def reset_wallet_view_state():
-    global page_wallet, wallet_history_cached_entries
+    global page_wallet, wallet_history_cached_entries, wallet_history_cached_total
+    global wallet_history_metadata_cache, wallet_balance_has_cached_snapshot
+    if 'stop_wallet_balance_loading' in globals():
+        stop_wallet_balance_loading()
     if 'clear_wallet_record_cache' in globals():
         clear_wallet_record_cache()
     if 'wallet_history_cached_entries' in globals():
         wallet_history_cached_entries = []
+    if 'wallet_history_cached_total' in globals():
+        wallet_history_cached_total = 0
+    if 'wallet_history_metadata_cache' in globals():
+        wallet_history_metadata_cache = None
+    if 'wallet_balance_has_cached_snapshot' in globals():
+        wallet_balance_has_cached_snapshot = False
+    if 'wallet_sync_optimistic_import_keys' in globals():
+        wallet_sync_optimistic_import_keys.clear()
     if 'page_wallet' in globals():
         page_wallet = 1
 
@@ -1637,12 +1955,26 @@ def wallet_store_for_address(wallet_address):
 
 
 WALLET_RECORD_CACHE_TTL_SECONDS = 2.0
+PRINT_AVAILABLE_CACHE_TTL_SECONDS = 2.0
 wallet_record_cache = None
+print_available_cache = None
+
+
+def clear_print_available_cache():
+    global print_available_cache, print_available_view_records, print_available_records_loaded
+    global print_available_records_loading, print_available_render_limit
+    print_available_cache = None
+    if 'print_available_view_records' in globals():
+        print_available_view_records = []
+        print_available_records_loaded = False
+        print_available_records_loading = False
+        print_available_render_limit = PRINT_AVAILABLE_RENDER_CHUNK_SIZE
 
 
 def clear_wallet_record_cache():
     global wallet_record_cache
     wallet_record_cache = None
+    clear_print_available_cache()
 
 
 def wallet_file_cache_key(wallet_path):
@@ -1654,6 +1986,19 @@ def wallet_file_cache_key(wallet_path):
     except Exception:
         log_ignored_exception()
         return str(wallet_path)
+
+
+def store_file_cache_key(store):
+    db_path = getattr(store, "db_path", None)
+    if not db_path:
+        return None
+    try:
+        store_path = Path(db_path)
+        stat = store_path.stat()
+        return str(store_path), stat.st_mtime_ns, stat.st_size
+    except Exception:
+        log_ignored_exception()
+        return str(db_path)
 
 
 def wallet_records_snapshot(force_refresh=False):
@@ -1715,6 +2060,55 @@ def wallet_spendable_records():
     )
 
 
+def print_available_records(force_refresh=False):
+    global print_available_cache
+    wallet_path = active_wallet_path()
+    wallet_address = runtime_json.wallet_address_from_name(wallet_path.name) if wallet_path else ""
+    store = wallet_store_for_address(wallet_address) if wallet_address else None
+    cache_key = (
+        wallet_address,
+        wallet_file_cache_key(wallet_path),
+        store_file_cache_key(store),
+    )
+    now = time.monotonic()
+    if not force_refresh and print_available_cache is not None:
+        cached_key, cached_at, cached_records = print_available_cache
+        if cached_key == cache_key and now - cached_at <= PRINT_AVAILABLE_CACHE_TTL_SECONDS:
+            return list(cached_records)
+
+    wallet_lines, wallet_path = read_active_wallet_context(wallet_path)
+    wallet_address = wallet_lines[0].strip() if wallet_lines else wallet_address
+    store = wallet_store_for_address(wallet_address) if wallet_address else store
+    cache_key = (
+        wallet_address,
+        wallet_file_cache_key(wallet_path),
+        store_file_cache_key(store),
+    )
+    records = []
+    if wallet_address and store is not None:
+        try:
+            store.finalize_pending(buffer_seconds=ind_settings.finality_buffer_seconds())
+        except Exception:
+            log_ignored_exception()
+        try:
+            records = wallet_services.spendable_wallet_metadata_records(
+                wallet_address,
+                store=store,
+                wallet_lines=wallet_lines,
+                limit=None,
+            )
+        except Exception:
+            log_ignored_exception()
+            records = []
+        cache_key = (
+            wallet_address,
+            wallet_file_cache_key(wallet_path),
+            store_file_cache_key(store),
+        )
+    print_available_cache = (cache_key, now, list(records))
+    return list(records)
+
+
 def wallet_pending_records():
     return list(wallet_records_snapshot()["pending_records"])
 
@@ -1753,6 +2147,24 @@ def wallet_line_bill_counts():
         if value in counts:
             counts[value] += 1
     return counts
+
+
+def wallet_balance_snapshot():
+    wallet_lines, _wallet_path = read_active_wallet_context()
+    wallet_address = wallet_lines[0].strip() if wallet_lines else ""
+    store = None
+    if wallet_address:
+        try:
+            store = wallet_snapshot_store()
+        except Exception:
+            log_ignored_exception()
+            store = None
+    return wallet_services.wallet_balance_counts(
+        wallet_address,
+        store=store,
+        wallet_lines=wallet_lines,
+        bill_values=BILL_VALUES,
+    )
 
 
 try:
@@ -2709,6 +3121,8 @@ settings_root_gossip_var = StringVar(root)
 settings_root_gossip = make_settings_option(settings_root_gossip_var, 'YES', 'NO')
 settings_update_check_var = StringVar(root)
 settings_update_check = make_settings_option(settings_update_check_var, 'YES', 'NO')
+settings_auto_sync_signin_var = StringVar(root)
+settings_auto_sync_signin = make_settings_option(settings_auto_sync_signin_var, 'YES', 'NO')
 
 
 def load_security_settings_form():
@@ -2737,6 +3151,7 @@ def load_security_settings_form():
     settings_allow_untrusted_genesis_var.set(_bool_label(settings['allow_untrusted_genesis']))
     settings_root_gossip_var.set(_bool_label(settings['transparency_root_gossip']))
     settings_update_check_var.set(_bool_label(settings['update_check_on_startup']))
+    settings_auto_sync_signin_var.set(_bool_label(settings['auto_sync_on_wallet_sign_in']))
     _set_settings_status('No unsaved changes.', IND_MUTED)
     _set_ping_status('Ready', IND_MUTED)
     _set_update_status('Ready to check for updates.')
@@ -2776,6 +3191,7 @@ def collect_security_settings_form():
             'peer_request_timeout_seconds': settings_timeout_entry.get().strip(),
             'update_source': settings_update_source_entry.get().strip(),
             'update_check_on_startup': _option_bool(settings_update_check_var),
+            'auto_sync_on_wallet_sign_in': _option_bool(settings_auto_sync_signin_var),
         }
     )
     return settings
@@ -2981,6 +3397,7 @@ settings_widgets = (
     settings_allow_untrusted_genesis,
     settings_root_gossip,
     settings_update_check,
+    settings_auto_sync_signin,
     settings_status,
     settings_ping_status,
     settings_update_status,
@@ -3086,6 +3503,8 @@ def place_settings_tab_widgets():
         place_scaled(settings_update_button, 744, SETTINGS_TOP_FIELD_Y, 180, 40)
         place_scaled(settings_update_check, 988, SETTINGS_TOP_FIELD_Y, 110, 40)
         place_scaled(settings_update_status, SETTINGS_CONTENT_X, SETTINGS_BOTTOM_FIELD_Y, 998, 190)
+    elif settings_active_tab == SETTINGS_TAB_GENERAL:
+        place_scaled(settings_auto_sync_signin, SETTINGS_CONTENT_X, SETTINGS_TOP_FIELD_Y, 110, 40)
 
 
 def refresh_settings_widgets():
@@ -3161,12 +3580,18 @@ def wallet_sync_summary_text(summary, errors):
         return "Sync failed: " + errors[0], IND_ORANGE
     if not summary:
         return "Sync finished.", IND_MUTED
+    if summary.get("status") == "cancelled":
+        processed = int(summary.get("processed_records") or 0)
+        if processed:
+            return f"Sync paused after {processed} bill(s).", IND_ORANGE
+        return "Sync paused.", IND_ORANGE
     backend_errors = summary.get("errors") or []
     if backend_errors:
         return f"Sync issues: {len(backend_errors)} message error(s)", IND_ORANGE
     parts = []
     fetched = int(summary.get("fetched_messages") or 0)
     fetched_records = int(summary.get("fetched_records") or 0)
+    checked_records = int(summary.get("checked_records") or 0)
     finalized = int(summary.get("finalized") or 0)
     added = int(summary.get("wallet_bills_added") or 0)
     pending = int(summary.get("pending") or 0)
@@ -3175,6 +3600,8 @@ def wallet_sync_summary_text(summary, errors):
         parts.append(f"fetched {fetched} messages")
     if fetched_records:
         parts.append(f"received {fetched_records} peer records")
+    if checked_records and not added:
+        parts.append(f"checked {checked_records} bills")
     if finalized:
         parts.append(f"settled {finalized} bills")
     if added:
@@ -3201,27 +3628,75 @@ def wallet_sync_progress_text(progress):
     display_label = wallet_services.wallet_display_label(display_id) if display_id else ""
     fetched = int(summary.get("fetched_messages") or 0)
     fetched_records = int(summary.get("fetched_records") or 0)
-    unique_records = int(summary.get("fetched_unique_records") or 0)
+    checked_records = int(summary.get("checked_records") or 0)
+    processed_records = int(summary.get("processed_records") or 0)
+    accepted_records = int(summary.get("accepted_records") or 0)
+    skipped_known_records = int(summary.get("skipped_known_records") or 0)
+    duplicate_records = int(summary.get("fetched_duplicate_records") or 0)
     finalized = int(summary.get("finalized") or 0)
     added = int(summary.get("wallet_bills_added") or 0)
     peer_timeouts = int(summary.get("peer_timeouts") or 0)
+    if event == "cancelled":
+        processed = int(summary.get("processed_records") or 0)
+        if processed:
+            return f"Sync: paused after {processed} bill(s)", IND_ORANGE
+        return "Sync: paused", IND_ORANGE
     if event == "wallet_started":
         return "Sync: checking this wallet...", IND_MUTED
     if event == "local_messages":
         count = int(progress.get("message_count") or 0)
         return f"Sync: checking {count} local message(s)...", IND_MUTED
+    if event == "peer_request_started":
+        direction = str(progress.get("direction") or "").strip().lower()
+        phase = direction if direction in {"newer", "reconcile", "backfill"} else "peer"
+        rounds = int(summary.get("sync_rounds") or 0)
+        return f"Sync: requesting {phase} page {rounds}...", IND_MUTED
     if event == "peer_report":
         count = int(progress.get("message_count") or 0)
         status = str(progress.get("status") or "")
+        direction = str(progress.get("direction") or "").strip().lower()
+        phase = direction if direction in {"newer", "reconcile", "backfill"} else ""
+        page_suffix = ", more pages queued" if progress.get("has_more") else ""
         if status == "ok" and count:
-            if unique_records:
-                return f"Sync: found {unique_records} bill(s), processing...", IND_MUTED
-            return f"Sync: received {fetched + fetched_records} peer item(s), processing...", IND_MUTED
+            checked = fetched + fetched_records
+            prefix = f"{phase} " if phase else ""
+            if accepted_records or skipped_known_records or processed_records:
+                return (
+                    f"Sync: {prefix}received {count} item(s), checked {checked_records}, "
+                    f"imported {accepted_records}, known {skipped_known_records}{page_suffix}",
+                    IND_MUTED,
+                )
+            return (
+                f"Sync: {prefix}received {count} item(s) ({checked} total), processing{page_suffix}...",
+                IND_MUTED,
+            )
+        if status == "ok" and phase:
+            return f"Sync: {phase} checked peer, no items yet...", IND_MUTED
         if status == "timeout":
+            if phase:
+                return f"Sync: {phase} timed out on peer, timeouts {peer_timeouts}", IND_ORANGE
             return f"Sync: received {fetched + fetched_records} peer item(s), timeouts {peer_timeouts}", IND_ORANGE
+        if phase:
+            return f"Sync: {phase} checked peer, received {fetched + fetched_records} item(s)...", IND_MUTED
         return f"Sync: checked peer, received {fetched + fetched_records} item(s)...", IND_MUTED
+    if event == "records_checked":
+        source = str(progress.get("source") or "").strip().lower()
+        source_label = "peer" if source == "peer" else "wallet"
+        known_part = f", known {skipped_known_records}" if skipped_known_records else ""
+        duplicate_part = f", duplicates {duplicate_records}" if duplicate_records else ""
+        return (
+            f"Sync: checked {checked_records} {source_label} bill(s), imported {accepted_records}"
+            f"{known_part}{duplicate_part}",
+            IND_MUTED,
+        )
     if event == "record_accepted":
-        return f"Sync: imported {display_label}", IND_GREEN
+        if checked_records:
+            return (
+                f"Sync: imported {display_label} ({accepted_records} new, "
+                f"{checked_records} checked)",
+                IND_GREEN,
+            )
+        return f"Sync: imported {display_label} ({accepted_records} new)", IND_GREEN
     if event == "finalized":
         return f"Sync: settled {finalized} bill(s), updating wallet...", IND_GREEN
     if event == "bills_added":
@@ -3253,10 +3728,85 @@ def write_transfer_announcement(wallet_lines, wallet_bill_line, recipient_addres
 
 
 address_to_charge = []
+printed_charge_running = False
+print_active_denomination = None
+print_selected_text_updating = False
+print_selected_bill_id_cache = []
+print_selected_bill_id_set = set()
+print_selected_total = 0
+PRINT_AVAILABLE_RENDER_CHUNK_SIZE = 30
+print_available_view_records = []
+print_available_records_loaded = False
+print_available_records_loading = False
+print_available_render_limit = PRINT_AVAILABLE_RENDER_CHUNK_SIZE
+print_available_load_generation = 0
+print_available_filter_denominations = []
+print_available_filter_counts = {}
+print_available_visible_count = 0
+print_available_visible_total = 0
 
 
 def print_selected_bill_ids():
-    return list(filter(None, selected_bills_text.get(1.0, END).splitlines()))
+    return list(print_selected_bill_id_cache)
+
+
+def set_print_selected_bill_ids(display_ids, reset_charge=False):
+    global print_selected_text_updating, print_selected_bill_id_cache
+    global print_selected_bill_id_set, print_selected_total
+    cleaned = []
+    seen = set()
+    for display_id in display_ids:
+        display_id = str(display_id or "").strip()
+        if display_id and display_id not in seen:
+            cleaned.append(display_id)
+            seen.add(display_id)
+    selected_total = sum(print_bill_value_from_id(display_id) for display_id in cleaned)
+    print_selected_text_updating = True
+    try:
+        selected_bills_text.delete(1.0, END)
+        if cleaned:
+            selected_bills_text.insert(1.0, '\n'.join(cleaned))
+        selected_bills_text.edit_modified(False)
+    finally:
+        print_selected_text_updating = False
+    print_selected_bill_id_cache = cleaned
+    print_selected_bill_id_set = seen
+    print_selected_total = selected_total
+    if reset_charge:
+        address_to_charge.clear()
+        set_print_charge_ready(False)
+        set_print_status(
+            'PDF is generated first. Charge sends funds to the printed paper-wallet addresses after printing.'
+        )
+
+
+def append_print_selected_bill_id(display_id, reset_charge=False):
+    global print_selected_text_updating, print_selected_total
+    display_id = str(display_id or "").strip()
+    if not display_id or display_id in print_selected_bill_id_set:
+        return
+    print_selected_text_updating = True
+    try:
+        if print_selected_bill_id_cache:
+            selected_bills_text.insert(END, '\n' + display_id)
+        else:
+            selected_bills_text.insert(1.0, display_id)
+        selected_bills_text.edit_modified(False)
+    finally:
+        print_selected_text_updating = False
+    print_selected_bill_id_cache.append(display_id)
+    print_selected_bill_id_set.add(display_id)
+    print_selected_total += print_bill_value_from_id(display_id)
+    if reset_charge:
+        address_to_charge.clear()
+        set_print_charge_ready(False)
+        set_print_status(
+            'PDF is generated first. Charge sends funds to the printed paper-wallet addresses after printing.'
+        )
+
+
+def print_record_display_id(record):
+    return str(record.get("display_id") or "").strip()
 
 
 def print_bill_value_from_id(display_id):
@@ -3267,7 +3817,53 @@ def print_bill_value_from_id(display_id):
 
 
 def print_selection_total():
-    return sum(print_bill_value_from_id(display_id) for display_id in print_selected_bill_ids())
+    return print_selected_total
+
+
+def print_record_value(record):
+    display_id = print_record_display_id(record)
+    return print_bill_value_from_id(display_id)
+
+
+def print_available_source_records(records=None):
+    if records is not None:
+        return records
+    return list(print_available_view_records)
+
+
+def print_available_display_records(records=None):
+    selected = print_selected_bill_id_set
+    visible = []
+    for record in print_available_source_records(records):
+        display_id = print_record_display_id(record)
+        if not display_id or display_id in selected:
+            continue
+        if print_active_denomination is not None and print_record_value(record) != print_active_denomination:
+            continue
+        visible.append(record)
+    return visible
+
+
+def print_all_denominations(records):
+    return sorted(
+        {
+            print_record_value(record)
+            for record in records
+            if print_record_display_id(record) and print_record_value(record) > 0
+        }
+    )
+
+
+def print_available_count_by_denomination(records):
+    selected = print_selected_bill_id_set
+    counts = {}
+    for record in records:
+        display_id = print_record_display_id(record)
+        if not display_id or display_id in selected:
+            continue
+        value = print_record_value(record)
+        counts[value] = counts.get(value, 0) + 1
+    return counts
 
 
 def print_estimated_page_count(count=None):
@@ -3276,7 +3872,7 @@ def print_estimated_page_count(count=None):
         return 0
     if print_output_mode.get() == 'qr':
         return (count + 23) // 24
-    return ((count + print_tools.BILLS_PER_PRINT_PAGE - 1) // print_tools.BILLS_PER_PRINT_PAGE) * 2
+    return ((count + PRINT_BILLS_PER_PRINT_PAGE - 1) // PRINT_BILLS_PER_PRINT_PAGE) * 2
 
 
 def set_print_status(message, color=IND_MUTED):
@@ -3322,11 +3918,22 @@ def set_print_charge_ready(ready):
         log_ignored_exception()
 
 
+def set_print_charge_busy(busy):
+    try:
+        charge_bills_button.config(
+            state=DISABLED if busy else NORMAL,
+            text='Signing bills...' if busy else 'I printed it - Charge',
+            cursor='watch' if busy else 'hand2',
+        )
+    except Exception:
+        log_ignored_exception()
+
+
 def refresh_print_summary(event=None):
     try:
         count = len(print_selected_bill_ids())
         total = print_selection_total()
-        print_summary_label.config(text=f'{total}$\n{count} bill' + ('' if count == 1 else 's'))
+        print_summary_label.config(text=f'{total}$')
         page_count = print_estimated_page_count(count)
         print_pages_label.config(
             text=f'{page_count} page' + ('' if page_count == 1 else 's') + '\nestimated'
@@ -3352,10 +3959,85 @@ def reset_print_actions():
 
 
 def select_all_print_bills():
-    lines = list(filter(None, all_bills_text.get(1.0, END).splitlines()))
-    selected_bills_text.delete(1.0, END)
-    selected_bills_text.insert(1.0, '\n'.join(lines))
+    if print_available_records_loading and not print_available_records_loaded:
+        set_print_status('Available bills are still loading.', IND_MUTED)
+        return
+    selected = print_selected_bill_ids()
+    visible_ids = [
+        print_record_display_id(record)
+        for record in print_available_display_records()
+        if print_record_display_id(record)
+    ]
+    if not visible_ids:
+        set_print_status('No bills are available in this category.', IND_ORANGE)
+        return
+    set_print_selected_bill_ids(selected + visible_ids, reset_charge=True)
+    refresh_print_view()
+
+
+def validate_print_select_count(value):
+    return value == '' or value.isdigit()
+
+
+def print_select_count_value():
+    text = print_select_count_var.get().strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def update_print_select_count_button(*_args):
+    try:
+        count = print_select_count_value()
+        if count is None:
+            label = 'Select N bills'
+            state = DISABLED
+        else:
+            label = f'Select {count} bill' + ('' if count == 1 else 's')
+            state = NORMAL if count > 0 else DISABLED
+        print_select_count_button.config(
+            text=label,
+            state=state,
+            cursor='hand2' if state == NORMAL else 'arrow',
+        )
+    except Exception:
+        log_ignored_exception()
+
+
+def select_count_print_bills():
+    if print_available_records_loading and not print_available_records_loaded:
+        set_print_status('Available bills are still loading.', IND_MUTED)
+        return
+    count = print_select_count_value()
+    if count is None or count <= 0:
+        set_print_status('Enter a positive bill count first.', IND_ORANGE)
+        return
+    selected = print_selected_bill_ids()
+    visible_ids = [
+        print_record_display_id(record)
+        for record in print_available_display_records()
+        if print_record_display_id(record)
+    ]
+    selected_ids = visible_ids[:count]
+    if not selected_ids:
+        set_print_status('No bills are available in this category.', IND_ORANGE)
+        return
+    set_print_selected_bill_ids(selected + selected_ids, reset_charge=True)
+    refresh_print_bill_lists(reset_scroll=False)
     refresh_print_summary()
+    if len(selected_ids) < count:
+        set_print_status(f'Added {len(selected_ids)} remaining bills to the print batch.', IND_MUTED)
+    else:
+        set_print_status(f'Added {len(selected_ids)} bills to the print batch.', IND_MUTED)
+
+
+def select_count_print_bills_from_keyboard(_event=None):
+    if print_select_count_button.cget('state') == NORMAL:
+        select_count_print_bills()
+    return 'break'
 
 
 def text_line_at_event(widget, event):
@@ -3375,24 +4057,98 @@ def copy_text_selection(event):
 
 def add_print_bill_from_available(event):
     display_id = text_line_at_event(all_bills_text, event)
-    if display_id and display_id not in print_selected_bill_ids():
-        if len(selected_bills_text.get(1.0, END).strip()):
-            selected_bills_text.insert(END, '\n')
-        selected_bills_text.insert(END, display_id)
-        refresh_print_summary()
+    add_print_bill_id_to_batch(display_id)
     return 'break'
 
 
 def remove_print_bill_from_queue(event):
-    index = selected_bills_text.index(f'@{event.x},{event.y}')
-    if text_line_at_event(selected_bills_text, event):
-        selected_bills_text.delete(f'{index} linestart', f'{index} lineend +1c')
-        refresh_print_summary()
+    remove_print_bill_id_from_batch(text_line_at_event(selected_bills_text, event))
     return 'break'
 
 
 def on_print_selection_modified(event):
-    refresh_print_summary(event)
+    if print_selected_text_updating:
+        return
+    try:
+        if event is not None and event.widget is selected_bills_text:
+            selected_bills_text.edit_modified(False)
+    except Exception:
+        log_ignored_exception()
+    refresh_print_view()
+
+
+def add_print_bill_id_to_batch(display_id, source_row=None):
+    display_id = str(display_id or "").strip()
+    if not display_id:
+        return
+    if source_row is not None and fast_add_print_bill_to_batch(display_id, source_row):
+        return
+    selected = print_selected_bill_ids()
+    if display_id not in selected:
+        set_print_selected_bill_ids(selected + [display_id], reset_charge=True)
+    refresh_print_view()
+
+
+def remove_print_bill_id_from_batch(display_id):
+    display_id = str(display_id or "").strip()
+    if not display_id:
+        return
+    set_print_selected_bill_ids(
+        [selected_id for selected_id in print_selected_bill_ids() if selected_id != display_id],
+        reset_charge=True,
+    )
+    refresh_print_view()
+
+
+def set_print_denomination_filter(value):
+    global print_active_denomination
+    print_active_denomination = value
+    refresh_print_view()
+
+
+def update_print_available_labels(count, total):
+    print_available_summary_label.config(text=f'{total}$')
+    print_available_footer_label.config(
+        text=f'{count} available'
+        if print_active_denomination is None
+        else f'{count} available in {print_active_denomination}x'
+    )
+
+
+def update_print_queue_footer(count):
+    print_queue_footer_label.config(
+        text=f'{count} bill' + ('' if count == 1 else 's') + ' in batch'
+    )
+
+
+def fast_add_print_bill_to_batch(display_id, source_row):
+    global print_available_visible_count, print_available_visible_total
+    display_id = str(display_id or "").strip()
+    if not display_id:
+        return False
+    if display_id in print_selected_bill_id_set:
+        return False
+
+    selected_count = len(print_selected_bill_id_cache)
+    bill_value = print_bill_value_from_id(display_id)
+    append_print_selected_bill_id(display_id, reset_charge=True)
+    try:
+        source_row.destroy()
+    except Exception:
+        log_ignored_exception()
+    make_print_batch_row(print_queue_rows_frame, display_id)
+
+    print_available_visible_count = max(0, print_available_visible_count - 1)
+    print_available_visible_total = max(0, print_available_visible_total - bill_value)
+    if bill_value in print_available_filter_counts:
+        print_available_filter_counts[bill_value] = max(
+            0,
+            print_available_filter_counts[bill_value] - 1,
+        )
+    update_print_available_labels(print_available_visible_count, print_available_visible_total)
+    update_print_queue_footer(selected_count + 1)
+    refresh_print_summary()
+    return True
 
 
 # Route the print action to the selected paper-bill output format.
@@ -3403,77 +4159,271 @@ def print_selected_output():
         print_bills()
 
 
+def print_charge_address_map(list_sm):
+    if len(address_to_charge) >= len(list_sm):
+        return {
+            display_id: address_to_charge[index]
+            for index, display_id in enumerate(list_sm)
+        }
+    try:
+        backup_map = print_tools.read_charge_backup_csv()
+    except FileNotFoundError as exc:
+        raise ValueError(
+            "Printed bill addresses are missing. Print the bills again, or restore "
+            f"{print_tools.PRINT_CHARGE_BACKUP_CSV} in print_folder before charging them."
+        ) from exc
+    missing = [display_id for display_id in list_sm if display_id not in backup_map]
+    if missing:
+        preview = ', '.join(missing[:5])
+        if len(missing) > 5:
+            preview += f', ... {len(missing) - 5} more'
+        raise ValueError(
+            f"{print_tools.PRINT_CHARGE_BACKUP_CSV} is missing charge addresses for: {preview}"
+        )
+    restored = [backup_map[display_id] for display_id in list_sm]
+    address_to_charge.clear()
+    address_to_charge.extend(restored)
+    return {display_id: backup_map[display_id] for display_id in list_sm}
+
+
+def preview_display_ids(display_ids, limit=8):
+    ids = [str(display_id) for display_id in display_ids if str(display_id)]
+    preview = ', '.join(ids[:limit])
+    if len(ids) > limit:
+        preview += f', ... {len(ids) - limit} more'
+    return preview
+
+
 # Send selected printed bills to the generated paper-wallet addresses.
 def charge_bills():
-    root.config(cursor='watch')
-    charge_bills_button.config(cursor='watch')
-    sent_count = 0
-    errors = []
-    charge_succeeded = False
+    global printed_charge_running
+    if printed_charge_running:
+        set_print_status('Printed bill charge is already signing.', IND_MUTED)
+        return
     try:
         list_sm = print_selected_bill_ids()
         if not list_sm:
             raise ValueError("No printed bills are selected.")
-        if len(address_to_charge) < len(list_sm):
+        seen = set()
+        duplicates = []
+        for display_id in list_sm:
+            if display_id in seen and display_id not in duplicates:
+                duplicates.append(display_id)
+            seen.add(display_id)
+        if duplicates:
             raise ValueError(
-                "Printed bill addresses are missing. Print the bills again before charging them."
+                "Remove duplicate printed bills before charging: "
+                + preview_display_ids(duplicates)
             )
+        charge_address_by_bill_id = print_charge_address_map(list_sm)
         wallet_path = active_wallet_path()
         if wallet_path is None:
             raise ValueError("Sign in to a wallet before charging printed bills.")
-        of = runtime_json.read_decrypted_wallet_lines(wallet_path)
-        updated = []
-        for wb in of:
-            parts = wb.split()
-            if parts and parts[0] in list_sm:
-                index_item = list_sm.index(parts[0])
-                try:
-                    state = write_transfer_announcement(of, wb, address_to_charge[index_item])
-                    if not state:
-                        raise RuntimeError("bill is not spendable or is not settled")
-                    updated.append(
-                        '-'
-                        + parts[0]
-                        + ' '
-                        + str(state.sequence)
-                        + ' '
-                        + str(int(time.time()))
-                        + '\n'
-                    )
-                    sent_count += 1
-                except Exception as exc:
-                    errors.append(f"{parts[0]}: {error_detail(exc)}")
-                    updated.append(wb)
-            else:
-                updated.append(wb)
-        runtime_json.write_decrypted_wallet_lines(wallet_path, updated)
-        if sent_count:
-            start_wallet_send_worker(expected_total=sent_count)
-        if errors:
-            raise RuntimeError("\n".join(errors))
-        charge_succeeded = True
-        selected_bills_text.delete(1.0, END)
-        address_to_charge.clear()
-        set_print_status('Printed bills charged and queued for gossip.', IND_GREEN)
     except Exception as exc:
         show_error_popup('Charge bills failed', exc)
         set_print_status('Charge failed. Review the selected bills and try again.', IND_ORANGE)
-    finally:
-        if not wallet_send_running:
-            root.config(cursor='arrow')
-        refresh_wallet_view()
-        charge_bills_button.config(cursor='watch' if wallet_send_running else 'hand2')
-        if charge_succeeded:
-            set_print_charge_ready(False)
-        refresh_print_summary()
+        refresh_print_view()
+        return
+
+    total = len(list_sm)
+    printed_charge_running = True
+    root.config(cursor='watch')
+    set_print_charge_busy(True)
+    set_print_progress(0, total, 'Checking printed bills')
+
+    def progress(completed, message):
+        root.after(0, lambda: set_print_progress(completed, total, message))
+
+    def worker():
+        sent_count = 0
+        errors = []
+        failed_display_ids = []
+        preflight_error = None
+        fatal_error = None
+        updated = []
+        try:
+            of = runtime_json.read_decrypted_wallet_lines(wallet_path)
+            wallet_address = of[0].strip() if of else ""
+            store = wallet_store_for_address(wallet_address)
+            wallet_line_by_display_id = {}
+            wallet_index_by_display_id = {}
+            already_spent = []
+            selected_ids = set(list_sm)
+            for index, wb in enumerate(of):
+                parts = wb.split()
+                if not parts:
+                    continue
+                raw_display_id = parts[0].strip()
+                if raw_display_id.startswith('-'):
+                    display_id = raw_display_id[1:]
+                    if display_id in selected_ids:
+                        already_spent.append(display_id)
+                    continue
+                if raw_display_id in selected_ids and raw_display_id not in wallet_line_by_display_id:
+                    wallet_line_by_display_id[raw_display_id] = wb
+                    wallet_index_by_display_id[raw_display_id] = index
+
+            missing = [
+                display_id
+                for display_id in list_sm
+                if display_id not in wallet_line_by_display_id and display_id not in already_spent
+            ]
+            if already_spent:
+                raise RuntimeError(
+                    "These printed bills are already marked spent in the wallet: "
+                    + preview_display_ids(already_spent)
+                )
+            if missing:
+                raise RuntimeError(
+                    "These printed bills are not currently in the unlocked wallet: "
+                    + preview_display_ids(missing)
+                )
+
+            spendable_records = wallet_services.spendable_wallet_records(
+                wallet_address,
+                store=store,
+                limit=None,
+            )
+            spendable_ids = {
+                str(record.get("display_id") or "").strip()
+                for record in spendable_records
+            }
+            not_ready = [
+                display_id
+                for display_id in list_sm
+                if display_id not in spendable_ids
+            ]
+            if not_ready:
+                raise RuntimeError(
+                    "These printed bills are not settled/spendable locally yet: "
+                    + preview_display_ids(not_ready)
+                    + ". Let wallet sync finish, then try charging again."
+                )
+        except Exception as exc:
+            preflight_error = exc
+        else:
+            try:
+                updated = list(of)
+                last_wallet_flush = 0
+                wallet_bill_lines = [wallet_line_by_display_id[display_id] for display_id in list_sm]
+                batch_results = wallet_services.spend_wallet_bills_batch(
+                    of,
+                    wallet_bill_lines,
+                    charge_address_by_bill_id,
+                    store=store,
+                    progress_callback=lambda completed, _total, message: progress(completed, message),
+                )
+                for display_id, result in zip(list_sm, batch_results, strict=False):
+                    try:
+                        if result.get("error") is not None:
+                            raise result["error"]
+                        state = result.get("state")
+                        if not state:
+                            raise RuntimeError("bill is not spendable or is not settled")
+                        history_timestamp = result.get("history_timestamp")
+                        if history_timestamp is None:
+                            history_timestamp = wallet_services.latest_bill_transfer_timestamp(
+                                bill=wallet_history_bill_for_sequence(
+                                    display_id,
+                                    state.sequence,
+                                    store=store,
+                                ),
+                                fallback=time.time(),
+                            )
+                        updated[wallet_index_by_display_id[display_id]] = (
+                            '-'
+                            + display_id
+                            + ' '
+                            + str(state.sequence)
+                            + ' '
+                            + str(history_timestamp)
+                            + '\n'
+                        )
+                        sent_count += 1
+                    except Exception as exc:
+                        errors.append(f"{display_id}: {error_detail(exc)}")
+                        failed_display_ids.append(display_id)
+                    if sent_count and sent_count - last_wallet_flush >= 100:
+                        runtime_json.write_decrypted_wallet_lines(wallet_path, updated)
+                        last_wallet_flush = sent_count
+                if sent_count and sent_count != last_wallet_flush:
+                    runtime_json.write_decrypted_wallet_lines(wallet_path, updated)
+            except Exception as exc:
+                fatal_error = exc
+
+        def finish():
+            global printed_charge_running
+            printed_charge_running = False
+            set_print_charge_busy(False)
+            if sent_count and fatal_error is None:
+                clear_wallet_record_cache()
+                start_wallet_send_worker(expected_total=sent_count)
+            if preflight_error is not None:
+                show_error_popup('Charge bills failed', preflight_error)
+                set_print_status('Charge stopped before signing. Review the selected bills.', IND_ORANGE)
+                set_print_charge_ready(True)
+            elif fatal_error is not None:
+                show_error_popup('Charge bills failed', fatal_error)
+                set_print_status(
+                    'Charge stopped while saving wallet progress. Queued sends were not started.',
+                    IND_ORANGE,
+                )
+                set_print_charge_ready(False)
+            elif errors:
+                if failed_display_ids:
+                    set_print_selected_bill_ids(failed_display_ids)
+                    address_to_charge.clear()
+                    address_to_charge.extend(
+                        charge_address_by_bill_id[display_id]
+                        for display_id in failed_display_ids
+                    )
+                    set_print_charge_ready(True)
+                else:
+                    set_print_charge_ready(False)
+                show_error_popup('Charge bills failed', RuntimeError("\n".join(errors)))
+                set_print_status(
+                    f'Charge partially signed {sent_count}/{total}. Failed bills remain selected.',
+                    IND_ORANGE,
+                )
+            else:
+                set_print_selected_bill_ids([])
+                address_to_charge.clear()
+                set_print_progress(total, total, 'Printed bills signed')
+                set_print_status('Printed bills signed and queued for paced send.', IND_GREEN)
+                set_print_charge_ready(False)
+            if not wallet_send_running:
+                root.config(cursor='arrow')
+            refresh_wallet_view()
+            if print_tab_is_visible():
+                schedule_print_available_load(force_records=True)
+
+        root.after(0, finish)
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 def selected_print_bill_sequences():
-    if len(selected_bills_text.get(1.0, END)) <= 2:
+    list_bills = print_selected_bill_ids()
+    if not list_bills:
         set_print_status('Select at least one bill before creating a PDF.', IND_ORANGE)
         return None
-    list_bills = print_selected_bill_ids()
-    records_by_display_id = {record["display_id"]: record for record in wallet_spendable_records()}
+    if not print_available_records_loaded:
+        set_print_status('Available bills are still loading. Try again in a moment.', IND_MUTED)
+        return None
+    records = list(print_available_view_records)
+    records_by_display_id = {}
+    for record in records:
+        display_id = str(record.get("display_id") or "").strip()
+        if display_id and display_id not in records_by_display_id:
+            records_by_display_id[display_id] = record
+    if any(display_id not in records_by_display_id for display_id in list_bills):
+        records = print_available_records(force_refresh=True)
+        set_print_available_view_records(records, loaded=True)
+        records_by_display_id = {}
+        for record in records:
+            display_id = str(record.get("display_id") or "").strip()
+            if display_id and display_id not in records_by_display_id:
+                records_by_display_id[display_id] = record
     list_bills_2 = [
         (display_id, str(int(records_by_display_id[display_id]["sequence"]) + 1))
         for display_id in list_bills
@@ -3547,7 +4497,7 @@ def print_bills():
         'full_bill',
         'Creating full bill PDF...',
         'Print bills failed',
-        'PDF opened. Print or save it, then click "I printed it - Charge".',
+        'PDF opened and charge backup CSV saved in print_folder.',
         'After printing, click "I printed it - Charge" to send funds to the paper wallets.',
     )
 
@@ -3558,10 +4508,524 @@ def print_only_qr():
         'only_qr',
         'Creating QR-only PDF...',
         'Print QR bills failed',
-        'QR PDF opened. Print or save it, then click "I printed it - Charge".',
+        'QR PDF opened and charge backup CSV saved in print_folder.',
         'After printing, click "I printed it - Charge" to send funds to the QR wallets.',
         extra_busy_buttons=(button_only_qr,),
     )
+
+
+def next_print_available_load_generation():
+    global print_available_load_generation
+    print_available_load_generation += 1
+    return print_available_load_generation
+
+
+def print_tab_is_visible():
+    try:
+        return bool(print_available_rows_canvas.winfo_ismapped())
+    except Exception:
+        log_ignored_exception()
+        return False
+
+
+def set_print_available_view_records(records, *, loaded=True):
+    global print_available_view_records, print_available_records_loaded
+    global print_available_records_loading, print_available_render_limit
+    print_available_view_records = list(records or [])
+    print_available_records_loaded = bool(loaded)
+    print_available_records_loading = False
+    print_available_render_limit = PRINT_AVAILABLE_RENDER_CHUNK_SIZE
+
+
+def show_print_loading_state():
+    clear_print_rows(print_available_rows_frame)
+    clear_print_rows(print_queue_rows_frame)
+    refresh_print_filter_buttons([], {})
+    print_empty_row(print_available_rows_frame, 'Loading available bills...')
+    for display_id in print_selected_bill_ids():
+        make_print_batch_row(print_queue_rows_frame, display_id)
+    print_available_summary_label.config(text='...')
+    print_available_footer_label.config(text='Loading available bills...')
+    print_queue_footer_label.config(
+        text=f'{len(print_selected_bill_ids())} bill'
+        + ('' if len(print_selected_bill_ids()) == 1 else 's')
+        + ' in batch'
+    )
+    set_print_status('Loading spendable bills for printing...', IND_MUTED)
+    refresh_print_summary()
+
+
+def show_print_available_error(error):
+    selected_count = len(print_selected_bill_ids())
+    clear_print_rows(print_available_rows_frame)
+    clear_print_rows(print_queue_rows_frame)
+    refresh_print_filter_buttons([], {})
+    print_empty_row(print_available_rows_frame, 'Could not load available bills.')
+    print_available_summary_label.config(text='0$')
+    print_available_footer_label.config(text='Load failed')
+    print_queue_footer_label.config(
+        text=f'{selected_count} bill' + ('' if selected_count == 1 else 's') + ' in batch'
+    )
+    set_print_status('Available bill loading failed.', IND_ORANGE)
+    show_error_popup('Print bills failed', error)
+
+
+def finish_print_available_load(generation, records=None, error=None):
+    global print_available_records_loading
+    if generation != print_available_load_generation:
+        return
+    print_available_records_loading = False
+    if not print_tab_is_visible():
+        return
+    if error is not None:
+        set_print_available_view_records([], loaded=False)
+        show_print_available_error(error)
+        return
+    set_print_available_view_records(records, loaded=True)
+    refresh_print_view()
+
+
+def start_print_available_load(generation, force_records=True):
+    global print_available_records_loading
+    if generation != print_available_load_generation or not print_tab_is_visible():
+        return
+    print_available_records_loading = True
+
+    def worker():
+        try:
+            records = print_available_records(force_refresh=force_records)
+            error = None
+        except Exception as exc:
+            records = []
+            error = exc
+        root.after(
+            0,
+            lambda load_generation=generation, loaded_records=records, load_error=error: (
+                finish_print_available_load(load_generation, loaded_records, load_error)
+            ),
+        )
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def schedule_print_available_load(force_records=True, delay_ms=50):
+    generation = next_print_available_load_generation()
+    if print_available_records_loaded:
+        refresh_print_view()
+    else:
+        show_print_loading_state()
+    root.after(
+        max(1, int(delay_ms)),
+        lambda load_generation=generation: start_print_available_load(
+            load_generation,
+            force_records=force_records,
+        ),
+    )
+
+
+def make_print_scroll_area(bg):
+    canvas = Canvas(
+        root,
+        bg=bg,
+        bd=0,
+        highlightthickness=0,
+        relief=FLAT,
+        yscrollincrement=max(1, px(38)),
+    )
+    frame = Frame(canvas, bg=bg, bd=0, highlightthickness=0)
+    window_id = canvas.create_window(0, 0, window=frame, anchor='nw')
+
+    def configure_frame(_event=None):
+        canvas.configure(scrollregion=canvas.bbox('all'))
+
+    def configure_canvas(event):
+        canvas.itemconfigure(window_id, width=event.width)
+
+    frame.bind('<Configure>', configure_frame)
+    canvas.bind('<Configure>', configure_canvas)
+    bind_print_canvas_mousewheel(canvas)
+    return canvas, frame
+
+
+def bind_print_canvas_mousewheel(canvas):
+    def on_mousewheel(event):
+        if event.num == 4:
+            canvas.yview_scroll(-1, 'units')
+        elif event.num == 5:
+            canvas.yview_scroll(1, 'units')
+        elif event.delta:
+            canvas.yview_scroll(-1 * int(event.delta / 120), 'units')
+        return 'break'
+
+    def bind(_event):
+        canvas.bind_all('<MouseWheel>', on_mousewheel)
+        canvas.bind_all('<Button-4>', on_mousewheel)
+        canvas.bind_all('<Button-5>', on_mousewheel)
+
+    def unbind(_event):
+        canvas.unbind_all('<MouseWheel>')
+        canvas.unbind_all('<Button-4>')
+        canvas.unbind_all('<Button-5>')
+
+    canvas.bind('<Enter>', bind)
+    canvas.bind('<Leave>', unbind)
+
+
+def make_print_filter_strip():
+    canvas = Canvas(
+        root,
+        bg='#101414',
+        bd=0,
+        highlightthickness=0,
+        relief=FLAT,
+        xscrollincrement=max(1, px(40)),
+    )
+    frame = Frame(canvas, bg='#101414', bd=0, highlightthickness=0)
+    window_id = canvas.create_window(0, 0, window=frame, anchor='nw')
+    scrollbar = Scrollbar(
+        root,
+        orient='horizontal',
+        command=canvas.xview,
+        bd=0,
+        highlightthickness=0,
+    )
+    canvas.configure(xscrollcommand=scrollbar.set)
+
+    def configure_frame(_event=None):
+        canvas.configure(scrollregion=canvas.bbox('all'))
+
+    def configure_canvas(event):
+        canvas.itemconfigure(window_id, height=event.height)
+
+    def on_mousewheel(event):
+        if event.num == 4:
+            canvas.xview_scroll(-1, 'units')
+        elif event.num == 5:
+            canvas.xview_scroll(1, 'units')
+        elif event.delta:
+            canvas.xview_scroll(-1 * int(event.delta / 120), 'units')
+        return 'break'
+
+    def bind(_event):
+        canvas.bind_all('<MouseWheel>', on_mousewheel)
+        canvas.bind_all('<Button-4>', on_mousewheel)
+        canvas.bind_all('<Button-5>', on_mousewheel)
+
+    def unbind(_event):
+        canvas.unbind_all('<MouseWheel>')
+        canvas.unbind_all('<Button-4>')
+        canvas.unbind_all('<Button-5>')
+
+    frame.bind('<Configure>', configure_frame)
+    canvas.bind('<Configure>', configure_canvas)
+    canvas.bind('<Enter>', bind)
+    canvas.bind('<Leave>', unbind)
+    return canvas, frame, scrollbar
+
+
+def clear_print_rows(container):
+    for child in container.winfo_children():
+        child.destroy()
+
+
+def set_print_row_bg(row, bg):
+    try:
+        row.configure(bg=bg)
+    except Exception:
+        log_ignored_exception()
+    for child in row.winfo_children():
+        try:
+            if getattr(child, '_print_keep_bg', False):
+                continue
+            child.configure(bg=bg)
+        except Exception:
+            log_ignored_exception()
+
+
+def bind_print_row_hover(row, normal_bg, hover_bg):
+    def enter(_event):
+        set_print_row_bg(row, hover_bg)
+
+    def leave(event):
+        try:
+            widget = row.winfo_containing(event.x_root, event.y_root)
+            while widget is not None:
+                if widget is row:
+                    return
+                widget = widget.master
+        except Exception:
+            log_ignored_exception()
+        set_print_row_bg(row, normal_bg)
+
+    row.bind('<Enter>', enter)
+    row.bind('<Leave>', leave)
+    for child in row.winfo_children():
+        child.bind('<Enter>', enter)
+        child.bind('<Leave>', leave)
+
+
+def print_empty_row(container, text):
+    row = Frame(container, bg='#101414', height=px(40), bd=0, highlightthickness=0)
+    row.pack(fill='x')
+    row.pack_propagate(False)
+    Label(
+        row,
+        text=text,
+        font=app_font(15),
+        fg=IND_MUTED,
+        bg='#101414',
+        bd=0,
+        highlightthickness=0,
+        anchor='w',
+    ).place(x=px(12), y=0, width=px(420), height=px(38))
+
+
+def make_available_print_row(container, record):
+    display_id = print_record_display_id(record)
+    value = print_record_value(record)
+    row = Frame(container, bg='#101414', height=px(38), bd=0, highlightthickness=0)
+    row.pack(fill='x')
+    row.pack_propagate(False)
+    checkbox = Button(
+        row,
+        text='',
+        command=lambda bill_id=display_id, source_row=row: add_print_bill_id_to_batch(
+            bill_id,
+            source_row,
+        ),
+        bg='#060908',
+        activebackground='#0d4c35',
+        bd=1,
+        relief=SOLID,
+        highlightthickness=0,
+        cursor='hand2',
+    )
+    checkbox._print_keep_bg = True
+    checkbox.place(x=px(4), y=px(11), width=px(16), height=px(16))
+    Label(
+        row,
+        text=display_id,
+        font=app_font(16),
+        fg='#f6fffc',
+        bg='#101414',
+        bd=0,
+        highlightthickness=0,
+        anchor='w',
+    ).place(x=px(40), y=0, width=px(190), height=px(38))
+    Label(
+        row,
+        text=f'{value}$',
+        font=app_font(18, 'bold'),
+        fg='#ccf0e5',
+        bg='#101414',
+        bd=0,
+        highlightthickness=0,
+        anchor='e',
+    ).place(x=px(220), y=0, width=px(78), height=px(38))
+    Label(
+        row,
+        text='Ready',
+        font=app_font(13),
+        fg='#8fa5a0',
+        bg='#101414',
+        bd=0,
+        highlightthickness=0,
+        anchor='w',
+    ).place(x=px(328), y=0, width=px(70), height=px(38))
+    line = Frame(row, bg='#192321', bd=0, highlightthickness=0)
+    line._print_keep_bg = True
+    line.place(x=0, y=px(37), width=px(PRINT_AVAILABLE_LIST_WIDTH), height=px(1))
+    bind_print_row_hover(row, '#101414', '#0d4c35')
+
+
+def make_print_batch_row(container, display_id):
+    value = print_bill_value_from_id(display_id)
+    row = Frame(container, bg='#070909', height=px(36), bd=0, highlightthickness=0)
+    row.pack(fill='x')
+    row.pack_propagate(False)
+    Label(
+        row,
+        text=display_id,
+        font=app_font(16),
+        fg='#f6fffc',
+        bg='#070909',
+        bd=0,
+        highlightthickness=0,
+        anchor='w',
+    ).place(x=px(24), y=0, width=px(190), height=px(36))
+    Label(
+        row,
+        text=f'{value}$',
+        font=app_font(18, 'bold'),
+        fg='#ccf0e5',
+        bg='#070909',
+        bd=0,
+        highlightthickness=0,
+        anchor='e',
+    ).place(x=px(238), y=0, width=px(78), height=px(36))
+    remove_button = Button(
+        row,
+        text='-',
+        command=lambda bill_id=display_id: remove_print_bill_id_from_batch(bill_id),
+        font=app_font(18, 'bold'),
+        bg='#1a0d0a',
+        fg='#ffd1bf',
+        activebackground='#26110c',
+        activeforeground='#ffd1bf',
+        bd=1,
+        relief=SOLID,
+        highlightthickness=0,
+        cursor='hand2',
+    )
+    remove_button._print_keep_bg = True
+    remove_button.place(
+        x=px(PRINT_QUEUE_LIST_WIDTH - 44),
+        y=px(4),
+        width=px(30),
+        height=px(28),
+    )
+    line = Frame(row, bg='#192321', bd=0, highlightthickness=0)
+    line._print_keep_bg = True
+    line.place(x=0, y=px(35), width=px(PRINT_QUEUE_LIST_WIDTH), height=px(1))
+    bind_print_row_hover(row, '#070909', '#0d211a')
+
+
+def make_print_more_row(container, remaining_count):
+    row = Frame(container, bg='#101414', height=px(42), bd=0, highlightthickness=0)
+    row.pack(fill='x')
+    row.pack_propagate(False)
+    Button(
+        row,
+        text=f'Show {min(remaining_count, PRINT_AVAILABLE_RENDER_CHUNK_SIZE)} more',
+        command=show_more_print_available_rows,
+        font=app_font(14, 'bold'),
+        bg='#0b1813',
+        fg='#c9ffe3',
+        activebackground='#0f2b20',
+        activeforeground=IND_WHITE,
+        bd=1,
+        relief=SOLID,
+        highlightthickness=0,
+        cursor='hand2',
+    ).place(x=px(78), y=px(5), width=px(250), height=px(31))
+
+
+def show_more_print_available_rows():
+    global print_available_render_limit
+    print_available_render_limit += PRINT_AVAILABLE_RENDER_CHUNK_SIZE
+    refresh_print_bill_lists(reset_scroll=False)
+
+
+def render_print_filter_buttons(denominations, counts):
+    global print_active_denomination
+    active_filter_removed = (
+        print_active_denomination is not None and print_active_denomination not in denominations
+    )
+    if print_active_denomination is not None and print_active_denomination not in denominations:
+        print_active_denomination = None
+    for child in print_filter_frame.winfo_children():
+        child.destroy()
+
+    def add_filter_button(label, value, count, column):
+        active = value == print_active_denomination
+        Button(
+            print_filter_frame,
+            text=label,
+            command=lambda filter_value=value: set_print_denomination_filter(filter_value),
+            font=app_font(14, 'bold'),
+            bg=IND_WHITE if active else '#0b1211',
+            fg=IND_BLACK if active else '#cfe2df',
+            activebackground=IND_WHITE if active else '#0f1c19',
+            activeforeground=IND_BLACK if active else IND_WHITE,
+            bd=1,
+            relief=SOLID,
+            highlightthickness=0,
+            anchor='n',
+            pady=0,
+            cursor='hand2',
+        ).grid(row=0, column=column, padx=(0, px(6)), sticky='nsew')
+
+    available_total = sum(counts.values())
+    add_filter_button('All', None, available_total, 0)
+    for column, value in enumerate(denominations, start=1):
+        add_filter_button(f'{value}x', value, counts.get(value, 0), column)
+    print_filter_frame.update_idletasks()
+    print_filter_canvas.configure(scrollregion=print_filter_canvas.bbox('all'))
+    if active_filter_removed:
+        print_filter_canvas.xview_moveto(0)
+
+
+def refresh_print_filter_buttons(records, counts):
+    global print_available_filter_denominations, print_available_filter_counts
+    print_available_filter_denominations = print_all_denominations(records)
+    print_available_filter_counts = dict(counts)
+    render_print_filter_buttons(print_available_filter_denominations, print_available_filter_counts)
+
+
+def refresh_print_filter_buttons_from_cache():
+    render_print_filter_buttons(print_available_filter_denominations, print_available_filter_counts)
+
+
+def refresh_print_bill_lists(force_records=False, reset_scroll=True):
+    global print_available_visible_count, print_available_visible_total
+    if force_records:
+        records = print_available_records(force_refresh=True)
+        set_print_available_view_records(records, loaded=True)
+    else:
+        records = print_available_source_records()
+    counts = print_available_count_by_denomination(records)
+    refresh_print_filter_buttons(records, counts)
+    print_select_all_button.config(
+        text=(
+            'Select all bills'
+            if print_active_denomination is None
+            else f'Select {print_active_denomination}x'
+        )
+    )
+    available_records = print_available_display_records(records)
+    selected_ids = print_selected_bill_ids()
+    rendered_records = available_records[:print_available_render_limit]
+    all_bills_text.delete(1.0, END)
+    all_bills_text.insert(
+        1.0,
+        '\n'.join(print_record_display_id(record) for record in rendered_records),
+    )
+    clear_print_rows(print_available_rows_frame)
+    clear_print_rows(print_queue_rows_frame)
+    if rendered_records:
+        for record in rendered_records:
+            make_available_print_row(print_available_rows_frame, record)
+        remaining_count = len(available_records) - len(rendered_records)
+        if remaining_count > 0:
+            make_print_more_row(print_available_rows_frame, remaining_count)
+    elif print_available_records_loading:
+        print_empty_row(print_available_rows_frame, 'Loading available bills...')
+    elif not print_available_records_loaded:
+        print_empty_row(print_available_rows_frame, 'Available bills are not loaded yet.')
+    if selected_ids:
+        for display_id in selected_ids:
+            make_print_batch_row(print_queue_rows_frame, display_id)
+    available_count = len(available_records)
+    available_total = sum(print_record_value(record) for record in available_records)
+    print_available_visible_count = available_count
+    print_available_visible_total = available_total
+    print_available_summary_label.config(text=f'{available_total}$')
+    print_available_footer_label.config(
+        text=f'{available_count} available'
+        if print_active_denomination is None
+        else f'{available_count} available in {print_active_denomination}x'
+    )
+    print_queue_footer_label.config(
+        text=f'{len(selected_ids)} bill' + ('' if len(selected_ids) == 1 else 's') + ' in batch'
+    )
+    if reset_scroll:
+        print_available_rows_canvas.yview_moveto(0)
+        print_queue_rows_canvas.yview_moveto(0)
+
+
+def refresh_print_view(force_records=False):
+    refresh_print_bill_lists(force_records=force_records)
+    refresh_print_summary()
 
 
 print_output_mode = StringVar(root, value='full')
@@ -3572,7 +5036,7 @@ button_only_qr = make_text_button(
     'QR only', print_only_qr, font_size=18, bg='#111616', fg=IND_WHITE, bd=1, relief=SOLID
 )
 print_select_all_button = make_text_button(
-    'Select all',
+    'Select all bills',
     select_all_print_bills,
     font_size=15,
     font_weight='bold',
@@ -3581,6 +5045,37 @@ print_select_all_button = make_text_button(
     bd=1,
     relief=SOLID,
 )
+print_select_all_button.config(anchor='n', pady=0)
+print_select_count_var = StringVar(root, value='10')
+print_select_count_validate = root.register(validate_print_select_count)
+print_select_count_entry = Entry(
+    root,
+    textvariable=print_select_count_var,
+    validate='key',
+    validatecommand=(print_select_count_validate, '%P'),
+    font=app_font(16, 'bold'),
+    bg='#0b1211',
+    fg=IND_WHITE,
+    insertbackground=IND_WHITE,
+    justify='center',
+    bd=1,
+    relief=SOLID,
+    highlightthickness=0,
+)
+print_select_count_button = make_text_button(
+    'Select 10 bills',
+    select_count_print_bills,
+    font_size=14,
+    font_weight='bold',
+    bg='#0b1813',
+    fg='#c9ffe3',
+    bd=1,
+    relief=SOLID,
+)
+print_select_count_button.config(disabledforeground='#6f817d')
+print_select_count_var.trace_add('write', update_print_select_count_button)
+print_select_count_entry.bind('<Return>', select_count_print_bills_from_keyboard)
+print_select_count_entry.bind('<KP_Enter>', select_count_print_bills_from_keyboard)
 all_bills_text = Text(
     root,
     font=app_font(16),
@@ -3617,7 +5112,42 @@ all_bills_text.bind('<Control-C>', copy_text_selection)
 all_bills_text.bind('<Control-Insert>', copy_text_selection)
 all_bills_text.bind('<Double-Button-1>', add_print_bill_from_available)
 selected_bills_text.bind('<Double-Button-1>', remove_print_bill_from_queue)
-selected_bills_text.bind('<<Modified>>', on_print_selection_modified)
+# The selected-bills Text widget is now a hidden compatibility store. Binding
+# <<Modified>> here makes each checkbox click rebuild the full print list.
+print_filter_canvas, print_filter_frame, print_filter_scrollbar = make_print_filter_strip()
+print_available_rows_canvas, print_available_rows_frame = make_print_scroll_area('#101414')
+print_queue_rows_canvas, print_queue_rows_frame = make_print_scroll_area('#070909')
+print_available_summary_label = Label(
+    root,
+    text='0$',
+    font=app_font(17, 'bold'),
+    fg='#c9ffe3',
+    bg='#101414',
+    bd=0,
+    highlightthickness=0,
+    justify='right',
+    anchor='e',
+)
+print_available_footer_label = Label(
+    root,
+    text='0 available',
+    font=app_font(13),
+    fg=IND_MUTED,
+    bg='#101414',
+    bd=0,
+    highlightthickness=0,
+    anchor='w',
+)
+print_queue_footer_label = Label(
+    root,
+    text='0 bills in batch',
+    font=app_font(13),
+    fg=IND_MUTED,
+    bg='#101414',
+    bd=0,
+    highlightthickness=0,
+    anchor='w',
+)
 print_full_radio = Radiobutton(
     root,
     text='Full bills PDF',
@@ -3652,7 +5182,7 @@ print_qr_radio = Radiobutton(
 )
 print_summary_label = Label(
     root,
-    text='0$\n0 bills',
+    text='0$',
     font=app_font(17, 'bold'),
     fg='#c9ffe3',
     bg='#101414',
@@ -3688,7 +5218,7 @@ print_progress_track = Frame(root, bg='#16201d', bd=0, highlightthickness=0)
 print_progress_fill = Frame(print_progress_track, bg=IND_GREEN, bd=0, highlightthickness=0)
 asl_text = Label(
     root,
-    text='Double-click to add or remove bills.',
+    text='Check a bill to move it into the print batch.',
     font=app_font(15),
     bg='#101414',
     fg=IND_MUTED,
@@ -3750,15 +5280,10 @@ def info_button():
 
 # Show the print workflow and load the currently spendable wallet bills.
 def load_print_available_bills():
-    if not all_bills_text.winfo_ismapped():
+    if not print_available_rows_canvas.winfo_ismapped():
         return
-    try:
-        # The available list intentionally excludes unsettled or already spent bills.
-        only_sm = '\n'.join(str(record["display_id"]) for record in wallet_spendable_records())
-        all_bills_text.delete(1.0, END)
-        all_bills_text.insert(1.0, only_sm)
-    except Exception:
-        log_ignored_exception()
+    # The available list intentionally excludes unsettled or already spent bills.
+    schedule_print_available_load(force_records=True)
 
 
 def print_page_button():
@@ -3775,6 +5300,24 @@ def print_page_button():
         width=PRINT_SELECT_ALL_WIDTH * reso,
         height=PRINT_SELECT_ALL_HEIGHT * reso,
     )
+    print_available_summary_label.place(
+        x=(PRINT_LEFT_PANEL_X + PRINT_LEFT_PANEL_WIDTH - 150) * reso,
+        y=(PRINT_PANEL_Y + 20) * reso,
+        width=126 * reso,
+        height=64 * reso,
+    )
+    print_filter_canvas.place(
+        x=PRINT_AVAILABLE_X * reso,
+        y=PRINT_AVAILABLE_FILTER_Y * reso,
+        width=PRINT_AVAILABLE_FILTER_WIDTH * reso,
+        height=PRINT_AVAILABLE_FILTER_HEIGHT * reso,
+    )
+    print_filter_scrollbar.place(
+        x=PRINT_AVAILABLE_X * reso,
+        y=PRINT_AVAILABLE_FILTER_SCROLL_Y * reso,
+        width=PRINT_AVAILABLE_FILTER_SCROLL_WIDTH * reso,
+        height=PRINT_AVAILABLE_FILTER_SCROLL_HEIGHT * reso,
+    )
     button_print.place(
         x=PRINT_PRIMARY_BUTTON_X * reso,
         y=PRINT_ACTION_Y * reso,
@@ -3787,17 +5330,42 @@ def print_page_button():
         width=PRINT_CHARGE_BUTTON_WIDTH * reso,
         height=PRINT_ACTION_BUTTON_HEIGHT * reso,
     )
-    all_bills_text.place(
+    print_available_rows_canvas.place(
         x=PRINT_AVAILABLE_X * reso,
         y=PRINT_AVAILABLE_LIST_Y * reso,
         width=PRINT_AVAILABLE_LIST_WIDTH * reso,
         height=PRINT_AVAILABLE_LIST_HEIGHT * reso,
     )
-    selected_bills_text.place(
+    print_queue_rows_canvas.place(
         x=PRINT_QUEUE_X * reso,
-        y=PRINT_QUEUE_LIST_Y * reso,
+        y=(PRINT_QUEUE_LIST_Y + 34) * reso,
         width=PRINT_QUEUE_LIST_WIDTH * reso,
-        height=PRINT_QUEUE_LIST_HEIGHT * reso,
+        height=(PRINT_QUEUE_LIST_HEIGHT - 36) * reso,
+    )
+    print_available_footer_label.place(
+        x=PRINT_AVAILABLE_X * reso,
+        y=(PRINT_PANEL_BOTTOM - 31) * reso,
+        width=(PRINT_AVAILABLE_LIST_WIDTH // 2) * reso,
+        height=24 * reso,
+    )
+    print_select_count_entry.place(
+        x=PRINT_SELECT_COUNT_ENTRY_X * reso,
+        y=PRINT_SELECT_COUNT_Y * reso,
+        width=PRINT_SELECT_COUNT_ENTRY_WIDTH * reso,
+        height=PRINT_SELECT_COUNT_HEIGHT * reso,
+    )
+    print_select_count_button.place(
+        x=PRINT_SELECT_COUNT_BUTTON_X * reso,
+        y=PRINT_SELECT_COUNT_Y * reso,
+        width=PRINT_SELECT_COUNT_BUTTON_WIDTH * reso,
+        height=PRINT_SELECT_COUNT_HEIGHT * reso,
+    )
+    update_print_select_count_button()
+    print_queue_footer_label.place(
+        x=PRINT_QUEUE_X * reso,
+        y=(PRINT_PANEL_BOTTOM - 31) * reso,
+        width=(PRINT_QUEUE_LIST_WIDTH // 2) * reso,
+        height=24 * reso,
     )
     print_full_radio.place(
         x=PRINT_OUTPUT_FULL_X * reso,
@@ -3837,16 +5405,39 @@ def print_page_button():
     )
     set_print_progress(0, 1)
     all_bills_text.delete(1.0, END)
-    root.after_idle(load_print_available_bills)
     reset_print_actions()
-    refresh_print_summary()
+    root.after_idle(load_print_available_bills)
+
+
+def load_wallet_assets_and_qr():
+    if not wallet_tab_is_visible():
+        return
+    try:
+        ensure_bill_images()
+        refresh_bill_buttons()
+    except Exception:
+        log_ignored_exception()
+    try:
+        ensure_wallet_qr()
+        qr.place(x=898 * reso, y=468 * reso)
+        tf_button.place(x=1155 * reso, y=570 * reso, width=44 * reso, height=42 * reso)
+        qr.lift()
+        address_txt.config(state='normal')
+        address_txt.delete(1.0, END)
+        address_txt.tag_configure('center', justify='center')
+        address_txt.insert(1.0, wa_sliced.strip())
+        address_txt.tag_add('center', '1.0', 'end')
+        address_txt.config(state='disabled')
+        address_txt.place(x=861 * reso, y=730 * reso, width=325 * reso, height=35 * reso)
+        address_txt.lift()
+    except Exception:
+        log_ignored_exception()
 
 
 # Show the wallet page and refresh balance, bill buttons, and receive QR.
 def wallet_button():
     close()
     clear_wallet_record_cache()
-    ensure_bill_images()
     button.config(bg='black', fg='white'), button2.config(bg='black', fg='white'), button3.config(
         bg='black', fg='white'
     )
@@ -3870,24 +5461,14 @@ def wallet_button():
     )
     receiver_history.place(x=343 * reso, y=310 * reso, width=480 * reso, height=450 * reso)
     wallet.place(x=0, y=0)
-    receiver_history.delete(1.0, END)
-    b.delete(1.0, END)
-    b.insert(1.0, 'Balance:  0$')
+    if not wallet_balance_has_cached_snapshot:
+        show_wallet_balance_loading()
+    if wallet_history_cached_entries:
+        page(refresh_entries=False)
+    else:
+        show_wallet_history_loading()
     root.after_idle(refresh_wallet_view)
-    try:
-        ensure_wallet_qr()
-        qr.place(x=898 * reso, y=468 * reso)
-        tf_button.place(x=1155 * reso, y=570 * reso, width=44 * reso, height=42 * reso)
-        qr.lift()
-        address_txt.delete(1.0, END)
-        address_txt.tag_configure('center', justify='center')
-        address_txt.insert(1.0, wa_sliced.strip())
-        address_txt.tag_add('center', '1.0', 'end')
-        address_txt.config(state='disabled')
-        address_txt.place(x=861 * reso, y=730 * reso, width=325 * reso, height=35 * reso)
-        address_txt.lift()
-    except Exception:
-        log_ignored_exception()
+    root.after_idle(load_wallet_assets_and_qr)
 
 
 # Show settings, then load persisted values into the active tab widgets.
@@ -3946,6 +5527,15 @@ def generate_wallet_button():
         GENERATE_WALLET_KEY_FIELD_HEIGHT,
     )
     place_sign_in_control(
+        wallet_name_entry,
+        GENERATE_WALLET_FIELD_X,
+        GENERATE_WALLET_NAME_Y,
+        GENERATE_WALLET_FIELD_WIDTH
+        + GENERATE_WALLET_BUTTON_GAP
+        + GENERATE_WALLET_SIDE_BUTTON_WIDTH,
+        GENERATE_WALLET_FIELD_HEIGHT,
+    )
+    place_sign_in_control(
         choose_password,
         GENERATE_WALLET_FIELD_X,
         GENERATE_WALLET_PASSWORD_Y,
@@ -3955,7 +5545,7 @@ def generate_wallet_button():
     place_sign_in_control(
         generate_wallet_button2,
         GENERATE_WALLET_SUBMIT_BUTTON_X,
-        668,
+        GENERATE_WALLET_SUBMIT_BUTTON_Y,
         GENERATE_WALLET_SUBMIT_BUTTON_WIDTH,
         58,
     )
@@ -4066,6 +5656,8 @@ WALLET_HISTORY_NAV_HEIGHT = 22
 WALLET_HISTORY_TIMESTAMP_TAB_X = 466
 WALLET_HISTORY_HOVER_FG = '#9aa3a0'
 wallet_history_cached_entries = []
+wallet_history_cached_total = 0
+wallet_history_metadata_cache = None
 
 
 def claim_workflow_is_visible():
@@ -4116,6 +5708,34 @@ def wallet_history_decode_bill(record=None, bill=None):
         return None
 
 
+def wallet_history_bill_for_sequence(display_id, sequence=None, store=None):
+    display_id = str(display_id or "").strip().lstrip("-")
+    if not display_id:
+        return None
+    try:
+        store = store or wallet_snapshot_store()
+    except Exception:
+        log_ignored_exception()
+        store = None
+    if store is None:
+        return None
+    if str(sequence or "").strip():
+        lookup = getattr(store, "get_bill_v3_by_display_id_sequence", None)
+        if callable(lookup):
+            try:
+                return lookup(display_id, sequence)
+            except Exception:
+                log_ignored_exception()
+        return None
+    lookup = getattr(store, "get_bill_v3_by_display_id", None)
+    if callable(lookup):
+        try:
+            return lookup(display_id)
+        except Exception:
+            log_ignored_exception()
+    return None
+
+
 def wallet_history_transfer_context(record=None, bill=None):
     bill_obj = wallet_history_decode_bill(record=record, bill=bill)
     if not isinstance(bill_obj, dict):
@@ -4143,6 +5763,9 @@ def wallet_history_transfer_context(record=None, bill=None):
     sequence = dict(checkpoint or {}).get("sequence")
     if sequence is not None:
         context["transfer_sequence"] = str(sequence)
+    transfer_timestamp = dict(checkpoint or {}).get("last_transfer_timestamp")
+    if transfer_timestamp is not None:
+        context["transfer_timestamp"] = transfer_timestamp
     return context
 
 
@@ -4170,7 +5793,12 @@ def wallet_history_entry(
         if key in {"bill_blob", "payload", "genesis_json"}:
             continue
         record_data[key] = record_value
-    transfer_context = wallet_history_transfer_context(bill=bill) if bill is not None else {}
+    bill_timestamp = wallet_services.latest_bill_transfer_timestamp(record=record, bill=bill)
+    if bill_timestamp is not None:
+        timestamp_value = bill_timestamp
+    transfer_context = {}
+    if bill is not None or dict(record or {}).get("bill_blob") is not None:
+        transfer_context = wallet_history_transfer_context(record=record, bill=bill)
     status_key = str(status).lower()
     if str(direction).lower() == "sent":
         tag = "sent"
@@ -4240,33 +5868,108 @@ def wallet_history_record_for_sequence(records_by_display_id, display_id, sequen
     return record
 
 
-def wallet_history_entries():
-    entries = []
+def wallet_history_metadata_key(wallet_path, wallet_address):
+    return (str(wallet_address or ""), wallet_file_cache_key(wallet_path))
+
+
+def wallet_history_item(
+    display_id,
+    *,
+    timestamp,
+    direction,
+    status,
+    sequence="",
+    source="Wallet history",
+    record=None,
+    display_label=None,
+    load_bill=False,
+):
+    try:
+        timestamp_value = int(timestamp)
+    except Exception:
+        timestamp_value = int(time.time())
+    clean_display_id = str(display_id).strip().lstrip("-")
+    return {
+        "display_id": clean_display_id,
+        "timestamp": timestamp_value,
+        "direction": str(direction),
+        "status": str(status),
+        "sequence": str(sequence).strip(),
+        "source": str(source),
+        "record": record,
+        "display_label": display_label or wallet_services.wallet_display_label(display_id),
+        "load_bill": bool(load_bill),
+    }
+
+
+def wallet_history_item_sort_timestamp(item, store=None):
+    timestamp = item.get("timestamp")
+    if not item.get("load_bill"):
+        try:
+            return int(timestamp)
+        except Exception:
+            return int(time.time())
+    try:
+        bill = wallet_history_bill_for_sequence(
+            item.get("display_id"),
+            item.get("sequence"),
+            store=store,
+        )
+        repaired_timestamp = wallet_services.latest_bill_transfer_timestamp(
+            record=item.get("record"),
+            bill=bill,
+            fallback=timestamp,
+        )
+        if repaired_timestamp is not None:
+            return int(repaired_timestamp)
+    except Exception:
+        log_ignored_exception()
+    try:
+        return int(timestamp)
+    except Exception:
+        return int(time.time())
+
+
+def repair_wallet_history_sort_timestamps(items, store=None):
+    for item in items:
+        if item.get("load_bill"):
+            item["timestamp"] = wallet_history_item_sort_timestamp(item, store=store)
+
+
+def wallet_history_metadata_entries(force_refresh=False):
+    global wallet_history_metadata_cache
+    wallet_path = active_wallet_path()
+    wallet_lines, wallet_path = read_active_wallet_context(wallet_path)
+    wallet_address = wallet_lines[0].strip() if wallet_lines else ""
+    cache_key = wallet_history_metadata_key(wallet_path, wallet_address)
+    if not force_refresh and wallet_history_metadata_cache is not None:
+        cached_key, cached_items, cached_store = wallet_history_metadata_cache
+        if cached_key == cache_key:
+            return list(cached_items), cached_store
+
+    items = []
     seen_records = set()
     record_by_display_id = {}
     pending_by_display_id = {}
+    store = None
+    if wallet_address:
+        try:
+            store = wallet_store_for_address(wallet_address)
+            records = wallet_services.wallet_count_records(
+                wallet_address,
+                store=store,
+                statuses=("settled", "verified", "pending"),
+            )
+            for record in records:
+                if str(record.get("status") or "").lower() == "pending":
+                    keep_latest_wallet_history_record(pending_by_display_id, record)
+                else:
+                    keep_latest_wallet_history_record(record_by_display_id, record)
+        except Exception:
+            log_ignored_exception()
+
     try:
-        snapshot = wallet_records_snapshot()
-        dr_new = snapshot["wallet_lines"]
-        spendable_records = snapshot["spendable_records"]
-        pending_records = snapshot["pending_records"]
-    except Exception:
-        log_ignored_exception()
-        dr_new = []
-        spendable_records = []
-        pending_records = []
-    try:
-        for record in spendable_records:
-            keep_latest_wallet_history_record(record_by_display_id, record)
-    except Exception:
-        log_ignored_exception()
-    try:
-        for record in pending_records:
-            keep_latest_wallet_history_record(pending_by_display_id, record)
-    except Exception:
-        log_ignored_exception()
-    try:
-        for line in runtime_json.wallet_bill_lines(dr_new):
+        for line in runtime_json.wallet_bill_lines(wallet_lines):
             parts = line.split()
             if len(parts) < 3:
                 continue
@@ -4275,13 +5978,12 @@ def wallet_history_entries():
             sequence = parts[1] if len(parts) > 1 else ""
             seen_records.add(wallet_history_seen_key(display_id, sequence))
             direction = "Sent" if parts[0].startswith('-') else "Received"
-            display_label = wallet_services.wallet_display_label(parts[0])
             record = (
                 wallet_history_record_for_sequence(record_by_display_id, display_id, sequence)
                 or wallet_history_record_for_sequence(pending_by_display_id, display_id, sequence)
             )
-            entries.append(
-                wallet_history_entry(
+            items.append(
+                wallet_history_item(
                     display_id,
                     timestamp=timestamp,
                     direction=direction,
@@ -4289,59 +5991,114 @@ def wallet_history_entries():
                     sequence=sequence,
                     source="Wallet history",
                     record=record,
-                    display_label=display_label,
+                    display_label=wallet_services.wallet_display_label(parts[0]),
+                    load_bill=False,
                 )
             )
     except Exception:
         log_ignored_exception()
+
     try:
         for record in record_by_display_id.values():
             display_id = str(record["display_id"])
             sequence = record.get("sequence", "")
             if wallet_history_seen_key(display_id, sequence) in seen_records:
                 continue
-            timestamp = int(record.get("updated_at") or record.get("first_seen") or time.time())
-            entries.append(
-                wallet_history_entry(
+            items.append(
+                wallet_history_item(
                     display_id,
-                    timestamp=timestamp,
+                    timestamp=int(record.get("updated_at") or record.get("first_seen") or time.time()),
                     direction="Received",
                     status=str(record.get("status") or "settled"),
                     sequence=sequence,
                     source="Local store",
                     record=record,
+                    load_bill=True,
                 )
             )
             seen_records.add(wallet_history_seen_key(display_id, sequence))
     except Exception:
         log_ignored_exception()
+
     try:
         for record in pending_by_display_id.values():
             display_id = str(record["display_id"])
             sequence = record.get("sequence", "")
             if wallet_history_seen_key(display_id, sequence) in seen_records:
                 continue
-            timestamp = int(record.get("updated_at") or record.get("first_seen") or time.time())
-            entries.append(
-                wallet_history_entry(
+            items.append(
+                wallet_history_item(
                     display_id,
-                    timestamp=timestamp,
+                    timestamp=int(record.get("updated_at") or record.get("first_seen") or time.time()),
                     direction="Incoming",
                     status=str(record.get("status") or "pending"),
                     sequence=sequence,
                     source="Local store",
                     record=record,
+                    load_bill=True,
                 )
             )
             seen_records.add(wallet_history_seen_key(display_id, sequence))
     except Exception:
         log_ignored_exception()
-    return sorted(entries, key=lambda entry: entry["timestamp"], reverse=True)
+
+    repair_wallet_history_sort_timestamps(items, store=store)
+    items.sort(key=lambda item: item["timestamp"], reverse=True)
+    wallet_history_metadata_cache = (cache_key, list(items), store)
+    return items, store
 
 
-def refresh_wallet_history_cache():
-    global wallet_history_cached_entries
-    wallet_history_cached_entries = wallet_history_entries() if wallet_is_unlocked() else []
+def wallet_history_entry_from_item(item, store=None):
+    bill = None
+    if item.get("load_bill"):
+        bill = wallet_history_bill_for_sequence(
+            item.get("display_id"),
+            item.get("sequence"),
+            store=store,
+        )
+    return wallet_history_entry(
+        item.get("display_id"),
+        timestamp=item.get("timestamp"),
+        direction=item.get("direction"),
+        status=item.get("status"),
+        sequence=item.get("sequence"),
+        source=item.get("source"),
+        record=item.get("record"),
+        bill=bill,
+        display_label=item.get("display_label"),
+    )
+
+
+def wallet_history_page_entries(page_number, force_metadata=False):
+    if not wallet_is_unlocked():
+        return [], 0
+    items, store = wallet_history_metadata_entries(force_refresh=force_metadata)
+    try:
+        page_number = max(1, int(page_number))
+    except Exception:
+        page_number = 1
+    start_index = (page_number - 1) * WALLET_HISTORY_ROWS_PER_PAGE
+    visible_items = items[start_index : start_index + WALLET_HISTORY_ROWS_PER_PAGE]
+    entries = [wallet_history_entry_from_item(item, store=store) for item in visible_items]
+    entries.sort(key=lambda entry: entry["timestamp"], reverse=True)
+    return entries, len(items)
+
+
+def wallet_history_entries():
+    entries, _total = wallet_history_page_entries(1, force_metadata=True)
+    return entries
+
+
+def refresh_wallet_history_cache(force_metadata=True):
+    global wallet_history_cached_entries, wallet_history_cached_total
+    if wallet_is_unlocked():
+        wallet_history_cached_entries, wallet_history_cached_total = wallet_history_page_entries(
+            page_wallet,
+            force_metadata=force_metadata,
+        )
+    else:
+        wallet_history_cached_entries = []
+        wallet_history_cached_total = 0
 
 
 def wallet_history_detail_transfer_context(entry):
@@ -4352,7 +6109,11 @@ def wallet_history_detail_transfer_context(entry):
         store = wallet_snapshot_store()
         if store is None:
             return {}
-        bill = store.get_bill_v3_by_display_id(display_id)
+        bill = wallet_history_bill_for_sequence(
+            display_id,
+            entry.get("sequence"),
+            store=store,
+        )
         if not bill:
             return {}
         return wallet_history_transfer_context(bill=bill)
@@ -4582,7 +6343,7 @@ def bind_wallet_history_row(row_tag, entry):
 
 
 # Render the current wallet-history page.
-def page(refresh_entries=True):
+def page(refresh_entries=True, force_history_metadata=True):
     global place_next_button, page_wallet
     try:
         if not receiver_history.winfo_ismapped():
@@ -4612,12 +6373,18 @@ def page(refresh_entries=True):
             return
 
         if refresh_entries:
-            refresh_wallet_history_cache()
+            show_wallet_history_loading()
+            start_wallet_view_refresh_worker(
+                preserve_selection=True,
+                force_history_metadata=force_history_metadata,
+            )
+            return
         entries = wallet_history_cached_entries
-        num_of_bills = len(entries)
+        num_of_bills = wallet_history_cached_total
         total_pages = max(
             1, (num_of_bills + WALLET_HISTORY_ROWS_PER_PAGE - 1) // WALLET_HISTORY_ROWS_PER_PAGE
         )
+        clamped_page = page_wallet
         if page_wallet > total_pages:
             page_wallet = total_pages
         if page_wallet < 1:
@@ -4633,8 +6400,7 @@ def page(refresh_entries=True):
         else:
             previous_button.place_forget()
 
-        start_index = (page_wallet - 1) * WALLET_HISTORY_ROWS_PER_PAGE
-        visible_entries = entries[start_index : start_index + WALLET_HISTORY_ROWS_PER_PAGE]
+        visible_entries = entries
         for index, entry in enumerate(visible_entries):
             row_tag = f'history_row_{index}'
             row_start = receiver_history.index(INSERT)
@@ -4656,13 +6422,13 @@ def page(refresh_entries=True):
 def next_():
     global page_wallet
     page_wallet += 1
-    page(refresh_entries=False)
+    page(refresh_entries=True, force_history_metadata=False)
 
 
 def previous():
     global page_wallet
     page_wallet -= 1
-    page(refresh_entries=False)
+    page(refresh_entries=True, force_history_metadata=False)
 
 
 next_button = make_asset_button(
@@ -4678,7 +6444,9 @@ BILL_IMAGES = {}
 BILL_IMAGES_LOADED = False
 BILL_COUNT_FONT_SIZE = 21
 BILL_PENDING_FONT_SIZE = 16
-BILL_COUNT_TEXT_INDENT = '        ' + '\u2009\u200a'
+BILL_COUNT_TEXT_INDENT = '         ' + '\u2009\u200a\u200a'
+BILL_COUNT_FG = IND_WHITE
+BILL_COUNT_HOVER_FG = '#f6c431'
 BILL_HOLD_REPEAT_DELAY_MS = 350
 BILL_HOLD_REPEAT_INTERVAL_MS = 20
 
@@ -4719,7 +6487,7 @@ def bill_button_text(value, remaining):
 
 
 def make_bill_button(command):
-    return Button(
+    button = Button(
         frame_w,
         command=command,
         state='disabled',
@@ -4730,11 +6498,31 @@ def make_bill_button(command):
         font=app_font(19),
         fg=IND_WHITE,
         bg='#111111',
-        activeforeground=IND_WHITE,
+        activeforeground=BILL_COUNT_HOVER_FG,
         activebackground=IND_GREEN,
         disabledforeground=IND_MUTED,
         cursor='',
     )
+    bind_bill_counter_hover(button)
+    return button
+
+
+def bind_bill_counter_hover(button):
+    def hover_on(_event):
+        try:
+            if str(button.cget('state')) != DISABLED:
+                button.config(fg=BILL_COUNT_HOVER_FG)
+        except Exception:
+            log_ignored_exception()
+
+    def hover_off(_event):
+        try:
+            button.config(fg=getattr(button, '_bill_count_fg', BILL_COUNT_FG))
+        except Exception:
+            log_ignored_exception()
+
+    button.bind('<Enter>', hover_on, add='+')
+    button.bind('<Leave>', hover_off, add='+')
 
 
 def bind_bill_hold_repeat(button, command):
@@ -4804,6 +6592,7 @@ def bill_overlay_text(remaining, pending):
 def configure_bill_button(button, value, remaining, enabled, pending=0):
     remaining = max(remaining, 0)
     pending = max(pending, 0)
+    button._bill_count_fg = BILL_COUNT_FG if enabled else IND_PENDING
     image = BILL_IMAGES.get((value, enabled))
     if image is None and BILL_IMAGES_LOADED:
         image = BILL_IMAGES.get((value, False))
@@ -4816,8 +6605,11 @@ def configure_bill_button(button, value, remaining, enabled, pending=0):
             cursor='hand2' if enabled else '',
             state='normal' if enabled else 'disabled',
             bg=IND_BLACK,
-            fg=IND_WHITE if enabled else IND_PENDING,
-            disabledforeground=IND_PENDING if pending > 0 else IND_WHITE,
+            fg=BILL_COUNT_FG if enabled else IND_PENDING,
+            activeforeground=BILL_COUNT_HOVER_FG if enabled else IND_PENDING,
+            activebackground=IND_BLACK,
+            disabledforeground=IND_PENDING if pending > 0 else BILL_COUNT_FG,
+            pady=0,
         )
     else:
         button.config(
@@ -4833,6 +6625,7 @@ def configure_bill_button(button, value, remaining, enabled, pending=0):
             state='normal' if enabled else 'disabled',
             bg=IND_GREEN if enabled else '#111111',
             fg=IND_WHITE if enabled else IND_PENDING,
+            activeforeground=BILL_COUNT_HOVER_FG if enabled else IND_PENDING,
             disabledforeground=IND_PENDING if pending > 0 else IND_MUTED,
         )
 
@@ -4842,44 +6635,77 @@ pending_bill_counts = {}
 bill_counts = {value: 0 for value in BILL_VALUES}
 selected_bill_counts = {value: 0 for value in BILL_VALUES}
 bill_buttons = {}
+wallet_balance_has_cached_snapshot = False
+wallet_sync_optimistic_import_keys = set()
 
 
-# Refresh wallet counters from locally settled and pending bill records.
-def update_balance():
-    global first_iteration, amount, count_selected, pending_bill_counts, bill_counts
-    try:
-        spendable_records = wallet_spendable_records()
-    except Exception:
-        log_ignored_exception()
-        spendable_records = []
-    try:
-        pending_records = wallet_pending_records()
-    except Exception:
-        log_ignored_exception()
-        pending_records = []
-    pending_bill_counts = {value: 0 for value in BILL_VALUES}
-    for record in pending_records:
-        value = wallet_record_value(record)
-        if value in pending_bill_counts:
-            pending_bill_counts[value] += 1
-    bill_counts = {value: 0 for value in BILL_VALUES}
-    try:
-        for record in spendable_records:
-            value = wallet_record_value(record)
-            if value in bill_counts:
-                bill_counts[value] += 1
-    except Exception:
-        log_ignored_exception()
-    owned_line_counts = wallet_line_bill_counts()
-    for value, count in owned_line_counts.items():
-        bill_counts[value] = max(bill_counts.get(value, 0), count)
+def update_wallet_balance_text_from_counts():
     balance = sum(value * count for value, count in bill_counts.items())
     balance_format = f'{balance:,}'
     b.delete(1.0, END)
     b.insert(1.0, 'Balance:  ' + str(balance_format) + '$')
     b.bind("<Key>", lambda e: "break")
-    count_selected = False
-    start_bills()
+
+
+def apply_wallet_balance_snapshot(snapshot, preserve_selection=False):
+    global first_iteration, amount, count_selected, pending_bill_counts, bill_counts
+    global wallet_balance_has_cached_snapshot
+    stop_wallet_balance_loading()
+    wallet_sync_optimistic_import_keys.clear()
+    has_snapshot = snapshot is not None
+    if snapshot is None:
+        snapshot = {
+            "bill_counts": {value: 0 for value in BILL_VALUES},
+            "pending_bill_counts": {value: 0 for value in BILL_VALUES},
+        }
+    pending_bill_counts = dict(snapshot.get("pending_bill_counts") or {})
+    bill_counts = dict(snapshot.get("bill_counts") or {})
+    for value in BILL_VALUES:
+        pending_bill_counts.setdefault(value, 0)
+        bill_counts.setdefault(value, 0)
+    update_wallet_balance_text_from_counts()
+    wallet_balance_has_cached_snapshot = has_snapshot
+    if preserve_selection:
+        refresh_bill_buttons()
+    else:
+        count_selected = False
+        start_bills()
+
+
+# Refresh wallet counters from locally settled and pending bill records.
+def update_balance(preserve_selection=False):
+    try:
+        snapshot = wallet_balance_snapshot()
+    except Exception:
+        log_ignored_exception()
+        snapshot = None
+    apply_wallet_balance_snapshot(snapshot, preserve_selection=preserve_selection)
+
+
+def apply_wallet_sync_optimistic_import(progress_event):
+    global wallet_balance_has_cached_snapshot
+    display_id = str(progress_event.get("display_id") or "").strip()
+    if not display_id:
+        return
+    value = wallet_services.wallet_display_value(display_id)
+    if value not in bill_counts:
+        return
+    sequence = str(progress_event.get("sequence") or "").strip()
+    key = (display_id.lstrip("-"), sequence)
+    if key in wallet_sync_optimistic_import_keys:
+        return
+    status = str(progress_event.get("status") or "").strip().lower()
+    if status == "pending":
+        pending_bill_counts[value] = pending_bill_counts.get(value, 0) + 1
+    elif status in {"settled", "verified"}:
+        bill_counts[value] = bill_counts.get(value, 0) + 1
+    else:
+        return
+    wallet_sync_optimistic_import_keys.add(key)
+    wallet_balance_has_cached_snapshot = True
+    stop_wallet_balance_loading()
+    update_wallet_balance_text_from_counts()
+    refresh_bill_buttons()
 
 
 count_selected = False
@@ -5055,16 +6881,20 @@ w100000.place(x=152 * reso, y=520 * reso, width=149 * reso, height=64 * reso)
 
 
 wallet_sync_running = False
+wallet_sync_cancel_event = threading.Event()
 WALLET_SYNC_PROGRESS_DELAY_MS = 200
+WALLET_SYNC_HISTORY_REFRESH_INTERVAL_SECONDS = 10.0
 WALLET_SYNC_PROGRESS_IMMEDIATE_EVENTS = {
+    "cancelled",
     "wallet_started",
     "local_messages",
+    "peer_request_started",
     "peer_report",
     "message_error",
     "wallet_complete",
     "complete",
 }
-WALLET_SYNC_REFRESH_EVENTS = {
+WALLET_SYNC_COUNT_REFRESH_EVENTS = {
     "message_accepted",
     "record_accepted",
     "finalized",
@@ -5072,6 +6902,38 @@ WALLET_SYNC_REFRESH_EVENTS = {
     "bills_added",
     "wallet_complete",
 }
+WALLET_SYNC_HISTORY_REFRESH_EVENTS = {
+    "bills_added",
+    "wallet_complete",
+    "complete",
+    "cancelled",
+}
+
+
+def set_receiver_button_asset(name, command, fallback_text, cursor='hand2'):
+    try:
+        receiver_button.config(command=command, cursor=cursor)
+        if hasattr(receiver_button, "set_source_asset"):
+            receiver_button.set_source_asset(source_asset_image_path('different_buttons', name))
+        else:
+            receiver_button.config(text=fallback_text)
+    except Exception:
+        log_ignored_exception()
+
+
+def set_wallet_sync_button_idle():
+    set_receiver_button_asset('reload_button', receive_bills, 'Sync')
+
+
+def set_wallet_sync_button_paused():
+    set_receiver_button_asset('pause_button', request_wallet_sync_cancel, 'Pause')
+
+
+def request_wallet_sync_cancel():
+    if not wallet_sync_running:
+        return
+    wallet_sync_cancel_event.set()
+    set_wallet_sync_status("Sync: pausing after current item...", IND_ORANGE)
 
 
 def start_wallet_sync(show_busy=False, show_errors=False):
@@ -5081,42 +6943,71 @@ def start_wallet_sync(show_busy=False, show_errors=False):
         if show_busy:
             set_wallet_sync_status("Sync already running.", IND_MUTED)
         return
+    wallet_sync_cancel_event.clear()
     wallet_sync_running = True
+    set_wallet_sync_button_paused()
     set_wallet_sync_status("Syncing wallet...", IND_MUTED)
     if show_busy:
         root.config(cursor='watch')
-        receiver_button.config(cursor='watch')
     progress_lock = threading.Lock()
     pending_progress_event = None
+    pending_progress_requires_count_refresh = False
     pending_progress_requires_refresh = False
     progress_after_id = None
     last_progress_update = 0.0
+    last_history_refresh_request = time.monotonic()
 
-    def apply_progress_update(progress_event, refresh_required=False):
+    def apply_progress_update(
+        progress_event,
+        refresh_required=False,
+        count_refresh_required=False,
+    ):
+        nonlocal last_history_refresh_request
         status_message, status_color = wallet_sync_progress_text(progress_event)
         set_wallet_sync_status(status_message, status_color)
-        if refresh_required or progress_event.get("event") in WALLET_SYNC_REFRESH_EVENTS:
+        event = str(progress_event.get("event") or "")
+        if event == "record_accepted":
+            apply_wallet_sync_optimistic_import(progress_event)
+        if count_refresh_required or event in WALLET_SYNC_COUNT_REFRESH_EVENTS:
+            schedule_wallet_count_refresh()
+        if refresh_required or event in WALLET_SYNC_HISTORY_REFRESH_EVENTS:
+            last_history_refresh_request = time.monotonic()
             schedule_wallet_view_refresh()
+        elif count_refresh_required or event in WALLET_SYNC_COUNT_REFRESH_EVENTS:
+            now = time.monotonic()
+            if now - last_history_refresh_request >= WALLET_SYNC_HISTORY_REFRESH_INTERVAL_SECONDS:
+                last_history_refresh_request = now
+                schedule_wallet_view_refresh()
 
     def run_pending_progress_update():
-        nonlocal pending_progress_event, pending_progress_requires_refresh
+        nonlocal pending_progress_event, pending_progress_requires_count_refresh
+        nonlocal pending_progress_requires_refresh
         nonlocal progress_after_id, last_progress_update
         with progress_lock:
             progress_event = pending_progress_event
+            count_refresh_required = pending_progress_requires_count_refresh
             refresh_required = pending_progress_requires_refresh
             pending_progress_event = None
+            pending_progress_requires_count_refresh = False
             pending_progress_requires_refresh = False
             progress_after_id = None
             last_progress_update = time.monotonic()
         if progress_event is not None:
-            apply_progress_update(progress_event, refresh_required=refresh_required)
+            apply_progress_update(
+                progress_event,
+                refresh_required=refresh_required,
+                count_refresh_required=count_refresh_required,
+            )
 
     def progress(progress_event):
-        nonlocal pending_progress_event, pending_progress_requires_refresh, progress_after_id
+        nonlocal pending_progress_event, pending_progress_requires_count_refresh
+        nonlocal pending_progress_requires_refresh, progress_after_id
         event = str(progress_event.get("event") or "")
         with progress_lock:
             pending_progress_event = progress_event
-            if event in WALLET_SYNC_REFRESH_EVENTS:
+            if event in WALLET_SYNC_COUNT_REFRESH_EVENTS:
+                pending_progress_requires_count_refresh = True
+            if event in WALLET_SYNC_HISTORY_REFRESH_EVENTS:
                 pending_progress_requires_refresh = True
             if progress_after_id is not None:
                 return
@@ -5131,10 +7022,12 @@ def start_wallet_sync(show_busy=False, show_errors=False):
                 log_ignored_exception()
 
     def cancel_pending_progress_update():
-        nonlocal pending_progress_event, pending_progress_requires_refresh, progress_after_id
+        nonlocal pending_progress_event, pending_progress_requires_count_refresh
+        nonlocal pending_progress_requires_refresh, progress_after_id
         with progress_lock:
             after_id = progress_after_id
             pending_progress_event = None
+            pending_progress_requires_count_refresh = False
             pending_progress_requires_refresh = False
             progress_after_id = None
         if after_id is not None:
@@ -5151,17 +7044,21 @@ def start_wallet_sync(show_busy=False, show_errors=False):
         except Exception as exc:
             errors.append(f"Peer refresh failed: {error_detail(exc)}")
         try:
-            sync_summary = sender_node.receive_bills(progress_callback=progress)
+            sync_summary = sender_node.receive_bills(
+                progress_callback=progress,
+                stop_requested=wallet_sync_cancel_event.is_set,
+            )
         except Exception as exc:
             errors.append(f"Wallet sync failed: {error_detail(exc)}")
 
         def finish():
             global wallet_sync_running
             wallet_sync_running = False
+            wallet_sync_cancel_event.clear()
             cancel_pending_progress_update()
+            set_wallet_sync_button_idle()
             if show_busy:
                 root.config(cursor='arrow')
-                receiver_button.config(cursor='hand2')
             flush_wallet_view_refresh()
             status_message, status_color = wallet_sync_summary_text(sync_summary, errors)
             set_wallet_sync_status(status_message, status_color)
@@ -6048,6 +7945,15 @@ def show_password():
         choose_password.config(show='')
 
 
+def wallet_sign_in_auto_sync_enabled():
+    try:
+        settings = ind_settings.load_security_settings(validate_production=False)
+        return ind_settings.auto_sync_on_wallet_sign_in(settings)
+    except Exception:
+        log_ignored_exception()
+        return True
+
+
 # Unlock an encrypted wallet into the short-lived desktop session.
 def log_in():
     address = normalized_wallet_address(address_variable.get())
@@ -6061,12 +7967,58 @@ def log_in():
             messagebox.showerror('Wallet locked', 'That wallet did not unlock correctly.')
             return
         wallet_button()
-        start_wallet_background_sync()
+        if wallet_sign_in_auto_sync_enabled():
+            start_wallet_background_sync()
 
     if unlocked:
         check_decrypted()
     else:
         messagebox.showerror('Wallet locked', 'That password did not unlock this wallet.')
+
+
+def submit_sign_in_from_keyboard(_event=None):
+    try:
+        log_in_button2.invoke()
+    except Exception:
+        log_ignored_exception()
+    return 'break'
+
+
+def short_wallet_address(address):
+    address = normalized_wallet_address(address)
+    if len(address) <= 4:
+        return address
+    return address[:4] + '...'
+
+
+def wallet_display_name_for_address(address):
+    address = normalized_wallet_address(address)
+    if not address:
+        return ""
+    for wallet_path in runtime_json.iter_encrypted_wallet_files():
+        if runtime_json.wallet_address_from_name(wallet_path.name) != address:
+            continue
+        try:
+            return runtime_json.wallet_name_from_record(
+                runtime_json.read_encrypted_wallet_record(wallet_path)
+            )
+        except Exception:
+            log_ignored_exception()
+            return ""
+    return ""
+
+
+def sign_in_wallet_label(address):
+    address = normalized_wallet_address(address)
+    if not address:
+        return ""
+    wallet_name = wallet_display_name_for_address(address)
+    if not wallet_name:
+        return address
+    name_column_width = 24
+    if len(wallet_name) > name_column_width:
+        wallet_name = wallet_name[: name_column_width - 3].rstrip() + '...'
+    return f'{wallet_name:<{name_column_width}} | {short_wallet_address(address)}'
 
 
 class SignInWalletDropdown(Frame):
@@ -6081,14 +8033,16 @@ class SignInWalletDropdown(Frame):
             cursor='hand2',
         )
         self.variable = variable
+        self.display_variable = StringVar(master=self)
         self.values = []
+        self.value_labels = {}
         self.visible_rows = 1
         self.popup = None
         self.listbox = None
 
         self.selected_label = Label(
             self,
-            textvariable=self.variable,
+            textvariable=self.display_variable,
             font=app_font(21, 'bold'),
             bg=IND_BLACK,
             fg=IND_WHITE,
@@ -6119,6 +8073,7 @@ class SignInWalletDropdown(Frame):
             widget.bind('<Button-1>', self._toggle_from_event)
         self.bind('<FocusOut>', self._hide_from_focus)
         master.bind('<Button-1>', self._hide_from_outside_click, add='+')
+        self.variable.trace_add('write', self._refresh_display_label)
         self.set_values(values)
 
     def _toggle_from_event(self, _event=None):
@@ -6150,13 +8105,22 @@ class SignInWalletDropdown(Frame):
     def set_values(self, values, preferred=None):
         selected = normalized_wallet_address(preferred or self.variable.get())
         self.values = self._clean_values(values)
+        self.value_labels = {value: sign_in_wallet_label(value) for value in self.values}
         self.visible_rows = max(1, min(SIGN_IN_WALLET_DROPDOWN_ROWS, len(self.values)))
         if selected and selected in self.values:
             self.variable.set(selected)
         else:
             self.variable.set(self.values[0] if normalized_wallet_address(self.values[0]) else '')
+        self._refresh_display_label()
         self.destroy_popup()
         self._refresh_click_state()
+
+    def _refresh_display_label(self, *_args):
+        value = normalized_wallet_address(self.variable.get())
+        label = self.value_labels.get(value)
+        if label is None:
+            label = sign_in_wallet_label(value)
+        self.display_variable.set(label)
 
     def _contains_widget(self, widget):
         while widget is not None:
@@ -6203,7 +8167,7 @@ class SignInWalletDropdown(Frame):
             exportselection=False,
         )
         for value in self.values:
-            listbox.insert(END, value)
+            listbox.insert(END, self.value_labels.get(value) or sign_in_wallet_label(value))
         listbox.pack(side='left', fill=BOTH, expand=True, padx=(1, 0), pady=1)
         if len(self.values) > self.visible_rows:
             scrollbar = Scrollbar(
@@ -6241,7 +8205,7 @@ class SignInWalletDropdown(Frame):
     def _select_current(self, _event=None):
         selection = self.listbox.curselection()
         if selection:
-            self.variable.set(self.listbox.get(selection[0]))
+            self.variable.set(self.values[selection[0]])
         self.hide_popup()
         return 'break'
 
@@ -6314,6 +8278,8 @@ enter_key = Entry(root, font=app_font(26), show='*', bg='light grey')
 log_in_button2 = make_asset_button(
     'different_buttons', 'log_in_button', log_in, 'Sign in', font_size=26, bg=IND_GREEN
 )
+enter_key.bind('<Return>', submit_sign_in_from_keyboard)
+enter_key.bind('<KP_Enter>', submit_sign_in_from_keyboard)
 button_show = make_asset_button(
     'different_buttons', 'show_button', show_key_s, 'Show', font_size=16, bg=IND_WHITE, fg=IND_BLACK
 )
@@ -6473,8 +8439,9 @@ def show_success_popup(password):
 def generate_wallet_final():
     addr_hash = runtime_json.read_wallet_generation()["address"]
     wallet_password = choose_password.get()
+    wallet_name = wallet_name_entry.get()
     try:
-        wallet_encryption.wallet_encrypt(wallet_password)
+        wallet_encryption.wallet_encrypt(wallet_password, wallet_name=wallet_name)
     except wallet_encryption.PasswordPolicyError as exc:
         messagebox.showerror('Weak wallet password', str(exc))
         return
@@ -6482,6 +8449,7 @@ def generate_wallet_final():
         messagebox.showerror('Wallet generation failed', str(exc))
         return
     choose_password.delete(0, END)
+    wallet_name_entry.delete(0, END)
     runtime_json.clear_wallet_generation()
     address_variable.set(addr_hash)
     refresh_sign_in_wallet_dropdown(preferred=addr_hash)
@@ -6613,6 +8581,17 @@ private_key = Entry(
 button_show2 = make_asset_button(
     'different_buttons', 'show2_button', show_key_p, 'Show', font_size=16, bg='#4d4d4d'
 )
+wallet_name_entry = Entry(
+    root,
+    font=app_font(22),
+    bd=0,
+    bg='#eeeeee',
+    fg='#111111',
+    insertbackground='#111111',
+    highlightthickness=1,
+    highlightbackground='#555555',
+    highlightcolor=IND_GREEN,
+)
 choose_password = Entry(
     root,
     font=app_font(22),
@@ -6669,32 +8648,60 @@ def send_bills(serial_num_start, recipient_address=None):
     of = runtime_json.read_decrypted_wallet_lines(wallet_path)
     wallet_address = of[0].strip() if of else ""
     store = wallet_store_for_address(wallet_address)
-    updated = []
-    for wb in of:
-        parts = wb.split()
-        display_id = parts[0] if parts else ""
+    updated = list(of)
+    wallet_bill_lines = []
+    wallet_line_indices = []
+    wallet_line_prefixes = []
+    for index, wb in enumerate(of):
         bill_prefix = wb.split('x')[0] + 'x'
         if bill_prefix in requested:
             requested.remove(bill_prefix)
+            wallet_bill_lines.append(wb)
+            wallet_line_indices.append(index)
+            wallet_line_prefixes.append(bill_prefix)
+    if wallet_bill_lines:
+        batch_results = wallet_services.spend_wallet_bills_batch(
+            of,
+            wallet_bill_lines,
+            recipient_address,
+            store=store,
+        )
+        for line_index, bill_prefix, result in zip(
+            wallet_line_indices,
+            wallet_line_prefixes,
+            batch_results,
+            strict=False,
+        ):
+            display_id = result.get("display_id") or ""
             try:
-                state = write_transfer_announcement(of, wb, recipient_address, store=store)
+                if result.get("error") is not None:
+                    raise result["error"]
+                state = result.get("state")
                 if not state:
                     raise RuntimeError("bill is not spendable or is not settled")
-                updated.append(
+                display_id = display_id or state.display_id
+                history_timestamp = result.get("history_timestamp")
+                if history_timestamp is None:
+                    history_timestamp = wallet_services.latest_bill_transfer_timestamp(
+                        bill=wallet_history_bill_for_sequence(
+                            display_id,
+                            state.sequence,
+                            store=store,
+                        ),
+                        fallback=time.time(),
+                    )
+                updated[line_index] = (
                     '-'
                     + display_id
                     + ' '
                     + str(state.sequence)
                     + ' '
-                    + str(int(time.time()))
+                    + str(history_timestamp)
                     + '\n'
                 )
                 sent_count += 1
             except Exception as exc:
                 errors.append(f"{display_id or bill_prefix}: {error_detail(exc)}")
-                updated.append(wb)
-        else:
-            updated.append(wb)
     runtime_json.write_decrypted_wallet_lines(wallet_path, updated)
     if requested:
         errors.append("Not enough settled bills for: " + ", ".join(requested))
@@ -6787,13 +8794,18 @@ def close():
     sign_in.place_forget(), log_in_button2.place_forget(), button_log_in.place_forget(), enter_address.place_forget()
     enter_key.place_forget(), button_generate_wallet.place_forget(), generate_wallet.place_forget()
     button_show.place_forget(), generate_address_text.place_forget(), generate_address_button.place_forget()
-    public_key.place_forget(), private_key.place_forget(), button_show2.place_forget(), choose_password.place_forget()
+    public_key.place_forget(), private_key.place_forget(), button_show2.place_forget()
+    wallet_name_entry.place_forget(), choose_password.place_forget()
     generate_wallet_button2.place_forget(), node_terminal.place_forget(), tf_button.place_forget()
     button_show3.place_forget(), number_entry.place_forget()
     info.place_forget(), tf_text.place_forget(), button_print.place_forget()
     add_bill_button.place_forget(), node_port_notice.place_forget(), charge_bills_button.place_forget()
     ron.place_forget(), bak.place_forget(), transparency_operator.place_forget(), asl_text.place_forget(), all_bills_text.place_forget()
     selected_bills_text.place_forget(), button_only_qr.place_forget(), print_select_all_button.place_forget()
+    print_select_count_entry.place_forget(), print_select_count_button.place_forget()
+    print_filter_canvas.place_forget(), print_filter_scrollbar.place_forget()
+    print_available_rows_canvas.place_forget(), print_queue_rows_canvas.place_forget()
+    print_available_summary_label.place_forget(), print_available_footer_label.place_forget(), print_queue_footer_label.place_forget()
     print_full_radio.place_forget(), print_qr_radio.place_forget(), print_summary_label.place_forget()
     print_pages_label.place_forget(), print_status_label.place_forget()
     print_progress_track.place_forget()

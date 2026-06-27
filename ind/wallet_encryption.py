@@ -6,7 +6,7 @@ PasswordPolicyError = wallet_crypto.PasswordPolicyError
 
 
 # Create a new INDW3 wallet: payload encrypted by MWK, MWK wrapped by password.
-def wallet_encrypt(wallet_password=None, recovery_phrase=None):
+def wallet_encrypt(wallet_password=None, recovery_phrase=None, wallet_name=None):
     wallet = runtime_json.read_wallet_generation()
     password = wallet_password
     if password is None:
@@ -19,6 +19,11 @@ def wallet_encrypt(wallet_password=None, recovery_phrase=None):
         str(password),
         recovery_phrase=recovery_phrase,
     )
+    display_name = runtime_json.normalize_wallet_name(
+        wallet.get("wallet_name", "") if wallet_name is None else wallet_name
+    )
+    if display_name:
+        record["wallet_name"] = display_name
     runtime_json.write_encrypted_wallet_record(record)
     return record
 

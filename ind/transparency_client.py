@@ -3086,6 +3086,7 @@ class HTTPStaticRootMirror:
     def __init__(self, base_url, timeout=10):
         self.http = HTTPJSONClient(base_url, timeout=timeout)
         self.identity_id = self.http.identity_id
+        self._roots_cache = None
 
     def _roots_from_jsonl(self):
         request = urllib.request.Request(
@@ -3097,6 +3098,8 @@ class HTTPStaticRootMirror:
         return [json.loads(line) for line in text.splitlines() if line.strip()]
 
     def roots(self):
+        if self._roots_cache is not None:
+            return [copy.deepcopy(root) for root in self._roots_cache]
         roots = []
         seen = set()
         for root in self._roots_from_jsonl():
@@ -3105,6 +3108,7 @@ class HTTPStaticRootMirror:
                 continue
             seen.add(current_id)
             roots.append(root)
+        self._roots_cache = [copy.deepcopy(root) for root in roots]
         return roots
 
     def root_at(self, timestamp):

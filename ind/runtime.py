@@ -29,6 +29,7 @@ PEER_ROOT = Path("ip_folder")
 
 WALLET_ENCRYPTED_PREFIX = "wallet_encrypted_"
 WALLET_DECRYPTED_PREFIX = "wallet_decrypted_"
+WALLET_NAME_MAX_LENGTH = 64
 _DECRYPTED_WALLETS = {}
 _PASSPHRASE_REQUEST = None
 _WALLET_GENERATION = None
@@ -51,6 +52,7 @@ DEFAULT_STATE = {
 DEFAULT_WALLET_GENERATION = {
     "schema": 1,
     "address": "",
+    "wallet_name": "",
     "private_key": "",
     "public_key": "",
     "passphrase": "",
@@ -122,6 +124,17 @@ def _bill_lines_from_wallet_data(data):
     if not isinstance(data, dict):
         return []
     return list(data.get("bills") or data.get("tokens") or [])
+
+
+def normalize_wallet_name(value):
+    name = " ".join(str(value or "").split())
+    return name[:WALLET_NAME_MAX_LENGTH]
+
+
+def wallet_name_from_record(record):
+    if not isinstance(record, dict):
+        return ""
+    return normalize_wallet_name(record.get("wallet_name", ""))
 
 
 def _write_json(path, data):
@@ -376,7 +389,7 @@ wallet_token_lines = wallet_bill_lines
 
 # Keep generated wallet secrets in memory until encryption consumes them.
 def write_wallet_generation(
-    address, private_key, public_key, passphrase="", bills=None, tokens=None
+    address, private_key, public_key, passphrase="", bills=None, tokens=None, wallet_name=""
 ):
     global _WALLET_GENERATION
     if bills is None and tokens is not None:
@@ -384,6 +397,7 @@ def write_wallet_generation(
     _WALLET_GENERATION = {
         "schema": 1,
         "address": str(address).strip(),
+        "wallet_name": normalize_wallet_name(wallet_name),
         "private_key": str(private_key).strip(),
         "public_key": str(public_key).strip(),
         "passphrase": "",
@@ -409,6 +423,7 @@ def read_wallet_generation():
     merged = _clone(DEFAULT_WALLET_GENERATION)
     if isinstance(data, dict):
         merged.update(data)
+    merged["wallet_name"] = normalize_wallet_name(merged.get("wallet_name", ""))
     merged["bills"] = _bill_lines_from_wallet_data(merged)
     merged.pop("tokens", None)
     return merged
@@ -424,6 +439,14 @@ def set_wallet_generation_passphrase(passphrase):
     global _WALLET_GENERATION
     data = read_wallet_generation()
     data["passphrase"] = ""
+    _WALLET_GENERATION = data
+    _write_json(wallet_generation_path(), DEFAULT_WALLET_GENERATION)
+
+
+def set_wallet_generation_name(wallet_name):
+    global _WALLET_GENERATION
+    data = read_wallet_generation()
+    data["wallet_name"] = normalize_wallet_name(wallet_name)
     _WALLET_GENERATION = data
     _write_json(wallet_generation_path(), DEFAULT_WALLET_GENERATION)
 
@@ -642,6 +665,9 @@ def clear_decrypted_wallets():
 
 
 def write_encrypted_wallet_record(record):
+    if isinstance(record, dict) and "wallet_name" in record:
+        record = _clone(record)
+        record["wallet_name"] = normalize_wallet_name(record.get("wallet_name", ""))
     address = str(record.get("address", "")).strip()
     if not address:
         raise ValueError("encrypted wallet record is missing address")

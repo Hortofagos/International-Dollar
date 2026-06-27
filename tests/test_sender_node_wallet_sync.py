@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 from unittest import mock
 
+from ind import keys_v3
 from ind import sender_node
 from ind import token as ind_token
 
@@ -75,7 +76,7 @@ def test_receive_bills_reports_incremental_progress():
 
         def ingest_wallet_bill_sync_record(self, record):
             self.records.append(record)
-            return {"accepted": True, "status": "verified", "state": SimpleNamespace(display_id="1x1", sequence=1)}
+            return {"accepted": True, "status": "verified", "state": "bill-hash-only"}
 
         def finalize_pending(self, buffer_seconds=0):
             return []
@@ -91,7 +92,16 @@ def test_receive_bills_reports_incremental_progress():
             "peer": "peer-a",
             "status": sender_node.REQUEST_OK,
             "messages": [{"type": "remote"}],
-            "records": [{"type": "record"}],
+            "records": [
+                {
+                    "type": "ind.wallet_bill_sync_record.v3",
+                    "display_id": "1x1",
+                    "sequence": 1,
+                }
+            ],
+            "direction": "reconcile",
+            "has_more": True,
+            "next_cursor": {"updated_at": 100, "sequence": 1, "token_id": "token-a"},
         },
         {"peer": "peer-b", "status": sender_node.REQUEST_TIMEOUT, "messages": []},
     ]
@@ -126,6 +136,13 @@ def test_receive_bills_reports_incremental_progress():
     assert event_names.index("peer_report") < event_names.index("complete")
     assert "message_accepted" in event_names
     assert "record_accepted" in event_names
+    record_event = next(event for event in events if event["event"] == "record_accepted")
+    assert record_event["display_id"] == "1x1"
+    assert record_event["sequence"] == 1
+    peer_event = next(event for event in events if event["event"] == "peer_report")
+    assert peer_event["direction"] == "reconcile"
+    assert peer_event["has_more"] is True
+    assert peer_event["next_cursor"] is True
 
 
 def test_receive_bills_counts_duplicate_peer_records_separately():
@@ -176,12 +193,305 @@ def test_receive_bills_counts_duplicate_peer_records_separately():
         mock.patch.object(sender_node, "iter_wallet_message_reports", return_value=peer_reports),
         mock.patch.object(sender_node.ind_settings, "finality_buffer_seconds", return_value=0),
     ):
-        summary = sender_node.receive_bills()
+        events = []
+        summary = sender_node.receive_bills(progress_callback=events.append)
 
     assert summary["fetched_records"] == 2
     assert summary["fetched_unique_records"] == 1
     assert summary["fetched_duplicate_records"] == 1
-    assert summary["processed_records"] == 2
+    assert summary["checked_records"] == 2
+    assert summary["processed_records"] == 1
+    assert summary["skipped_known_records"] == 1
+    checked_events = [event for event in events if event["event"] == "records_checked"]
+    assert checked_events
+    assert checked_events[-1]["summary"]["checked_records"] == 2
+    assert checked_events[-1]["summary"]["skipped_known_records"] == 1
+
+
+def test_receive_bills_repeats_delta_batches_until_short_response():
+    class FakeStore:
+        def __init__(self):
+            self.records = []
+
+        def wallet_delta_sync_request(self, address, token_limit=5000, response_limit=100):
+            return {
+                "type": "ind.wallet_bill_sync_request.v3",
+                "version": 2,
+                "address": address,
+                "known_tokens": {
+                    record["token_id"]: record["sequence"]
+                    for record in self.records
+                },
+                "limit": response_limit,
+            }
+
+        def ingest_wallet_bill_sync_record(self, record):
+            self.records.append(record)
+            return {
+                "accepted": True,
+                "status": "verified",
+                "state": SimpleNamespace(
+                    display_id=record["display_id"],
+                    sequence=record["sequence"],
+                ),
+            }
+
+        def finalize_pending(self, buffer_seconds=0):
+            return []
+
+        def token_records_for_owner(self, _address, settled_only=True):
+            return []
+
+    def batch(start, count):
+        return [
+            {
+                "type": "ind.wallet_bill_sync_record.v3",
+                "token_id": f"token-{index}",
+                "display_id": f"1x{index}",
+                "sequence": 1,
+            }
+            for index in range(start, start + count)
+        ]
+
+    def iter_reports(_address, sync_request=None, peers=None):
+        known_count = len((sync_request or {}).get("known_tokens") or {})
+        if known_count == 0:
+            records = batch(0, 100)
+        elif known_count == 100:
+            records = batch(100, 25)
+        else:
+            records = []
+        return [
+            {
+                "peer": "peer-a",
+                "status": sender_node.REQUEST_OK,
+                "records": records,
+                "messages": [],
+                "delta": True,
+            }
+        ]
+
+    store = FakeStore()
+    wallet_path = SimpleNamespace(name="wallet_decrypted_test")
+
+    with (
+        mock.patch.object(sender_node, "ensure_runtime_files"),
+        mock.patch.object(sender_node, "wallet_sync_store", return_value=store),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "iter_decrypted_wallet_files",
+            return_value=[wallet_path],
+        ),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "read_decrypted_wallet_lines",
+            return_value=["wallet-address\n", "private\n", "public\n"],
+        ),
+        mock.patch.object(sender_node.runtime_json, "wallet_bill_lines", return_value=[]),
+        mock.patch.object(sender_node, "iter_wallet_message_reports", side_effect=iter_reports),
+        mock.patch.object(sender_node.ind_settings, "finality_buffer_seconds", return_value=0),
+    ):
+        summary = sender_node.receive_bills()
+
+    assert summary["status"] == "complete"
+    assert summary["sync_rounds"] == 2
+    assert summary["processed_records"] == 125
+    assert summary["fetched_unique_records"] == 125
+
+
+def test_receive_bills_pages_backfill_without_known_token_payload():
+    class FakeStore:
+        def __init__(self):
+            self.records = []
+            self.requests = []
+
+        def wallet_delta_sync_request(
+            self,
+            address,
+            token_limit=0,
+            response_limit=100,
+            direction="backfill",
+            page_cursor=None,
+        ):
+            request = {
+                "type": "ind.wallet_bill_sync_request.v3",
+                "version": 3,
+                "address": address,
+                "direction": direction,
+                "limit": response_limit,
+            }
+            if page_cursor:
+                request["cursor"] = dict(page_cursor)
+            self.requests.append(request)
+            return request
+
+        def ingest_wallet_bill_sync_record(self, record):
+            self.records.append(record)
+            return {
+                "accepted": True,
+                "status": "verified",
+                "state": SimpleNamespace(
+                    display_id=record["display_id"],
+                    sequence=record["sequence"],
+                ),
+            }
+
+        def finalize_pending(self, buffer_seconds=0):
+            return []
+
+        def token_records_for_owner(self, _address, settled_only=True):
+            return []
+
+    def batch(start, count):
+        return [
+            {
+                "type": "ind.wallet_bill_sync_record.v3",
+                "token_id": f"token-{index}",
+                "display_id": f"1x{index}",
+                "sequence": 1,
+            }
+            for index in range(start, start + count)
+        ]
+
+    def iter_reports(_address, sync_request=None, peers=None):
+        assert "known_tokens" not in (sync_request or {})
+        cursor = (sync_request or {}).get("cursor") or {}
+        if not cursor:
+            records = batch(0, 100)
+            has_more = True
+            next_cursor = {"updated_at": 100, "sequence": 1, "token_id": "token-99"}
+        elif cursor.get("token_id") == "token-99":
+            records = batch(100, 25)
+            has_more = False
+            next_cursor = None
+        else:
+            records = []
+            has_more = False
+            next_cursor = None
+        return [
+            {
+                "peer": "peer-a",
+                "status": sender_node.REQUEST_OK,
+                "records": records,
+                "messages": [],
+                "delta": True,
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+            }
+        ]
+
+    store = FakeStore()
+    wallet_path = SimpleNamespace(name="wallet_decrypted_test")
+
+    with (
+        mock.patch.object(sender_node, "ensure_runtime_files"),
+        mock.patch.object(sender_node, "wallet_sync_store", return_value=store),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "iter_decrypted_wallet_files",
+            return_value=[wallet_path],
+        ),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "read_decrypted_wallet_lines",
+            return_value=["wallet-address\n", "private\n", "public\n"],
+        ),
+        mock.patch.object(sender_node.runtime_json, "wallet_bill_lines", return_value=[]),
+        mock.patch.object(sender_node, "iter_wallet_message_reports", side_effect=iter_reports),
+        mock.patch.object(sender_node.ind_settings, "finality_buffer_seconds", return_value=0),
+    ):
+        summary = sender_node.receive_bills()
+
+    assert summary["status"] == "complete"
+    assert summary["sync_rounds"] == 2
+    assert summary["processed_records"] == 125
+    assert all("known_tokens" not in request for request in store.requests)
+    assert store.requests[0]["direction"] == "reconcile"
+    assert store.requests[1]["cursor"]["token_id"] == "token-99"
+
+
+def test_receive_bills_stops_between_records_when_cancelled():
+    class FakeStore:
+        def __init__(self):
+            self.records = []
+
+        def wallet_delta_sync_request(self, address, token_limit=5000, response_limit=100):
+            return {
+                "type": "ind.wallet_bill_sync_request.v3",
+                "version": 2,
+                "address": address,
+                "known_tokens": {},
+                "limit": response_limit,
+            }
+
+        def ingest_wallet_bill_sync_record(self, record):
+            self.records.append(record)
+            return {
+                "accepted": True,
+                "status": "verified",
+                "state": SimpleNamespace(
+                    display_id=record["display_id"],
+                    sequence=record["sequence"],
+                ),
+            }
+
+        def finalize_pending(self, buffer_seconds=0):
+            return []
+
+        def token_records_for_owner(self, _address, settled_only=True):
+            return []
+
+    records = [
+        {
+            "type": "ind.wallet_bill_sync_record.v3",
+            "token_id": f"token-{index}",
+            "display_id": f"1x{index}",
+            "sequence": 1,
+        }
+        for index in range(100)
+    ]
+    store = FakeStore()
+    wallet_path = SimpleNamespace(name="wallet_decrypted_test")
+    events = []
+
+    with (
+        mock.patch.object(sender_node, "ensure_runtime_files"),
+        mock.patch.object(sender_node, "wallet_sync_store", return_value=store),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "iter_decrypted_wallet_files",
+            return_value=[wallet_path],
+        ),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "read_decrypted_wallet_lines",
+            return_value=["wallet-address\n", "private\n", "public\n"],
+        ),
+        mock.patch.object(sender_node.runtime_json, "wallet_bill_lines", return_value=[]),
+        mock.patch.object(
+            sender_node,
+            "iter_wallet_message_reports",
+            return_value=[
+                {
+                    "peer": "peer-a",
+                    "status": sender_node.REQUEST_OK,
+                    "records": records,
+                    "messages": [],
+                    "delta": True,
+                }
+            ],
+        ),
+        mock.patch.object(sender_node.ind_settings, "finality_buffer_seconds", return_value=0),
+    ):
+        summary = sender_node.receive_bills(
+            progress_callback=events.append,
+            stop_requested=lambda: len(store.records) >= 67,
+        )
+
+    assert summary["status"] == "cancelled"
+    assert summary["processed_records"] == 67
+    assert len(store.records) == 67
+    assert events[-1]["event"] == "cancelled"
 
 
 def test_receive_bills_batches_wallet_added_progress():
@@ -218,6 +528,11 @@ def test_receive_bills_batches_wallet_added_progress():
         mock.patch.object(sender_node, "iter_wallet_message_reports", return_value=[]),
         mock.patch.object(sender_node.ind_settings, "finality_buffer_seconds", return_value=0),
         mock.patch.object(
+            sender_node.wallet_services,
+            "latest_bill_transfer_timestamp",
+            return_value=1_700_000_123,
+        ),
+        mock.patch.object(
             sender_node.runtime_json,
             "write_decrypted_wallet_lines",
             side_effect=lambda _path, lines: writes.append(list(lines)),
@@ -231,6 +546,82 @@ def test_receive_bills_batches_wallet_added_progress():
     assert summary["wallet_bills_added"] == 3
     assert [event["event"] for event in events].count("bill_added") == 0
     assert len(writes) == 1
+    assert writes[0][3:] == [
+        "1x1 1 1700000123\n",
+        "2x2 1 1700000123\n",
+        "5x3 1 1700000123\n",
+    ]
+
+
+def test_receive_bills_adds_v3_wallet_records_without_default_limit():
+    address, _private_key, _public_key = keys_v3.generate_keypair(b"\x45" * 32)
+
+    class FakeStore:
+        def __init__(self):
+            self.metadata_calls = []
+
+        def finalize_pending(self, buffer_seconds=0):
+            return []
+
+        def token_records_for_owner(self, _address, settled_only=True):
+            raise AssertionError("V3 wallet sync should use BillV3 metadata")
+
+        def bill_v3_metadata_records_for_owner(self, owner_address, statuses=None, limit=None):
+            self.metadata_calls.append((owner_address, statuses, limit))
+            if statuses == ("pending",):
+                return []
+            assert owner_address == address
+            assert statuses == ("settled", "verified")
+            assert limit is None
+            return [
+                {"display_id": "1x1", "sequence": 1, "updated_at": 1_700_000_101},
+                {"display_id": "2x2", "sequence": 1, "updated_at": 1_700_000_102},
+                {"display_id": "5x3", "sequence": 1, "updated_at": 1_700_000_103},
+            ]
+
+        def get_bill_v3_by_display_id_sequence(self, _display_id, _sequence):
+            return None
+
+    store = FakeStore()
+    wallet_path = SimpleNamespace(name="wallet_decrypted_test")
+    writes = []
+
+    with (
+        mock.patch.object(sender_node, "ensure_runtime_files"),
+        mock.patch.object(sender_node, "wallet_sync_store", return_value=store),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "iter_decrypted_wallet_files",
+            return_value=[wallet_path],
+        ),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "read_decrypted_wallet_lines",
+            return_value=[address + "\n", "private\n", "public\n"],
+        ),
+        mock.patch.object(sender_node.runtime_json, "wallet_bill_lines", return_value=[]),
+        mock.patch.object(sender_node, "iter_wallet_message_reports", return_value=[]),
+        mock.patch.object(sender_node.ind_settings, "finality_buffer_seconds", return_value=0),
+        mock.patch.object(
+            sender_node.wallet_services,
+            "latest_bill_transfer_timestamp",
+            side_effect=lambda record=None, bill=None, fallback=None: int(fallback),
+        ),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "write_decrypted_wallet_lines",
+            side_effect=lambda _path, lines: writes.append(list(lines)),
+        ),
+    ):
+        summary = sender_node.receive_bills()
+
+    assert summary["wallet_bills_added"] == 3
+    assert writes[0][3:] == [
+        "1x1 1 1700000101\n",
+        "2x2 1 1700000102\n",
+        "5x3 1 1700000103\n",
+    ]
+    assert (address, ("settled", "verified"), None) in store.metadata_calls
 
 
 def test_wallet_bill_sync_request_falls_back_to_legacy_recipient_lookup():
@@ -288,6 +679,68 @@ def test_wallet_bill_sync_request_uses_record_response_without_legacy_fallback()
     assert report["messages"] == []
     assert report["records"] == [{"type": "record"}]
     assert report["delta"] is True
+
+
+def test_wallet_bill_sync_reconcile_request_uses_reconcile_timing():
+    reconcile_result = sender_node.PeerRequestResult(
+        status=sender_node.REQUEST_OK,
+        response=(
+            '{"type":"ind.wallet_bill_sync_response.v3","version":2,'
+            '"direction":"reconcile","records":[]}'
+        ),
+        peer="peer-a",
+        route="peer-a",
+    )
+    newer_result = sender_node.PeerRequestResult(
+        status=sender_node.REQUEST_OK,
+        response=(
+            '{"type":"ind.wallet_bill_sync_response.v3","version":2,'
+            '"direction":"newer","records":[]}'
+        ),
+        peer="peer-a",
+        route="peer-a",
+    )
+
+    with mock.patch.object(
+        sender_node,
+        "connect_result",
+        side_effect=[reconcile_result, newer_result],
+    ) as connect:
+        reconcile_report = sender_node._fetch_wallet_messages_from_peer(
+            "peer-a",
+            "wallet-address",
+            sync_request={
+                "type": "ind.wallet_bill_sync_request.v3",
+                "version": 3,
+                "address": "wallet-address",
+                "direction": "reconcile",
+                "known_display_ranges": [[20, 1, 100, 1]],
+                "limit": 100,
+            },
+        )
+        newer_report = sender_node._fetch_wallet_messages_from_peer(
+            "peer-a",
+            "wallet-address",
+            sync_request={
+                "type": "ind.wallet_bill_sync_request.v3",
+                "version": 3,
+                "address": "wallet-address",
+                "direction": "newer",
+                "limit": 100,
+            },
+        )
+
+    reconcile_kwargs = connect.call_args_list[0].kwargs
+    newer_kwargs = connect.call_args_list[1].kwargs
+    assert reconcile_kwargs["timeout"] == sender_node.WALLET_SYNC_RECONCILE_REQUEST_TIMEOUT_SECONDS
+    assert (
+        reconcile_kwargs["max_duration_seconds"]
+        == sender_node.WALLET_SYNC_RECONCILE_REQUEST_BUDGET_SECONDS
+    )
+    assert newer_kwargs["timeout"] == sender_node.WALLET_SYNC_REQUEST_TIMEOUT_SECONDS
+    assert newer_kwargs["max_duration_seconds"] == sender_node.WALLET_SYNC_REQUEST_BUDGET_SECONDS
+    assert reconcile_report["direction"] == "reconcile"
+    assert newer_report["direction"] == "newer"
 
 
 def test_outbound_gossip_pacer_uses_sliding_peer_window():

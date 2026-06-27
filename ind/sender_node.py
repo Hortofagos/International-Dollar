@@ -17,6 +17,7 @@ from . import runtime as runtime_json
 from . import settings as ind_settings
 from . import token as ind_token
 from . import transport as ind_transport
+from . import wallet_services
 
 logger = logging.getLogger(__name__)
 already_tried = []
@@ -62,8 +63,21 @@ WALLET_SYNC_MAX_PEERS = 12
 WALLET_SYNC_WORKERS = 4
 WALLET_SYNC_REQUEST_TIMEOUT_SECONDS = 6
 WALLET_SYNC_REQUEST_BUDGET_SECONDS = 8
+WALLET_SYNC_RECONCILE_REQUEST_TIMEOUT_SECONDS = _env_int(
+    "IND_WALLET_SYNC_RECONCILE_REQUEST_TIMEOUT_SECONDS",
+    15,
+    minimum=1,
+    maximum=120,
+)
+WALLET_SYNC_RECONCILE_REQUEST_BUDGET_SECONDS = _env_int(
+    "IND_WALLET_SYNC_RECONCILE_REQUEST_BUDGET_SECONDS",
+    20,
+    minimum=1,
+    maximum=180,
+)
 WALLET_SYNC_FETCH_BUDGET_SECONDS = 30
-WALLET_SYNC_TOKEN_CURSOR_LIMIT = 5000
+WALLET_SYNC_TOKEN_CURSOR_LIMIT = 0
+WALLET_SYNC_RESPONSE_LIMIT = 100
 WALLET_SEND_WINDOW_SECONDS = _env_int("IND_WALLET_SEND_WINDOW_SECONDS", 5, minimum=1)
 WALLET_MAX_BILLS_PER_SECOND = _env_float(
     "IND_WALLET_MAX_BILLS_PER_SECOND", 2.0, minimum=0.1
@@ -1901,7 +1915,7 @@ def _parse_peer_messages(raw):
 
 
 def _parse_wallet_sync_response(raw):
-    empty = {"records": [], "messages": []}
+    empty = {"records": [], "messages": [], "has_more": False, "next_cursor": None, "direction": ""}
     if not raw or raw == 'n':
         return empty
     try:
@@ -1911,7 +1925,13 @@ def _parse_wallet_sync_response(raw):
     if isinstance(decoded, dict):
         records = decoded.get("records")
         messages = decoded.get("messages")
-        result = {"records": [], "messages": []}
+        result = {
+            "records": [],
+            "messages": [],
+            "has_more": bool(decoded.get("has_more")),
+            "next_cursor": decoded.get("next_cursor") if isinstance(decoded.get("next_cursor"), dict) else None,
+            "direction": str(decoded.get("direction") or ""),
+        }
         if isinstance(records, list):
             result["records"] = records
         if isinstance(messages, list):
@@ -1920,7 +1940,9 @@ def _parse_wallet_sync_response(raw):
             result["messages"] = [decoded]
         return result
     if isinstance(decoded, list):
-        return {"records": [], "messages": decoded}
+        result = dict(empty)
+        result["messages"] = decoded
+        return result
     return empty
 
 
@@ -1938,7 +1960,13 @@ def _wallet_sync_record_identity(record):
         return ""
 
 
-def _wallet_sync_request_for_address(store, address):
+def _wallet_sync_request_for_address(
+    store,
+    address,
+    response_limit=WALLET_SYNC_RESPONSE_LIMIT,
+    direction="backfill",
+    page_cursor=None,
+):
     request_builder = getattr(store, "wallet_delta_sync_request", None)
     if not callable(request_builder):
         return None
@@ -1946,8 +1974,20 @@ def _wallet_sync_request_for_address(store, address):
         return request_builder(
             address,
             token_limit=WALLET_SYNC_TOKEN_CURSOR_LIMIT,
-            response_limit=100,
+            response_limit=response_limit,
+            direction=direction,
+            page_cursor=page_cursor,
         )
+    except TypeError:
+        try:
+            return request_builder(
+                address,
+                token_limit=WALLET_SYNC_TOKEN_CURSOR_LIMIT,
+                response_limit=response_limit,
+            )
+        except Exception as exc:
+            logger.debug("could not build wallet delta sync request for %s: %s", address, exc)
+            return None
     except Exception as exc:
         logger.debug("could not build wallet delta sync request for %s: %s", address, exc)
         return None
@@ -1968,14 +2008,32 @@ def _wallet_sync_peer_candidates():
     return selected
 
 
+def _wallet_sync_request_timing(sync_request):
+    direction = ""
+    if isinstance(sync_request, dict):
+        direction = str(sync_request.get("direction") or "").lower()
+    if direction == "reconcile":
+        return (
+            WALLET_SYNC_RECONCILE_REQUEST_TIMEOUT_SECONDS,
+            WALLET_SYNC_RECONCILE_REQUEST_BUDGET_SECONDS,
+        )
+    return WALLET_SYNC_REQUEST_TIMEOUT_SECONDS, WALLET_SYNC_REQUEST_BUDGET_SECONDS
+
+
 def _fetch_wallet_messages_from_peer(peer, address, sync_request=None):
     if sync_request:
+        request_timeout, request_budget = _wallet_sync_request_timing(sync_request)
+        request_direction = (
+            str(sync_request.get("direction") or "")
+            if isinstance(sync_request, dict)
+            else ""
+        )
         result = connect_result(
             'R',
-            json.dumps(sync_request, sort_keys=True),
+            json.dumps(sync_request, sort_keys=True, separators=(",", ":")),
             [peer],
-            timeout=WALLET_SYNC_REQUEST_TIMEOUT_SECONDS,
-            max_duration_seconds=WALLET_SYNC_REQUEST_BUDGET_SECONDS,
+            timeout=request_timeout,
+            max_duration_seconds=request_budget,
         )
         if result.status == REQUEST_OK:
             parsed = _parse_wallet_sync_response(result.response)
@@ -1984,6 +2042,9 @@ def _fetch_wallet_messages_from_peer(peer, address, sync_request=None):
                 "status": result.status,
                 "messages": parsed["messages"],
                 "records": parsed["records"],
+                "has_more": parsed["has_more"],
+                "next_cursor": parsed["next_cursor"],
+                "direction": parsed["direction"] or request_direction,
                 "delta": True,
             }
         if result.status != REQUEST_INVALID:
@@ -1998,6 +2059,9 @@ def _fetch_wallet_messages_from_peer(peer, address, sync_request=None):
                 "status": result.status,
                 "messages": [],
                 "records": [],
+                "has_more": False,
+                "next_cursor": None,
+                "direction": request_direction,
                 "delta": True,
             }
 
@@ -2148,22 +2212,34 @@ def _emit_wallet_sync_progress(progress_callback, event, summary, **details):
 
 
 # Pull owner-addressed bill records and import spendable bills.
-def receive_bills(progress_callback=None):
+def receive_bills(
+    progress_callback=None,
+    stop_requested=None,
+    response_limit=WALLET_SYNC_RESPONSE_LIMIT,
+):
     from . import keys_v3
 
     ensure_runtime_files()
     store = wallet_sync_store()
+    try:
+        response_limit = max(1, min(WALLET_SYNC_RESPONSE_LIMIT, int(response_limit)))
+    except (TypeError, ValueError):
+        response_limit = WALLET_SYNC_RESPONSE_LIMIT
     summary = {
+        "status": "running",
         "wallets": 0,
+        "sync_rounds": 0,
         "local_messages": 0,
         "fetched_messages": 0,
         "fetched_records": 0,
         "fetched_unique_records": 0,
         "fetched_duplicate_records": 0,
         "processed_messages": 0,
+        "checked_records": 0,
         "processed_records": 0,
         "accepted_messages": 0,
         "accepted_records": 0,
+        "skipped_known_records": 0,
         "finalized": 0,
         "settled": 0,
         "pending": 0,
@@ -2173,10 +2249,41 @@ def receive_bills(progress_callback=None):
         "skipped_known_messages": 0,
         "errors": [],
     }
+    cancelled = False
+
+    def sync_stop_requested():
+        if not callable(stop_requested):
+            return False
+        try:
+            return bool(stop_requested())
+        except Exception:
+            logger.debug("wallet sync stop callback failed", exc_info=True)
+            return False
+
+    def maybe_cancel(address="", source=""):
+        nonlocal cancelled
+        if cancelled:
+            return True
+        if not sync_stop_requested():
+            return False
+        cancelled = True
+        summary["status"] = "cancelled"
+        _emit_wallet_sync_progress(
+            progress_callback,
+            "cancelled",
+            summary,
+            address=address,
+            source=source,
+        )
+        return True
     for wallet_path in runtime_json.iter_decrypted_wallet_files():
+        if maybe_cancel(source="startup"):
+            break
         if wallet_path.name.startswith('wallet_decrypted'):
             wallet = runtime_json.read_decrypted_wallet_lines(wallet_path)
             address = wallet[0].strip()
+            if maybe_cancel(address=address, source="wallet"):
+                break
             summary["wallets"] += 1
             _emit_wallet_sync_progress(
                 progress_callback,
@@ -2196,24 +2303,68 @@ def receive_bills(progress_callback=None):
                 "wallet_path": wallet_path,
             }
 
-            def add_new_settled_bills(reason, context=wallet_context):
-                current_address = context["address"]
-                settled_records = store.token_records_for_owner(current_address, settled_only=True)
+            def wallet_settled_records_for_address(current_address):
                 if keys_v3.is_address(current_address):
-                    settled_records = store.bill_v3_records_for_owner(
+                    metadata_reader = getattr(store, "bill_v3_metadata_records_for_owner", None)
+                    if callable(metadata_reader):
+                        return metadata_reader(
+                            current_address,
+                            statuses=("settled", "verified"),
+                            limit=None,
+                        )
+                    return store.bill_v3_records_for_owner(
                         current_address,
                         statuses=("settled", "verified"),
+                        limit=None,
                     )
+                return store.token_records_for_owner(current_address, settled_only=True)
+
+            def wallet_pending_records_for_address(current_address):
+                if keys_v3.is_address(current_address):
+                    metadata_reader = getattr(store, "bill_v3_metadata_records_for_owner", None)
+                    if callable(metadata_reader):
+                        return metadata_reader(
+                            current_address,
+                            statuses=("pending",),
+                            limit=None,
+                        )
+                    return store.bill_v3_records_for_owner(
+                        current_address,
+                        statuses=("pending",),
+                        limit=None,
+                    )
+                return []
+
+            def wallet_record_history_timestamp(record):
+                fallback = record.get("updated_at") or time.time()
+                bill = None
+                if "bill_blob" not in record and keys_v3.is_address(address):
+                    lookup = getattr(store, "get_bill_v3_by_display_id_sequence", None)
+                    if callable(lookup):
+                        try:
+                            bill = lookup(record.get("display_id"), record.get("sequence"))
+                        except Exception:
+                            logger.debug("could not load wallet sync bill timestamp", exc_info=True)
+                return wallet_services.latest_bill_transfer_timestamp(
+                    record=record,
+                    bill=bill,
+                    fallback=fallback,
+                )
+
+            def add_new_settled_bills(reason, context=wallet_context):
+                current_address = context["address"]
+                settled_records = wallet_settled_records_for_address(current_address)
                 updated_wallet = list(context["wallet"])
                 added_records = []
                 for record in settled_records:
                     if record["display_id"] not in context["wallet_ids"]:
+                        history_timestamp = wallet_record_history_timestamp(record)
                         updated_wallet.append(
                             record["display_id"]
                             + ' '
                             + str(record["sequence"])
                             + ' '
-                            + str(int(time.time()))
+                            + str(history_timestamp)
                             + '\n'
                         )
                         context["wallet_ids"].add(record["display_id"])
@@ -2252,7 +2403,14 @@ def receive_bills(progress_callback=None):
                 return finalized
 
             add_new_settled_bills("startup")
-            sync_request = _wallet_sync_request_for_address(store, address)
+            local_known_sequences = {}
+            if keys_v3.is_address(address):
+                known_reader = getattr(store, "wallet_known_token_sequences", None)
+                if callable(known_reader):
+                    try:
+                        local_known_sequences = known_reader(address, limit=None)
+                    except Exception:
+                        logger.debug("could not read wallet known token sequences", exc_info=True)
             known_message_hashes = set()
             known_record_identities = set()
             local_messages = []
@@ -2274,6 +2432,8 @@ def receive_bills(progress_callback=None):
             ):
                 current_address = context["address"]
                 for message in messages:
+                    if maybe_cancel(address=current_address, source=source):
+                        return False
                     try:
                         current_message_hash = ind_token.message_hash(message)
                     except Exception:
@@ -2318,16 +2478,72 @@ def receive_bills(progress_callback=None):
                             peer=peer,
                             error=str(exc),
                         )
+                return True
 
             def process_records(records, source, peer="", context=wallet_context):
                 current_address = context["address"]
+                progress_started = time.monotonic()
+                progress_last_emit = progress_started
+                progress_since_emit = 0
+
+                def emit_record_check_progress(force=False, display_id="", sequence=None):
+                    nonlocal progress_last_emit, progress_since_emit
+                    if progress_since_emit <= 0:
+                        return
+                    now = time.monotonic()
+                    if not force and progress_since_emit < 25 and now - progress_last_emit < 0.75:
+                        return
+                    _emit_wallet_sync_progress(
+                        progress_callback,
+                        "records_checked",
+                        summary,
+                        address=current_address,
+                        source=source,
+                        peer=peer,
+                        display_id=display_id,
+                        sequence=sequence if sequence is not None else "",
+                        count=progress_since_emit,
+                    )
+                    progress_last_emit = now
+                    progress_since_emit = 0
+
                 for record in records:
+                    if maybe_cancel(address=current_address, source=source):
+                        return False
+                    token_id = str(record.get("token_id") or "").strip()
+                    display_id = str(record.get("display_id") or "").strip()
+                    try:
+                        sequence = int(record.get("sequence"))
+                    except (TypeError, ValueError):
+                        sequence = None
+                    summary["checked_records"] += 1
+                    progress_since_emit += 1
+                    if token_id and sequence is not None:
+                        known_sequence = local_known_sequences.get(token_id)
+                        if known_sequence is not None and int(known_sequence) >= sequence:
+                            summary["skipped_known_records"] += 1
+                            emit_record_check_progress(display_id=display_id, sequence=sequence)
+                            continue
                     try:
                         result = store.ingest_wallet_bill_sync_record(record)
                         summary["processed_records"] += 1
                         if result.get("accepted"):
                             summary["accepted_records"] += 1
+                            if token_id and sequence is not None:
+                                local_known_sequences[token_id] = max(
+                                    int(local_known_sequences.get(token_id, 0) or 0),
+                                    sequence,
+                                )
                             state = result.get("state")
+                            accepted_display_id = str(
+                                getattr(state, "display_id", "") or record.get("display_id") or ""
+                            ).strip()
+                            try:
+                                accepted_sequence = int(
+                                    getattr(state, "sequence", None) or record.get("sequence") or 0
+                                )
+                            except (TypeError, ValueError):
+                                accepted_sequence = 0
                             _emit_wallet_sync_progress(
                                 progress_callback,
                                 "record_accepted",
@@ -2336,9 +2552,13 @@ def receive_bills(progress_callback=None):
                                 source=source,
                                 peer=peer,
                                 status=result.get("status", ""),
-                                display_id=getattr(state, "display_id", ""),
-                                sequence=int(getattr(state, "sequence", 0) or 0),
+                                display_id=accepted_display_id,
+                                sequence=accepted_sequence,
                             )
+                            progress_since_emit = 0
+                            progress_last_emit = time.monotonic()
+                        else:
+                            emit_record_check_progress(display_id=display_id, sequence=sequence)
                     except Exception as exc:
                         logger.debug(
                             "could not process wallet sync record for %s: %s",
@@ -2356,48 +2576,123 @@ def receive_bills(progress_callback=None):
                             peer=peer,
                             error=str(exc),
                         )
+                        progress_since_emit = 0
+                        progress_last_emit = time.monotonic()
+                emit_record_check_progress(force=True)
+                return True
 
-            process_messages(local_messages, "local")
-            sync_request = _wallet_sync_request_for_address(store, address) or sync_request
+            if not process_messages(local_messages, "local"):
+                break
 
-            for report in iter_wallet_message_reports(address, sync_request=sync_request):
-                messages = report.get("messages") or []
-                records = report.get("records") or []
-                summary["fetched_messages"] += len(messages)
-                summary["fetched_records"] += len(records)
-                duplicate_records = 0
-                for record in records:
-                    identity = _wallet_sync_record_identity(record)
-                    if identity and identity in known_record_identities:
-                        duplicate_records += 1
-                        continue
-                    if identity:
-                        known_record_identities.add(identity)
-                summary["fetched_unique_records"] = len(known_record_identities)
-                summary["fetched_duplicate_records"] += duplicate_records
-                if report.get("status") != REQUEST_OK:
-                    summary["peer_failures"] += 1
-                    if report.get("status") == REQUEST_TIMEOUT:
-                        summary["peer_timeouts"] += 1
-                _emit_wallet_sync_progress(
-                    progress_callback,
-                    "peer_report",
-                    summary,
-                    address=address,
-                    peer=report.get("peer", ""),
-                    status=report.get("status", ""),
-                    message_count=len(messages) + len(records),
-                )
-                process_records(records, "peer", peer=report.get("peer", ""))
-                process_messages(messages, "peer", peer=report.get("peer", ""))
+            sync_phases = []
+            if local_known_sequences:
+                sync_phases.append("newer")
+            sync_phases.append("reconcile")
+            for sync_direction in sync_phases:
+                page_cursor = None
+                while True:
+                    if maybe_cancel(address=address, source="peer"):
+                        break
+                    sync_request = _wallet_sync_request_for_address(
+                        store,
+                        address,
+                        response_limit=response_limit,
+                        direction=sync_direction,
+                        page_cursor=page_cursor,
+                    )
+                    legacy_request_without_builder = (
+                        sync_request is None
+                        and sync_direction in {"backfill", "reconcile"}
+                        and page_cursor is None
+                    )
+                    if sync_request is None and not legacy_request_without_builder:
+                        break
+                    round_processed_start = int(summary.get("processed_records") or 0)
+                    round_has_more = False
+                    round_next_cursor = None
+                    round_saw_delta_response = False
+                    summary["sync_rounds"] += 1
+                    _emit_wallet_sync_progress(
+                        progress_callback,
+                        "peer_request_started",
+                        summary,
+                        address=address,
+                        direction=sync_direction,
+                        has_more=bool(page_cursor),
+                    )
+
+                    for report in iter_wallet_message_reports(address, sync_request=sync_request):
+                        if maybe_cancel(address=address, source="peer"):
+                            break
+                        messages = report.get("messages") or []
+                        records = report.get("records") or []
+                        if report.get("delta"):
+                            round_saw_delta_response = True
+                        if report.get("has_more") or len(records) >= response_limit:
+                            round_has_more = True
+                            if report.get("next_cursor"):
+                                round_next_cursor = report.get("next_cursor")
+                        summary["fetched_messages"] += len(messages)
+                        summary["fetched_records"] += len(records)
+                        duplicate_records = 0
+                        for record in records:
+                            identity = _wallet_sync_record_identity(record)
+                            if identity and identity in known_record_identities:
+                                duplicate_records += 1
+                                continue
+                            if identity:
+                                known_record_identities.add(identity)
+                        summary["fetched_unique_records"] = len(known_record_identities)
+                        summary["fetched_duplicate_records"] += duplicate_records
+                        if report.get("status") != REQUEST_OK:
+                            summary["peer_failures"] += 1
+                            if report.get("status") == REQUEST_TIMEOUT:
+                                summary["peer_timeouts"] += 1
+                        _emit_wallet_sync_progress(
+                            progress_callback,
+                            "peer_report",
+                            summary,
+                            address=address,
+                            peer=report.get("peer", ""),
+                            status=report.get("status", ""),
+                            direction=report.get("direction", ""),
+                            has_more=bool(report.get("has_more")),
+                            next_cursor=bool(report.get("next_cursor")),
+                            message_count=len(messages) + len(records),
+                        )
+                        if not process_records(records, "peer", peer=report.get("peer", "")):
+                            break
+                        if not process_messages(messages, "peer", peer=report.get("peer", "")):
+                            break
+
+                    if cancelled:
+                        break
+                    if legacy_request_without_builder:
+                        break
+                    round_processed_records = (
+                        int(summary.get("processed_records") or 0) - round_processed_start
+                    )
+                    legacy_known_token_request = (
+                        round_next_cursor is None
+                        and isinstance(sync_request, dict)
+                        and "known_tokens" in sync_request
+                    )
+                    if not (
+                        round_saw_delta_response
+                        and round_has_more
+                        and (round_next_cursor or legacy_known_token_request)
+                        and round_processed_records > 0
+                    ):
+                        break
+                    page_cursor = round_next_cursor
+
+            if cancelled:
+                break
 
             finalize_ready_bills("wallet_complete")
             settled = add_new_settled_bills("wallet_complete")
             if keys_v3.is_address(address):
-                waiting = store.bill_v3_records_for_owner(
-                    address,
-                    statuses=("pending",),
-                )
+                waiting = wallet_pending_records_for_address(address)
                 for record in waiting:
                     if record["status"] == "pending":
                         summary["pending"] += 1
@@ -2408,7 +2703,10 @@ def receive_bills(progress_callback=None):
                 summary,
                 address=address,
             )
+    if cancelled:
+        return summary
     if summary["wallets"] == 0:
         summary["errors"].append("No unlocked wallet.")
+    summary["status"] = "complete"
     _emit_wallet_sync_progress(progress_callback, "complete", summary)
     return summary

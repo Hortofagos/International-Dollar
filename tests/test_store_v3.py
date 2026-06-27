@@ -297,6 +297,342 @@ def test_store_v3_filters_unsupported_wallet_denominations(tmp_path):
     assert store.bill_v3_records_for_owner(fixture["bob_address"], statuses=("settled",)) == []
 
 
+def test_store_v3_count_records_do_not_decode_bill_blobs(tmp_path, monkeypatch):
+    fixture = native_v3_archive_fixture(tmp_path)
+    store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
+    store.store_archive_segment_v3(fixture["archive_segment"])
+    store.store_proof_bundle_v3(
+        fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+    )
+    bill = protocol_v3.create_bill_from_checkpoint_core(
+        fixture["genesis_ref"],
+        fixture["checkpoint_core"],
+        fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=fixture["archive_resolver"],
+    )
+    store.store_bill_v3(
+        bill,
+        status="settled",
+        trusted_operator_public_key=fixture["log_public"],
+    )
+
+    def fail_decode(_data):
+        raise AssertionError("count query must not decode bill blobs")
+
+    monkeypatch.setattr(protocol_v3, "decode_bill", fail_decode)
+
+    records = store.bill_v3_count_records_for_owner(
+        fixture["bob_address"],
+        statuses=("settled",),
+    )
+
+    assert len(records) == 1
+    assert records[0]["display_id"] == "1x1"
+    assert "bill_blob" not in records[0]
+
+
+def test_store_v3_metadata_records_do_not_decode_bill_blobs(tmp_path, monkeypatch):
+    monkeypatch.setenv("IND_LOG_ROOT_GOSSIP", "0")
+    store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
+    owner_address, _private_key, _public_key = keys_v3.generate_keypair(b"\x44" * 32)
+    with store._connect() as conn:
+        for index, display_id in enumerate(("1x1", "2x2"), start=1):
+            conn.execute(
+                """
+                INSERT INTO bills_v3(
+                    bill_hash, token_id, display_id, owner_address, sequence,
+                    checkpoint_hash, proof_bundle_hash, bill_blob,
+                    first_seen, updated_at, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"metadata-bill-{index}",
+                    f"metadata-token-{index}",
+                    display_id,
+                    owner_address,
+                    index,
+                    f"metadata-checkpoint-{index}",
+                    None,
+                    b"not-a-decodable-bill",
+                    index,
+                    10 + index,
+                    "settled",
+                ),
+            )
+
+    def fail_decode(_data):
+        raise AssertionError("metadata query must not decode bill blobs")
+
+    monkeypatch.setattr(protocol_v3, "decode_bill", fail_decode)
+
+    records = store.bill_v3_metadata_records_for_owner(
+        owner_address,
+        statuses=("settled",),
+        limit=1,
+    )
+
+    assert len(records) == 1
+    assert records[0]["display_id"] == "2x2"
+    assert records[0]["sequence"] == 2
+    assert "bill_blob" not in records[0]
+
+
+def _insert_wallet_sync_bill_row(
+    store,
+    owner_address,
+    *,
+    display_id,
+    sequence=1,
+    updated_at=1,
+    status="settled",
+    token_id=None,
+):
+    token_id = token_id or f"sync-token-{display_id}-{sequence}"
+    with store._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO bills_v3(
+                bill_hash, token_id, display_id, owner_address, sequence,
+                checkpoint_hash, proof_bundle_hash, bill_blob,
+                first_seen, updated_at, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"sync-bill-{display_id}-{sequence}",
+                token_id,
+                display_id,
+                owner_address,
+                sequence,
+                f"sync-checkpoint-{display_id}-{sequence}",
+                None,
+                b"not-used-by-this-test",
+                updated_at,
+                updated_at,
+                status,
+            ),
+        )
+
+
+def test_wallet_known_display_ranges_are_compact_and_blob_free(tmp_path, monkeypatch):
+    store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
+    owner_address, _private_key, _public_key = keys_v3.generate_keypair(b"\x45" * 32)
+    for display_id, sequence, updated_at in (
+        ("20x100", 1, 100),
+        ("20x101", 1, 101),
+        ("20x102", 1, 102),
+        ("20x104", 1, 104),
+        ("20x105", 2, 105),
+    ):
+        _insert_wallet_sync_bill_row(
+            store,
+            owner_address,
+            display_id=display_id,
+            sequence=sequence,
+            updated_at=updated_at,
+        )
+
+    def fail_decode(_data):
+        raise AssertionError("range inventory must not decode bill blobs")
+
+    monkeypatch.setattr(protocol_v3, "decode_bill", fail_decode)
+
+    ranges = store.wallet_known_display_ranges(
+        owner_address,
+        statuses=("settled",),
+        max_ranges=10,
+        max_bytes=4096,
+    )
+    capped = store.wallet_known_display_ranges(
+        owner_address,
+        statuses=("settled",),
+        max_ranges=1,
+        max_bytes=4096,
+    )
+
+    assert ranges == [[20, 100, 102, 1], [20, 104, 104, 1], [20, 105, 105, 2]]
+    assert capped == [[20, 100, 102, 1]]
+
+
+def test_bill_v3_metadata_records_for_owner_supports_offset(tmp_path, monkeypatch):
+    store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
+    owner_address, _private_key, _public_key = keys_v3.generate_keypair(b"\x47" * 32)
+    for index, display_id in enumerate(("1x1", "1x2", "1x3"), start=1):
+        _insert_wallet_sync_bill_row(
+            store,
+            owner_address,
+            display_id=display_id,
+            updated_at=100 + index,
+        )
+
+    def fail_decode(_data):
+        raise AssertionError("paged metadata query must not decode bill blobs")
+
+    monkeypatch.setattr(protocol_v3, "decode_bill", fail_decode)
+
+    records = store.bill_v3_metadata_records_for_owner(
+        owner_address,
+        statuses=("settled",),
+        limit=1,
+        offset=1,
+    )
+
+    assert [record["display_id"] for record in records] == ["1x2"]
+    assert "bill_blob" not in records[0]
+
+
+def test_wallet_bill_sync_response_skips_known_display_ranges_before_blob_decode(
+    tmp_path,
+    monkeypatch,
+):
+    store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
+    owner_address, _private_key, _public_key = keys_v3.generate_keypair(b"\x46" * 32)
+    _insert_wallet_sync_bill_row(store, owner_address, display_id="20x100", updated_at=300)
+    _insert_wallet_sync_bill_row(store, owner_address, display_id="20x101", updated_at=200)
+    _insert_wallet_sync_bill_row(store, owner_address, display_id="20x102", updated_at=100)
+    decoded_candidates = []
+    branch_checks = []
+
+    def allow_candidate(record):
+        decoded_candidates.append(record["display_id"])
+        return True
+
+    def newer_branch_check(_self, _conn, token_id, _sequence):
+        branch_checks.append(token_id)
+        return False
+
+    monkeypatch.setattr(store_module, "_bill_v3_record_has_allowed_value", allow_candidate)
+    monkeypatch.setattr(
+        INDLocalStore,
+        "_has_materialized_newer_v3_branch_conn",
+        newer_branch_check,
+    )
+    monkeypatch.setattr(
+        INDLocalStore,
+        "_wallet_sync_record_from_bill_row_v3",
+        lambda self, row: {
+            "type": "ind.wallet_bill_sync_record.v3",
+            "token_id": row["token_id"],
+            "display_id": row["display_id"],
+            "sequence": int(row["sequence"]),
+            "updated_at": int(row["updated_at"]),
+        },
+    )
+
+    response = store.wallet_bill_sync_response(
+        {
+            "address": owner_address,
+            "direction": "reconcile",
+            "known_display_ranges": [[20, 100, 101, 1]],
+            "limit": 10,
+        }
+    )
+
+    assert [record["display_id"] for record in response["records"]] == ["20x102"]
+    assert decoded_candidates == ["20x102"]
+    assert branch_checks == ["sync-token-20x102-1"]
+
+
+def test_wallet_bill_sync_response_skips_large_known_ranges_before_branch_lookup(
+    tmp_path,
+    monkeypatch,
+):
+    store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
+    owner_address, _private_key, _public_key = keys_v3.generate_keypair(b"\x48" * 32)
+    for serial in range(1, 301):
+        _insert_wallet_sync_bill_row(
+            store,
+            owner_address,
+            display_id=f"20x{serial}",
+            updated_at=1_000 + serial,
+        )
+    _insert_wallet_sync_bill_row(store, owner_address, display_id="20x301", updated_at=1)
+    _insert_wallet_sync_bill_row(store, owner_address, display_id="20x302", updated_at=2)
+    decoded_candidates = []
+    branch_checks = []
+
+    def allow_candidate(record):
+        decoded_candidates.append(record["display_id"])
+        return True
+
+    def newer_branch_check(_self, _conn, token_id, _sequence):
+        branch_checks.append(token_id)
+        return False
+
+    monkeypatch.setattr(store_module, "_bill_v3_record_has_allowed_value", allow_candidate)
+    monkeypatch.setattr(
+        INDLocalStore,
+        "_has_materialized_newer_v3_branch_conn",
+        newer_branch_check,
+    )
+    monkeypatch.setattr(
+        INDLocalStore,
+        "_wallet_sync_record_from_bill_row_v3",
+        lambda self, row: {
+            "type": "ind.wallet_bill_sync_record.v3",
+            "token_id": row["token_id"],
+            "display_id": row["display_id"],
+            "sequence": int(row["sequence"]),
+            "updated_at": int(row["updated_at"]),
+        },
+    )
+
+    response = store.wallet_bill_sync_response(
+        {
+            "address": owner_address,
+            "direction": "reconcile",
+            "known_display_ranges": [[20, 1, 300, 1]],
+            "limit": 10,
+        }
+    )
+
+    assert [record["display_id"] for record in response["records"]] == ["20x302", "20x301"]
+    assert decoded_candidates == ["20x302", "20x301"]
+    assert branch_checks == ["sync-token-20x302-1", "sync-token-20x301-1"]
+
+
+def test_wallet_bill_sync_response_does_not_skip_newer_sequence_in_known_range(
+    tmp_path,
+    monkeypatch,
+):
+    store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
+    owner_address, _private_key, _public_key = keys_v3.generate_keypair(b"\x47" * 32)
+    _insert_wallet_sync_bill_row(
+        store,
+        owner_address,
+        display_id="20x100",
+        sequence=2,
+        updated_at=100,
+    )
+
+    monkeypatch.setattr(store_module, "_bill_v3_record_has_allowed_value", lambda _record: True)
+    monkeypatch.setattr(
+        INDLocalStore,
+        "_wallet_sync_record_from_bill_row_v3",
+        lambda self, row: {
+            "type": "ind.wallet_bill_sync_record.v3",
+            "token_id": row["token_id"],
+            "display_id": row["display_id"],
+            "sequence": int(row["sequence"]),
+            "updated_at": int(row["updated_at"]),
+        },
+    )
+
+    response = store.wallet_bill_sync_response(
+        {
+            "address": owner_address,
+            "direction": "reconcile",
+            "known_display_ranges": [[20, 100, 100, 1]],
+            "limit": 10,
+        }
+    )
+
+    assert [(record["display_id"], record["sequence"]) for record in response["records"]] == [
+        ("20x100", 2)
+    ]
+
+
 def test_invalid_bills_v3_are_cleaned_from_cache_rows(tmp_path):
     fixture = native_v3_archive_fixture(tmp_path)
     store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
@@ -1118,6 +1454,72 @@ def test_wallet_bill_sync_records_import_without_receipts(tmp_path):
         client_store.wallet_delta_sync_request(fixture["carol_address"])
     )
     assert followup["records"] == []
+
+
+def test_wallet_bill_sync_response_pages_with_backfill_cursor(tmp_path, monkeypatch):
+    monkeypatch.setenv("IND_LOG_ROOT_GOSSIP", "0")
+    store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
+    owner_address, _private_key, _public_key = keys_v3.generate_keypair(b"\x46" * 32)
+    with store._connect() as conn:
+        for index, updated_at in enumerate((300, 200, 100), start=1):
+            conn.execute(
+                """
+                INSERT INTO bills_v3(
+                    bill_hash, token_id, display_id, owner_address, sequence,
+                    checkpoint_hash, proof_bundle_hash, bill_blob,
+                    first_seen, updated_at, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"sync-page-bill-{index}",
+                    f"sync-page-token-{index}",
+                    f"1x{index}",
+                    owner_address,
+                    1,
+                    f"sync-page-checkpoint-{index}",
+                    None,
+                    b"not-used-by-this-test",
+                    updated_at,
+                    updated_at,
+                    "settled",
+                ),
+            )
+
+    monkeypatch.setattr(store_module, "_bill_v3_record_has_allowed_value", lambda _record: True)
+    monkeypatch.setattr(
+        INDLocalStore,
+        "_wallet_sync_record_from_bill_row_v3",
+        lambda self, row: {
+            "type": "ind.wallet_bill_sync_record.v3",
+            "token_id": row["token_id"],
+            "display_id": row["display_id"],
+            "sequence": int(row["sequence"]),
+            "updated_at": int(row["updated_at"]),
+        },
+    )
+
+    first = store.wallet_bill_sync_response(
+        {"address": owner_address, "direction": "backfill", "limit": 2}
+    )
+    second = store.wallet_bill_sync_response(
+        {
+            "address": owner_address,
+            "direction": "backfill",
+            "limit": 2,
+            "cursor": first["next_cursor"],
+        }
+    )
+
+    assert [record["display_id"] for record in first["records"]] == ["1x1", "1x2"]
+    assert first["has_more"] is True
+    assert first["next_cursor"] == {
+        "updated_at": 200,
+        "sequence": 1,
+        "token_id": "sync-page-token-2",
+    }
+    assert [record["display_id"] for record in second["records"]] == ["1x3"]
+    assert second["has_more"] is False
+    assert second["next_cursor"] is None
 
 
 def test_store_v3_rejects_receipt_announcement_gossip(tmp_path):

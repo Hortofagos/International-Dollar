@@ -789,6 +789,8 @@ def _transient_ingest_error(exc):
         "mirror is lagging",
         "mirror has no historical root",
         "static http mirror has no historical root",
+        "current transparency root does not contain v3 transfer",
+        "current transparency root does not contain v3 checkpoint",
         "mirror has no signed roots",
         "consistency check cannot reach",
     )

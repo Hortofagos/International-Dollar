@@ -1,6 +1,7 @@
 # SQLite-backed local state for IND bill gossip and settlement.
 
 import contextlib
+import json
 import logging
 import os
 import sqlite3
@@ -68,6 +69,15 @@ V3_LOG_PROOF_RETRY_MAX_SECONDS = max(1, _env_int("IND_V3_LOG_PROOF_RETRY_MAX_SEC
 V3_LOG_PROOF_STALE_HTTP_400_ATTEMPTS = max(
     1, _env_int("IND_V3_LOG_PROOF_STALE_HTTP_400_ATTEMPTS", 3)
 )
+WALLET_SYNC_DISPLAY_RANGE_LIMIT = max(0, _env_int("IND_WALLET_SYNC_DISPLAY_RANGE_LIMIT", 2048))
+WALLET_SYNC_DISPLAY_RANGE_BYTES = max(
+    16 * 1024,
+    _env_int("IND_WALLET_SYNC_DISPLAY_RANGE_BYTES", 128 * 1024),
+)
+WALLET_SYNC_SERVER_SCAN_LIMIT = max(
+    10_000,
+    _env_int("IND_WALLET_SYNC_SERVER_SCAN_LIMIT", 100_000),
+)
 
 
 def _policy_int(value, default, minimum=0):
@@ -98,6 +108,17 @@ def _bill_v3_record_has_allowed_value(record):
         )
     except Exception:
         logger.debug("filtering invalid BillV3 wallet record", exc_info=True)
+        return False
+
+
+def _bill_v3_record_has_supported_display_id(record):
+    try:
+        from . import protocol_v3
+
+        protocol_v3.parse_display_id(str(record.get("display_id") or ""))
+        return True
+    except Exception:
+        logger.debug("filtering unsupported BillV3 wallet display id", exc_info=True)
         return False
 
 
@@ -1336,6 +1357,28 @@ class INDLocalStore:
             return None
         return protocol_v3.decode_bill(bytes(row["bill_blob"]))
 
+    # Return a stored BillV3 for a wallet display id at one exact sequence.
+    def get_bill_v3_by_display_id_sequence(self, display_id, sequence):
+        from . import protocol_v3
+
+        try:
+            sequence = int(sequence)
+        except (TypeError, ValueError):
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT bill_blob FROM bills_v3
+                WHERE display_id = ? AND sequence = ?
+                ORDER BY LENGTH(bill_blob) ASC, updated_at DESC
+                LIMIT 1
+                """,
+                (str(display_id), sequence),
+            ).fetchone()
+        if not row:
+            return None
+        return protocol_v3.decode_bill(bytes(row["bill_blob"]))
+
     # Remove one local, not-yet-settled BillV3 tip created for a cancelled outbound send.
     def discard_unsettled_bill_v3(
         self,
@@ -1390,15 +1433,17 @@ class INDLocalStore:
         return str(row["status"]) in {"pending", "settled", "verified"}
 
     def _has_materialized_newer_v3_branch_conn(self, conn, token_id, sequence):
-        rows = conn.execute(
+        row = conn.execute(
             """
-            SELECT * FROM bills_v3
-            WHERE token_id = ? AND sequence > ?
-            ORDER BY sequence DESC, updated_at DESC
+            SELECT 1 FROM bills_v3
+            WHERE token_id = ?
+              AND sequence > ?
+              AND status IN ('pending', 'settled', 'verified')
+            LIMIT 1
             """,
             (str(token_id), int(sequence)),
-        ).fetchall()
-        return any(self._newer_v3_branch_is_materialized_conn(conn, row) for row in rows)
+        ).fetchone()
+        return row is not None
 
     def get_spendable_bill_v3_by_display_id(self, display_id, owner_address):
         from . import protocol_v3
@@ -1425,7 +1470,7 @@ class INDLocalStore:
         return None
 
     # List stored BillV3 records for one owner address.
-    def bill_v3_records_for_owner(self, owner_address, statuses=None, limit=1000):
+    def bill_v3_records_for_owner(self, owner_address, statuses=None, limit=1000, offset=0):
         statuses = tuple(statuses or ("verified", "settled", "pending"))
         placeholders = ",".join("?" for _ in statuses)
         params = [owner_address, *statuses]
@@ -1433,6 +1478,9 @@ class INDLocalStore:
         if limit is not None:
             limit_clause = "LIMIT ?"
             params.append(int(limit))
+            if offset:
+                limit_clause += " OFFSET ?"
+                params.append(int(offset))
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
@@ -1457,6 +1505,49 @@ class INDLocalStore:
                     continue
                 records.append(record)
         return records
+
+    # List lightweight BillV3 row metadata for one owner without loading bill blobs.
+    def bill_v3_metadata_records_for_owner(self, owner_address, statuses=None, limit=None, offset=0):
+        statuses = tuple(statuses or ("verified", "settled", "pending"))
+        placeholders = ",".join("?" for _ in statuses)
+        params = [str(owner_address), *statuses]
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            params.append(int(limit))
+            if offset:
+                limit_clause += " OFFSET ?"
+                params.append(int(offset))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT bill_hash, token_id, display_id, owner_address, sequence, status,
+                       first_seen, updated_at
+                FROM bills_v3
+                WHERE owner_address = ? AND status IN ({placeholders})
+                ORDER BY updated_at DESC
+                {limit_clause}
+                """,
+                params,
+            ).fetchall()
+            records = []
+            for row in rows:
+                record = dict(row)
+                if not _bill_v3_record_has_supported_display_id(record):
+                    continue
+                if record["status"] in {
+                    "settled",
+                    "verified",
+                } and self._has_materialized_newer_v3_branch_conn(
+                    conn, record["token_id"], int(record["sequence"])
+                ):
+                    continue
+                records.append(record)
+        return records
+
+    # Count locally visible BillV3 rows for one owner without loading bill blobs.
+    def bill_v3_count_records_for_owner(self, owner_address, statuses=None):
+        return self.bill_v3_metadata_records_for_owner(owner_address, statuses=statuses)
 
     # Verify and persist one ConflictProofV3.
     def store_conflict_proof_v3(self, proof, expected_network_id=None):
@@ -3759,14 +3850,20 @@ class INDLocalStore:
             "sequence": int(record["sequence"]),
         }
 
-    def wallet_known_token_sequences(self, owner_address, statuses=None, limit=5000):
-        try:
-            limit = max(0, min(10000, int(limit)))
-        except (TypeError, ValueError):
-            limit = 5000
+    def wallet_known_token_sequences(self, owner_address, statuses=None, limit=None):
+        if limit is None:
+            limit_clause = ""
+            params_limit = []
+        else:
+            try:
+                limit = max(0, min(100000, int(limit)))
+            except (TypeError, ValueError):
+                limit = 5000
+            limit_clause = "LIMIT ?"
+            params_limit = [limit]
         statuses = tuple(statuses or ("settled", "verified"))
         placeholders = ",".join("?" for _ in statuses)
-        params = [str(owner_address), *statuses, limit]
+        params = [str(owner_address), *statuses, *params_limit]
         sequences = {}
         with self._connect() as conn:
             rows = conn.execute(
@@ -3776,13 +3873,86 @@ class INDLocalStore:
                 WHERE owner_address = ? AND status IN ({placeholders})
                 GROUP BY token_id
                 ORDER BY MAX(updated_at) DESC
-                LIMIT ?
+                {limit_clause}
                 """,
                 params,
             ).fetchall()
             for row in rows:
                 sequences[str(row["token_id"])] = int(row["max_sequence"])
         return sequences
+
+    def wallet_known_display_ranges(
+        self,
+        owner_address,
+        statuses=None,
+        *,
+        max_ranges=WALLET_SYNC_DISPLAY_RANGE_LIMIT,
+        max_bytes=WALLET_SYNC_DISPLAY_RANGE_BYTES,
+    ):
+        from . import protocol_v3
+
+        try:
+            max_ranges = max(0, int(max_ranges))
+        except (TypeError, ValueError):
+            max_ranges = WALLET_SYNC_DISPLAY_RANGE_LIMIT
+        try:
+            max_bytes = max(0, int(max_bytes))
+        except (TypeError, ValueError):
+            max_bytes = WALLET_SYNC_DISPLAY_RANGE_BYTES
+        if max_ranges <= 0 or max_bytes <= 0:
+            return []
+        points = []
+        for record in self.bill_v3_metadata_records_for_owner(
+            owner_address,
+            statuses=statuses or ("settled", "verified"),
+            limit=None,
+        ):
+            try:
+                parsed = protocol_v3.parse_display_id(str(record.get("display_id") or ""))
+                sequence = int(record.get("sequence"))
+            except Exception:
+                continue
+            if sequence <= 0:
+                continue
+            points.append((int(parsed["value"]), int(sequence), int(parsed["serial"])))
+        if not points:
+            return []
+        points.sort()
+        ranges = []
+        current_value = None
+        current_sequence = None
+        current_start = None
+        current_end = None
+        for value, sequence, serial in points:
+            if (
+                value == current_value
+                and sequence == current_sequence
+                and serial <= current_end + 1
+            ):
+                current_end = max(current_end, serial)
+                continue
+            if current_value is not None:
+                ranges.append([current_value, current_start, current_end, current_sequence])
+            current_value = value
+            current_sequence = sequence
+            current_start = serial
+            current_end = serial
+        if current_value is not None:
+            ranges.append([current_value, current_start, current_end, current_sequence])
+
+        # Prefer the widest spans when the wallet is too fragmented to fit the request budget.
+        ranges.sort(key=lambda item: (item[2] - item[1] + 1, -item[0], -item[3], -item[1]), reverse=True)
+        selected = []
+        used_bytes = 2
+        for item in ranges:
+            encoded = json.dumps(item, separators=(",", ":"))
+            extra = len(encoded.encode("utf-8")) + (1 if selected else 0)
+            if len(selected) >= max_ranges or used_bytes + extra > max_bytes:
+                break
+            selected.append(item)
+            used_bytes += extra
+        selected.sort(key=lambda item: (item[0], item[3], item[1], item[2]))
+        return selected
 
     def wallet_sync_updated_at_cursor(self, owner_address, statuses=None):
         statuses = tuple(statuses or ("settled", "verified"))
@@ -3798,24 +3968,79 @@ class INDLocalStore:
             ).fetchone()
         return int(row["cursor"] or 0) if row else 0
 
+    def wallet_sync_page_cursor(self, owner_address, statuses=None, newest=True):
+        statuses = tuple(statuses or ("settled", "verified"))
+        placeholders = ",".join("?" for _ in statuses)
+        order = "DESC" if newest else "ASC"
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT updated_at, sequence, token_id
+                FROM bills_v3
+                WHERE owner_address = ? AND status IN ({placeholders})
+                ORDER BY updated_at {order}, sequence {order}, token_id {order}
+                LIMIT 1
+                """,
+                [str(owner_address), *statuses],
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "updated_at": int(row["updated_at"]),
+            "sequence": int(row["sequence"]),
+            "token_id": str(row["token_id"]),
+        }
+
     def wallet_delta_sync_request(
         self,
         owner_address,
         *,
-        token_limit=5000,
+        token_limit=0,
         response_limit=100,
+        direction="backfill",
+        page_cursor=None,
+        display_range_limit=WALLET_SYNC_DISPLAY_RANGE_LIMIT,
+        display_range_bytes=WALLET_SYNC_DISPLAY_RANGE_BYTES,
     ):
-        return {
-            "type": "ind.wallet_bill_sync_request.v3",
-            "version": 2,
-            "address": str(owner_address),
-            "after_updated_at": self.wallet_sync_updated_at_cursor(owner_address),
-            "known_tokens": self.wallet_known_token_sequences(
+        direction = str(direction or "backfill").lower()
+        if direction not in {"newer", "backfill", "reconcile"}:
+            direction = "backfill"
+        cursor = page_cursor
+        if cursor is None and direction != "reconcile":
+            cursor = self.wallet_sync_page_cursor(
                 owner_address,
-                limit=token_limit,
-            ),
+                newest=(direction == "newer"),
+            )
+        request = {
+            "type": "ind.wallet_bill_sync_request.v3",
+            "version": 3,
+            "address": str(owner_address),
+            "direction": direction,
             "limit": int(response_limit),
         }
+        if cursor:
+            request["cursor"] = dict(cursor)
+            if direction == "newer":
+                request["after_updated_at"] = int(cursor["updated_at"])
+            else:
+                request["before_updated_at"] = int(cursor["updated_at"])
+        try:
+            token_limit = int(token_limit)
+        except (TypeError, ValueError):
+            token_limit = 0
+        if token_limit > 0:
+            request["known_tokens"] = self.wallet_known_token_sequences(
+                owner_address,
+                limit=token_limit,
+            )
+        known_display_ranges = self.wallet_known_display_ranges(
+            owner_address,
+            max_ranges=display_range_limit,
+            max_bytes=display_range_bytes,
+        )
+        if known_display_ranges:
+            request["known_display_ranges"] = known_display_ranges
+        return request
 
     def _parse_known_token_sequences_v3(self, known_token_sequences):
         parsed = {}
@@ -3828,6 +4053,78 @@ class INDLocalStore:
             except (TypeError, ValueError):
                 continue
         return parsed
+
+    def _parse_known_display_ranges_v3(self, known_display_ranges):
+        from . import protocol_v3
+
+        parsed = {}
+        if not isinstance(known_display_ranges, list):
+            return parsed
+        for item in known_display_ranges[:WALLET_SYNC_DISPLAY_RANGE_LIMIT]:
+            try:
+                if isinstance(item, dict):
+                    value = item.get("value", item.get("v"))
+                    start = item.get("start", item.get("s"))
+                    end = item.get("end", item.get("e", start))
+                    sequence = item.get("sequence", item.get("q"))
+                elif isinstance(item, (list, tuple)) and len(item) >= 4:
+                    value, start, end, sequence = item[:4]
+                else:
+                    continue
+                value = int(value)
+                start = int(start)
+                end = int(end)
+                sequence = int(sequence)
+                if start > end or sequence <= 0:
+                    continue
+                protocol_v3.canonical_display_id(value, start)
+                protocol_v3.canonical_display_id(value, end)
+            except Exception:
+                continue
+            parsed.setdefault(value, []).append((start, end, sequence))
+        for value in list(parsed):
+            parsed[value].sort(key=lambda entry: (entry[0], entry[1], entry[2]))
+        return parsed
+
+    def _display_id_covered_by_known_ranges_v3(self, display_id, sequence, known_display_ranges):
+        if not known_display_ranges:
+            return False
+        try:
+            from . import protocol_v3
+
+            parsed = protocol_v3.parse_display_id(str(display_id or ""))
+            serial = int(parsed["serial"])
+            ranges = known_display_ranges.get(int(parsed["value"])) or []
+            sequence = int(sequence)
+        except Exception:
+            return False
+        for start, end, known_sequence in ranges:
+            if start > serial:
+                break
+            if serial <= end and sequence <= int(known_sequence):
+                return True
+        return False
+
+    def _parse_wallet_sync_cursor_v3(self, request, direction):
+        cursor = request.get("cursor") if isinstance(request, dict) else None
+        cursor = cursor if isinstance(cursor, dict) else {}
+        if direction == "newer":
+            updated_at = cursor.get("updated_at", request.get("after_updated_at"))
+        else:
+            updated_at = cursor.get("updated_at", request.get("before_updated_at"))
+        try:
+            updated_at = int(updated_at)
+        except (TypeError, ValueError):
+            return None
+        try:
+            sequence = int(cursor.get("sequence", request.get("sequence", 0)) or 0)
+        except (TypeError, ValueError):
+            sequence = 0
+        return {
+            "updated_at": updated_at,
+            "sequence": sequence,
+            "token_id": str(cursor.get("token_id", request.get("token_id", "")) or ""),
+        }
 
     def _archive_segments_for_wallet_sync_bundle_v3(self, bundle):
         if bundle is None:
@@ -3868,34 +4165,76 @@ class INDLocalStore:
         }
 
     # Return owner-addressed BillV3 records not already covered by local wallet state.
-    def wallet_bill_sync_records(
+    def wallet_bill_sync_page(
         self,
         owner_address,
         *,
         known_token_sequences=None,
+        known_display_ranges=None,
         after_updated_at=None,
+        before_updated_at=None,
+        direction=None,
+        cursor=None,
         limit=100,
     ):
         known_token_sequences = self._parse_known_token_sequences_v3(known_token_sequences)
+        known_display_ranges = self._parse_known_display_ranges_v3(known_display_ranges)
         try:
             limit = max(1, min(500, int(limit)))
         except (TypeError, ValueError):
             limit = 100
+        direction = str(direction or "").lower()
+        if direction not in {"newer", "backfill", "reconcile"}:
+            direction = "newer" if after_updated_at and not before_updated_at else "backfill"
+        request_cursor = {"cursor": cursor or {}}
+        if after_updated_at is not None:
+            request_cursor["after_updated_at"] = after_updated_at
+        if before_updated_at is not None:
+            request_cursor["before_updated_at"] = before_updated_at
+        parsed_cursor = self._parse_wallet_sync_cursor_v3(request_cursor, direction)
         batch_size = max(limit, 250)
         offset = 0
         scanned = 0
+        scan_limit = max(WALLET_SYNC_SERVER_SCAN_LIMIT, limit * 100)
         records = []
+        next_cursor = None
+        order = "ASC" if direction == "newer" else "DESC"
+        cursor_clause = ""
+        cursor_params = []
+        if parsed_cursor is not None:
+            updated_at = int(parsed_cursor["updated_at"])
+            sequence = int(parsed_cursor["sequence"])
+            token_id = str(parsed_cursor["token_id"])
+            if direction == "newer":
+                cursor_clause = """
+                    AND (
+                        updated_at > ?
+                        OR (updated_at = ? AND sequence > ?)
+                        OR (updated_at = ? AND sequence = ? AND token_id > ?)
+                    )
+                """
+            else:
+                cursor_clause = """
+                    AND (
+                        updated_at < ?
+                        OR (updated_at = ? AND sequence < ?)
+                        OR (updated_at = ? AND sequence = ? AND token_id < ?)
+                    )
+                """
+            cursor_params = [updated_at, updated_at, sequence, updated_at, sequence, token_id]
         with self._connect() as conn:
-            while len(records) < limit and scanned < 10000:
+            while len(records) < limit and scanned < scan_limit:
                 rows = conn.execute(
-                    """
-                    SELECT *
+                    f"""
+                    SELECT bill_hash, token_id, display_id, owner_address, sequence, status,
+                           first_seen, updated_at
                     FROM bills_v3
                     WHERE owner_address = ? AND status IN ('settled', 'verified')
-                    ORDER BY updated_at DESC, sequence DESC
+                    {cursor_clause}
+                    ORDER BY updated_at {order}, sequence {order}, token_id {order}
                     LIMIT ? OFFSET ?
                     """,
-                    (str(owner_address), batch_size, offset),
+                    [str(owner_address), *cursor_params, batch_size, offset],
                 ).fetchall()
                 if not rows:
                     break
@@ -3906,22 +4245,72 @@ class INDLocalStore:
                     known_sequence = known_token_sequences.get(token_id)
                     if known_sequence is not None and int(row["sequence"]) <= int(known_sequence):
                         continue
-                    record = dict(row)
-                    if not _bill_v3_record_has_allowed_value(record):
+                    if self._display_id_covered_by_known_ranges_v3(
+                        row["display_id"],
+                        int(row["sequence"]),
+                        known_display_ranges,
+                    ):
                         continue
                     if self._has_materialized_newer_v3_branch_conn(
                         conn,
-                        record["token_id"],
-                        int(record["sequence"]),
+                        row["token_id"],
+                        int(row["sequence"]),
                     ):
                         continue
+                    full_row = conn.execute(
+                        """
+                        SELECT *
+                        FROM bills_v3
+                        WHERE bill_hash = ?
+                        LIMIT 1
+                        """,
+                        (row["bill_hash"],),
+                    ).fetchone()
+                    if not full_row:
+                        continue
+                    record = dict(full_row)
+                    if not _bill_v3_record_has_allowed_value(record):
+                        continue
                     try:
-                        records.append(self._wallet_sync_record_from_bill_row_v3(row))
+                        records.append(self._wallet_sync_record_from_bill_row_v3(full_row))
+                        next_cursor = {
+                            "updated_at": int(row["updated_at"]),
+                            "sequence": int(row["sequence"]),
+                            "token_id": str(row["token_id"]),
+                        }
                     except Exception:
                         logger.debug("skipping invalid BillV3 wallet sync record", exc_info=True)
                     if len(records) >= limit:
                         break
-        return records
+        return {
+            "records": records,
+            "has_more": len(records) >= limit,
+            "next_cursor": next_cursor if len(records) >= limit else None,
+            "direction": direction,
+        }
+
+    def wallet_bill_sync_records(
+        self,
+        owner_address,
+        *,
+        known_token_sequences=None,
+        known_display_ranges=None,
+        after_updated_at=None,
+        before_updated_at=None,
+        direction=None,
+        cursor=None,
+        limit=100,
+    ):
+        return self.wallet_bill_sync_page(
+            owner_address,
+            known_token_sequences=known_token_sequences,
+            known_display_ranges=known_display_ranges,
+            after_updated_at=after_updated_at,
+            before_updated_at=before_updated_at,
+            direction=direction,
+            cursor=cursor,
+            limit=limit,
+        )["records"]
 
     def wallet_bill_sync_response(self, request_or_address, *, limit=100):
         if isinstance(request_or_address, str):
@@ -3937,16 +4326,24 @@ class INDLocalStore:
         if not address:
             raise ValidationError("wallet bill sync request is missing address")
         requested_limit = request.get("limit", limit)
+        page = self.wallet_bill_sync_page(
+            address,
+            known_token_sequences=request.get("known_tokens") or {},
+            known_display_ranges=request.get("known_display_ranges") or [],
+            after_updated_at=request.get("after_updated_at"),
+            before_updated_at=request.get("before_updated_at"),
+            direction=request.get("direction"),
+            cursor=request.get("cursor"),
+            limit=requested_limit,
+        )
         return {
             "type": "ind.wallet_bill_sync_response.v3",
-            "version": 1,
+            "version": 2,
             "address": address,
-            "records": self.wallet_bill_sync_records(
-                address,
-                known_token_sequences=request.get("known_tokens") or {},
-                after_updated_at=request.get("after_updated_at"),
-                limit=requested_limit,
-            ),
+            "direction": page["direction"],
+            "records": page["records"],
+            "has_more": page["has_more"],
+            "next_cursor": page["next_cursor"],
         }
 
     def ingest_wallet_bill_sync_record(self, record):

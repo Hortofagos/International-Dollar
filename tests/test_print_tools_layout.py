@@ -1,6 +1,8 @@
+import csv
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from PIL import Image, ImageChops, ImageDraw
 from PyPDF2 import PdfReader
@@ -58,6 +60,31 @@ class PrintToolsLayoutTests(unittest.TestCase):
 
         self.assertLessEqual(abs(top - bottom), 1)
 
+    def test_wide_bill_columns_have_no_extra_gutter(self):
+        with Image.open(ARTWORK_DIR / "a4.png") as page_image:
+            page = page_image.copy()
+        with Image.open(ARTWORK_DIR / "2000.png") as bill_image:
+            bill_size = bill_image.size
+
+        top_row_boxes = [_slot_box(slot, page, bill_size) for slot in range(3)]
+        gaps = [
+            top_row_boxes[1][0] - top_row_boxes[0][2],
+            top_row_boxes[2][0] - top_row_boxes[1][2],
+        ]
+
+        self.assertEqual(gaps, [0, 0])
+
+    def test_back_bill_orientation_rotates_without_resizing(self):
+        image = Image.new("RGB", (2, 3), "white")
+        image.putpixel((0, 0), (255, 0, 0))
+        image.putpixel((1, 2), (0, 0, 255))
+
+        rotated = print_tools._orient_back_bill_for_long_edge_duplex(image)
+
+        self.assertEqual(rotated.size, image.size)
+        self.assertEqual(rotated.getpixel((0, 0)), (0, 0, 255))
+        self.assertEqual(rotated.getpixel((1, 2)), (255, 0, 0))
+
     def test_rendered_print_page_saves_as_pdf(self):
         with Image.open(ARTWORK_DIR / "a4.png") as page_image:
             page = page_image.copy()
@@ -83,11 +110,17 @@ class PrintToolsLayoutTests(unittest.TestCase):
             try:
                 print_tools.PRINT_OUTPUT_DIR = Path(tmpdir)
                 (print_tools.PRINT_OUTPUT_DIR / "stale.pdf").write_bytes(b"%PDF")
+                (print_tools.PRINT_OUTPUT_DIR / print_tools.PRINT_CHARGE_BACKUP_CSV).write_text(
+                    "stale", encoding="utf-8"
+                )
                 (print_tools.PRINT_OUTPUT_DIR / ".gitkeep").write_text("keep")
 
                 print_tools._clear_print_output_dir()
 
                 self.assertFalse((print_tools.PRINT_OUTPUT_DIR / "stale.pdf").exists())
+                self.assertFalse(
+                    (print_tools.PRINT_OUTPUT_DIR / print_tools.PRINT_CHARGE_BACKUP_CSV).exists()
+                )
                 self.assertTrue((print_tools.PRINT_OUTPUT_DIR / ".gitkeep").exists())
             finally:
                 print_tools.PRINT_OUTPUT_DIR = old_output_dir
@@ -125,6 +158,47 @@ class PrintToolsLayoutTests(unittest.TestCase):
             ["addr-for-100", "addr-for-20", "addr-for-1"],
         )
 
+    def test_charge_backup_csv_is_written_in_selection_order(self):
+        bills = [("100x5", "6"), ("20x1", "2"), ("1x1", "2")]
+        address_by_display_id = {
+            "1x1": "addr-for-1",
+            "20x1": "addr-for-20",
+            "100x5": "addr-for-100",
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            path = print_tools.write_charge_backup_csv(
+                bills,
+                address_by_display_id,
+                print_mode="full",
+                output_dir=tmpdir,
+                created_at="2026-06-25T10:00:00Z",
+            )
+
+            self.assertEqual(path.name, print_tools.PRINT_CHARGE_BACKUP_CSV)
+            with path.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+
+            self.assertEqual(
+                [(row["serial"], row["charge_address"], row["next_sequence"]) for row in rows],
+                [
+                    ("100x5", "addr-for-100", "6"),
+                    ("20x1", "addr-for-20", "2"),
+                    ("1x1", "addr-for-1", "2"),
+                ],
+            )
+            self.assertEqual([row["selection_index"] for row in rows], ["1", "2", "3"])
+            self.assertEqual([row["pdf_order_index"] for row in rows], ["3", "2", "1"])
+            self.assertEqual({row["print_mode"] for row in rows}, {"full"})
+            self.assertEqual(
+                print_tools.read_charge_backup_csv(path),
+                {
+                    "100x5": "addr-for-100",
+                    "20x1": "addr-for-20",
+                    "1x1": "addr-for-1",
+                },
+            )
+
     def test_upper_serial_uses_measured_width_for_short_and_long_ids(self):
         layer_width = 770 * print_tools.PRINT_ASSET_SCALE
         layer = Image.new('L', (layer_width, 310 * print_tools.PRINT_ASSET_SCALE))
@@ -158,6 +232,54 @@ class PrintToolsLayoutTests(unittest.TestCase):
                 x = print_tools._centered_text_x(draw, display_id, font, center_x)
 
                 self.assertAlmostEqual(x + left + (right - left) / 2, center_x, delta=0.5)
+
+    def test_back_bill_uses_centered_number_caption(self):
+        number_caption = "Number: 2"
+        captured = []
+        original_text = ImageDraw.ImageDraw.text
+
+        def capture_text(draw, xy, text, *args, **kwargs):
+            captured.append((xy, text, kwargs))
+            return original_text(draw, xy, text, *args, **kwargs)
+
+        with patch.object(ImageDraw.ImageDraw, "text", new=capture_text):
+            print_tools._render_bill_back(
+                "20x1\nprivate-key\npublic-key\n2",
+            )
+
+        rendered_text = [text for _xy, text, _kwargs in captured]
+        self.assertIn(number_caption, rendered_text)
+        self.assertNotIn("Number : 2", rendered_text)
+
+        caption_xy, _caption_text, caption_kwargs = next(
+            (xy, text, kwargs) for xy, text, kwargs in captured if text == number_caption
+        )
+        layer = Image.new(
+            'L',
+            (
+                print_tools.BACK_TEXT_LAYER_WIDTH,
+                print_tools.BACK_TEXT_LAYER_HEIGHT,
+            ),
+        )
+        draw = ImageDraw.Draw(layer)
+        font = caption_kwargs["font"]
+        left, _top, right, _bottom = draw.textbbox((0, 0), number_caption, font=font)
+        caption_center_x = caption_xy[0] + left + (right - left) / 2
+        qr_center_y_before_readable_rotation = (
+            print_tools.BACK_QR_Y + print_tools.QR_IMAGE_SIZE / 2
+        )
+        caption_center_y_before_readable_rotation = (
+            print_tools.BACK_TEXT_LAYER_Y
+            + print_tools.BACK_TEXT_LAYER_WIDTH
+            - caption_center_x
+        )
+        self.assertAlmostEqual(caption_center_x, print_tools.BACK_NUMBER_TEXT_CENTER_X, delta=0.5)
+        self.assertAlmostEqual(
+            caption_center_y_before_readable_rotation,
+            qr_center_y_before_readable_rotation,
+            delta=0.5,
+        )
+        self.assertEqual(caption_xy[1], print_tools.BACK_NUMBER_Y)
 
     def test_back_slots_align_with_front_slots_for_long_edge_duplex(self):
         with Image.open(ARTWORK_DIR / "a4.png") as page_image:

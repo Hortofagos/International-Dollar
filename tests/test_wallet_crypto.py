@@ -74,6 +74,7 @@ class WalletCryptoTests(unittest.TestCase):
                 "addr123",
                 "private-key",
                 "public-key",
+                wallet_name=" Main Wallet\nTest ",
                 bills=["1x-bill 0 0"],
             )
 
@@ -83,6 +84,7 @@ class WalletCryptoTests(unittest.TestCase):
             with open(encrypted_path, encoding="utf-8") as handle:
                 encrypted = json.load(handle)
             self.assertEqual(encrypted["format"], wallet_crypto.FORMAT)
+            self.assertEqual(encrypted["wallet_name"], "Main Wallet Test")
             self.assertEqual(encrypted["payload"]["cipher"], "AES-256-GCM")
             self.assertEqual(encrypted["wrappers"][0]["type"], wallet_crypto.PASSWORD_WRAPPER)
             self.assertEqual(encrypted["wrappers"][0]["kdf"], "Argon2id")
@@ -114,6 +116,25 @@ class WalletCryptoTests(unittest.TestCase):
 
             self.assertFalse(wallet_decryption.wallet_decrypt("wrong password", "addr123"))
             self.assertEqual(runtime_json.iter_decrypted_wallet_files(), [])
+
+    def test_wallet_name_is_optional_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir, temporary_cwd(temp_dir):
+            self._make_runtime_dirs()
+            runtime_json.write_wallet_generation("addr123", "private-key", "public-key")
+
+            wallet_encryption.wallet_encrypt(STRONG_PASSWORD, wallet_name="")
+
+            encrypted_path = "wallet_folder/wallet_encrypted_addr123.json"
+            with open(encrypted_path, encoding="utf-8") as handle:
+                encrypted = json.load(handle)
+            self.assertNotIn("wallet_name", encrypted)
+
+            self.assertTrue(wallet_decryption.wallet_decrypt(STRONG_PASSWORD, "addr123"))
+            decrypted_path = "wallet_folder/wallet_decrypted_addr123.json"
+            self.assertEqual(
+                runtime_json.read_decrypted_wallet_payload(decrypted_path),
+                "addr123\nprivate-key\npublic-key\n",
+            )
 
     def test_non_v3_wallet_payloads_do_not_unlock(self):
         with tempfile.TemporaryDirectory() as temp_dir, temporary_cwd(temp_dir):
