@@ -8,9 +8,9 @@
   "node_port": 18888,
   "status": "native-v3-gossip-testnet",
   "trusted_genesis_issuer_keys": [
-    "indpk3:7L`OuXdODXVcT^#5XESK?evqSnK^BVy~4&r?*>?E"
+    "indpk3:x=P|+kInO1oQ<Y4Y;fNA`{q$dJ&!CRUxU^C!RkaH"
   ],
   "trusted_genesis_manifest_hashes": [
-    "7cd4efbc3d2ffaadca8c6f6d75f6899738371e820b8cf54dbcb78484d27ee538"
+    "9d1a9cfeb6ceefa4aa39b702af1f5c6be204ddd5fb2e8dd1df0041a47dd31aa6"
   ]
 }
