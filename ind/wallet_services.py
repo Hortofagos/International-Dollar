@@ -178,6 +178,29 @@ def spendable_wallet_records(wallet_address, store=None, limit=None, offset=0):
     return []
 
 
+def spendable_wallet_display_ids(wallet_address, display_ids, store=None):
+    store = store or ind_token.INDLocalStore()
+    display_ids = [str(display_id).strip() for display_id in display_ids if str(display_id).strip()]
+    if not display_ids or not keys_v3.is_address(wallet_address):
+        return set()
+    display_id_lookup = getattr(store, "spendable_bill_v3_display_ids", None)
+    if callable(display_id_lookup):
+        return set(display_id_lookup(wallet_address, display_ids))
+    spendable_lookup = getattr(store, "get_spendable_bill_v3_by_display_id", None)
+    if callable(spendable_lookup):
+        return {
+            display_id
+            for display_id in display_ids
+            if spendable_lookup(display_id, wallet_address)
+        }
+    selected_ids = set(display_ids)
+    return {
+        str(record.get("display_id") or "").strip()
+        for record in spendable_wallet_records(wallet_address, store=store, limit=None)
+        if str(record.get("display_id") or "").strip() in selected_ids
+    }
+
+
 # List locally known incoming bills that are visible but not spendable yet.
 def pending_wallet_records(wallet_address, store=None, limit=None, offset=0):
     store = store or ind_token.INDLocalStore()

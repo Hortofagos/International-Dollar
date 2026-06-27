@@ -14,7 +14,62 @@ def keypair():
     return private_key, public_key
 
 
+def static_root(timestamp, tree_size=1, label="root"):
+    return {
+        "type": log_client.LOG_ROOT_TYPE,
+        "version": log_client.LOG_VERSION,
+        "log_id": "log-" + str(label),
+        "tree_size": int(tree_size),
+        "timestamp": int(timestamp),
+        "root_hash": ind_token.sha3_hex(f"{label}:{timestamp}:{tree_size}".encode("utf-8")),
+    }
+
+
+class FakeHTTPStaticRootMirror(log_client.HTTPStaticRootMirror):
+    def __init__(self, root_batches, now):
+        super().__init__(
+            "https://example.test/transparency",
+            cache_ttl_seconds=20,
+            now_func=lambda: now[0],
+        )
+        self.root_batches = [list(batch) for batch in root_batches]
+        self.fetch_count = 0
+
+    def _roots_from_jsonl(self):
+        self.fetch_count += 1
+        if len(self.root_batches) > 1:
+            return self.root_batches.pop(0)
+        return list(self.root_batches[0])
+
+
 class OperatorRootStreamerTests(unittest.TestCase):
+    def test_http_static_root_cache_refreshes_after_ttl(self):
+        now = [100.0]
+        first = static_root(1_700_000_000, label="first")
+        second = static_root(1_700_000_020, label="second")
+        mirror = FakeHTTPStaticRootMirror([[first], [second]], now)
+
+        self.assertEqual(mirror.roots()[0]["root_hash"], first["root_hash"])
+        self.assertEqual(mirror.fetch_count, 1)
+        now[0] += 19
+        self.assertEqual(mirror.roots()[0]["root_hash"], first["root_hash"])
+        self.assertEqual(mirror.fetch_count, 1)
+        now[0] += 2
+
+        self.assertEqual(mirror.roots()[0]["root_hash"], second["root_hash"])
+        self.assertEqual(mirror.fetch_count, 2)
+
+    def test_http_static_root_cache_refreshes_on_historical_miss(self):
+        now = [100.0]
+        old_root = static_root(1_700_000_000, label="old")
+        fresh_root = static_root(1_700_000_040, label="fresh")
+        mirror = FakeHTTPStaticRootMirror([[old_root], [old_root, fresh_root]], now)
+
+        root = mirror.root_at(1_700_000_040)
+
+        self.assertEqual(root["root_hash"], fresh_root["root_hash"])
+        self.assertEqual(mirror.fetch_count, 2)
+
     def test_publish_once_writes_static_website_root_log(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             private_key, public_key = keypair()

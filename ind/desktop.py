@@ -4279,15 +4279,11 @@ def charge_bills():
                     + preview_display_ids(missing)
                 )
 
-            spendable_records = wallet_services.spendable_wallet_records(
+            spendable_ids = wallet_services.spendable_wallet_display_ids(
                 wallet_address,
+                list_sm,
                 store=store,
-                limit=None,
             )
-            spendable_ids = {
-                str(record.get("display_id") or "").strip()
-                for record in spendable_records
-            }
             not_ready = [
                 display_id
                 for display_id in list_sm

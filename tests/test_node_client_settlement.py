@@ -1,3 +1,4 @@
+import copy
 import json
 import threading
 import time
@@ -700,6 +701,109 @@ def test_invalid_rate_limit_lane_does_not_starve_critical_conflict_lane():
     assert store.ingested == [(ind_token.unpack_wire_message(proof), "attacker")]
 
 
+def test_critical_lane_exhaustion_does_not_block_v3_conflict_proof():
+    limits = node_client._lane_limit_config("desktop")
+    for scope in ("ip", "subnet", "global"):
+        limits["critical"][scope] = (1, 1)
+        limits["evidence"][scope] = (100, 100)
+    rate_limiter = node_client.PeerRateLimiter(
+        window_seconds=60,
+        limits=limits,
+        now_func=lambda: 1.0,
+    )
+    penalties = node_client.PeerPenaltyBook()
+    seen = node_client.BoundedSeenSet()
+    store = FakeGossipStore()
+    gossip_pool = []
+    proof = ind_token.pack_wire_message(_v3_conflict_proof_message())
+
+    assert rate_limiter.allow_lane("attacker", "critical").allowed
+    assert not rate_limiter.allow_lane("attacker", "critical").allowed
+
+    response = node_client.handle_incoming_gossip(
+        "attacker",
+        proof,
+        seen,
+        rate_limiter,
+        store,
+        gossip_pool,
+        penalties,
+    )
+
+    assert response == "ok"
+    assert store.ingested == [(ind_token.unpack_wire_message(proof), "attacker")]
+
+
+def test_evidence_verification_lane_backpressures_v3_conflict_proof_cpu():
+    limits = node_client._lane_limit_config("desktop")
+    for scope in ("ip", "subnet", "global"):
+        limits["evidence"][scope] = (1, 1)
+    rate_limiter = node_client.PeerRateLimiter(
+        window_seconds=60,
+        limits=limits,
+        now_func=lambda: 1.0,
+    )
+    penalties = node_client.PeerPenaltyBook()
+    seen = node_client.BoundedSeenSet()
+    store = FakeGossipStore()
+    gossip_pool = []
+    proof = ind_token.pack_wire_message(_v3_conflict_proof_message())
+
+    assert rate_limiter.allow_lane("attacker", "evidence").allowed
+
+    response = node_client.handle_incoming_gossip(
+        "attacker",
+        proof,
+        seen,
+        rate_limiter,
+        store,
+        gossip_pool,
+        penalties,
+    )
+
+    assert response.startswith("rate_limited:")
+    assert store.ingested == []
+
+
+def test_v3_conflict_proof_stable_key_dedupes_changed_detected_at():
+    rate_limiter = node_client.PeerRateLimiter(window_seconds=60)
+    penalties = node_client.PeerPenaltyBook()
+    seen = node_client.BoundedSeenSet()
+    store = FakeGossipStore()
+    gossip_pool = []
+    proof = _v3_conflict_proof_message()
+    replay = copy.deepcopy(proof)
+    replay["detected_at"] = int(replay["detected_at"]) + 1
+    replay["proof_hash"] = protocol_v3.conflict_proof_hash(replay)
+
+    assert (
+        node_client.handle_incoming_gossip(
+            "peer-a",
+            ind_token.pack_wire_message(proof),
+            seen,
+            rate_limiter,
+            store,
+            gossip_pool,
+            penalties,
+        )
+        == "ok"
+    )
+    assert (
+        node_client.handle_incoming_gossip(
+            "peer-a",
+            ind_token.pack_wire_message(replay),
+            seen,
+            rate_limiter,
+            store,
+            gossip_pool,
+            penalties,
+        )
+        == "ok"
+    )
+
+    assert store.ingested == [(proof, "peer-a")]
+
+
 def test_batch_gossip_reports_mixed_results():
     rate_limiter = node_client.PeerRateLimiter()
     penalties = node_client.PeerPenaltyBook()
@@ -871,7 +975,14 @@ def test_v3_transfer_tampered_encoded_bill_rejected_before_queue(tmp_path):
 
 
 def test_v3_conflict_proof_extra_top_level_field_rejected_before_queue():
-    rate_limiter = node_client.PeerRateLimiter(window_seconds=60)
+    limits = node_client._lane_limit_config("desktop")
+    for scope in ("ip", "subnet", "global"):
+        limits["evidence"][scope] = (1, 1)
+    rate_limiter = node_client.PeerRateLimiter(
+        window_seconds=60,
+        limits=limits,
+        now_func=lambda: 1.0,
+    )
     penalties = node_client.PeerPenaltyBook()
     seen = node_client.BoundedSeenSet()
     store = FakeGossipStore()
@@ -902,6 +1013,21 @@ def test_v3_conflict_proof_extra_top_level_field_rejected_before_queue():
     assert response == "invalid"
     assert store.ingested == []
     assert len(ingest_queue.queues["critical"].queue) == 0
+
+    valid = _v3_conflict_proof_message()
+    response = node_client.handle_incoming_gossip(
+        "peer-a",
+        ind_token.pack_wire_message(valid),
+        seen,
+        rate_limiter,
+        store,
+        gossip_pool,
+        penalties,
+        ingest_queue=ingest_queue,
+    )
+
+    assert response == "ok"
+    assert store.ingested == [(valid, "peer-a")]
 
 
 def test_v3_unanchored_conflict_proof_rejected_by_public_gossip(tmp_path):

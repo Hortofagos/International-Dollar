@@ -65,6 +65,8 @@ DEFAULT_UNKNOWN_PEER_ROOT_CAP_PER_LOG_ID = 100
 DEFAULT_OPERATOR_APPEND_FANOUT = 5
 MAX_OPERATOR_APPEND_FANOUT = 50
 DEFAULT_OPERATOR_CORE_DOMAINS = ("international-dollar.com", "internetofthebots.com")
+DEFAULT_HTTP_STATIC_ROOT_CACHE_SECONDS = 20
+HTTP_STATIC_ROOT_CACHE_SECONDS_ENV = "IND_LOG_MIRROR_ROOT_CACHE_SECONDS"
 UNSAFE_SINGLE_MIRROR_ENV = "IND_LOG_UNSAFE_SINGLE_MIRROR"
 ACCEPT_LEGACY_ALGORITHM_NAMES_ENV = "IND_LOG_ACCEPT_LEGACY_ALGORITHM_NAMES"
 STRICT_UNSAFE_SINGLE_MIRROR_ERROR = (
@@ -134,6 +136,18 @@ def canonical_bytes(data):
 
 def _env_true(name):
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name, default, minimum=None, maximum=None):
+    try:
+        result = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        result = int(default)
+    if minimum is not None:
+        result = max(int(minimum), result)
+    if maximum is not None:
+        result = min(int(maximum), result)
+    return result
 
 
 def _settings_module():
@@ -3083,10 +3097,21 @@ class VerifyOnlyTransparencyOperator:
 
 # Client for a static HTTP root mirror produced by operator_tools.root_streamer.
 class HTTPStaticRootMirror:
-    def __init__(self, base_url, timeout=10):
+    def __init__(self, base_url, timeout=10, cache_ttl_seconds=None, now_func=None):
         self.http = HTTPJSONClient(base_url, timeout=timeout)
         self.identity_id = self.http.identity_id
+        self.cache_ttl_seconds = (
+            _env_int(
+                HTTP_STATIC_ROOT_CACHE_SECONDS_ENV,
+                DEFAULT_HTTP_STATIC_ROOT_CACHE_SECONDS,
+                minimum=0,
+            )
+            if cache_ttl_seconds is None
+            else max(0, int(cache_ttl_seconds))
+        )
+        self._now_func = now_func or time.monotonic
         self._roots_cache = None
+        self._roots_cache_loaded_at = None
 
     def _roots_from_jsonl(self):
         request = urllib.request.Request(
@@ -3097,8 +3122,16 @@ class HTTPStaticRootMirror:
             text = response.read().decode("utf-8")
         return [json.loads(line) for line in text.splitlines() if line.strip()]
 
-    def roots(self):
-        if self._roots_cache is not None:
+    def _roots_cache_valid(self, now):
+        if self._roots_cache is None or self._roots_cache_loaded_at is None:
+            return False
+        if self.cache_ttl_seconds <= 0:
+            return False
+        return float(now) - float(self._roots_cache_loaded_at) < float(self.cache_ttl_seconds)
+
+    def roots(self, force_refresh=False):
+        now = self._now_func()
+        if not force_refresh and self._roots_cache_valid(now):
             return [copy.deepcopy(root) for root in self._roots_cache]
         roots = []
         seen = set()
@@ -3109,11 +3142,18 @@ class HTTPStaticRootMirror:
             seen.add(current_id)
             roots.append(root)
         self._roots_cache = [copy.deepcopy(root) for root in roots]
-        return roots
+        self._roots_cache_loaded_at = now
+        return [copy.deepcopy(root) for root in self._roots_cache]
 
     def root_at(self, timestamp):
         timestamp = int(timestamp)
         candidates = [root for root in self.roots() if int(root.get("timestamp", -1)) >= timestamp]
+        if not candidates:
+            candidates = [
+                root
+                for root in self.roots(force_refresh=True)
+                if int(root.get("timestamp", -1)) >= timestamp
+            ]
         if not candidates:
             raise RootVerificationError("static HTTP mirror has no historical root for timestamp")
         return sorted(

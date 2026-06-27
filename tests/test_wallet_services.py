@@ -248,6 +248,28 @@ def test_wallet_record_queries_are_unlimited_by_default():
     ]
 
 
+def test_spendable_wallet_display_ids_uses_targeted_store_lookup():
+    address, _private_key, _public_key = keys_v3.generate_keypair(
+        b"wallet-targeted-spendable-lookup"
+    )
+    calls = []
+
+    class Store:
+        def spendable_bill_v3_display_ids(self, owner_address, display_ids):
+            calls.append((owner_address, list(display_ids)))
+            return {"20x1", "50x2"}
+
+        def bill_v3_records_for_owner(self, *args, **kwargs):
+            raise AssertionError("full spendable wallet scan should not be used")
+
+    assert wallet_services.spendable_wallet_display_ids(
+        address,
+        ["20x1", "50x2", "100x3"],
+        store=Store(),
+    ) == {"20x1", "50x2"}
+    assert calls == [(address, ["20x1", "50x2", "100x3"])]
+
+
 def test_validate_recipient_address_accepts_generated_v3_address():
     address = "x324sq85mgDVTGK4oHXw2b2LHh4YFriSx"
 

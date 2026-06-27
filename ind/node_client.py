@@ -329,6 +329,16 @@ def _subnet_key(value):
 
 def _lane_limit_config(profile=None):
     profile = resolve_node_capacity_profile(profile)
+    evidence_subnet_rate = _env_float(
+        "IND_NODE_EVIDENCE_RATE_PER_SUBNET",
+        _profile_default(profile, 20, 200),
+        minimum=1,
+    )
+    evidence_subnet_burst = _env_int(
+        "IND_NODE_EVIDENCE_BURST_PER_SUBNET",
+        _profile_default(profile, 200, 2000),
+        minimum=1,
+    )
     critical_subnet_rate = _env_float(
         "IND_NODE_CRITICAL_RATE_PER_SUBNET",
         _profile_default(profile, 40, 400),
@@ -386,6 +396,33 @@ def _lane_limit_config(profile=None):
                 _env_int(
                     "IND_NODE_GOSSIP_BURST_PER_IP",
                     _profile_default(profile, 1000, 25000),
+                    minimum=1,
+                ),
+            ),
+        },
+        "evidence": {
+            "global": (
+                _env_float(
+                    "IND_NODE_EVIDENCE_RATE_GLOBAL",
+                    _profile_default(profile, 50, 500),
+                    minimum=1,
+                ),
+                _env_int(
+                    "IND_NODE_EVIDENCE_BURST_GLOBAL",
+                    _profile_default(profile, 500, 5000),
+                    minimum=1,
+                ),
+            ),
+            "subnet": (evidence_subnet_rate, evidence_subnet_burst),
+            "ip": (
+                _env_float(
+                    "IND_NODE_EVIDENCE_RATE_PER_IP",
+                    _profile_default(profile, 5, 50),
+                    minimum=1,
+                ),
+                _env_int(
+                    "IND_NODE_EVIDENCE_BURST_PER_IP",
+                    _profile_default(profile, 50, 500),
                     minimum=1,
                 ),
             ),
@@ -537,6 +574,8 @@ class PeerRateLimiter:
     def _lane_for_bucket(self, bucket):
         if bucket in {"gossip", "root_gossip"}:
             return "gossip"
+        if bucket in {"evidence", "evidence_verification"}:
+            return "evidence"
         if bucket in {"equivocation_gossip", "critical"}:
             return "critical"
         if bucket in {"gossip_decode_error", "invalid"}:
@@ -812,13 +851,101 @@ def _prevalidate_v3_gossip_envelope(message):
     from . import protocol_v3
 
     message_type = message.get("type") if isinstance(message, dict) else None
+    if message_type == protocol_v3.CONFLICT_PROOF_TYPE:
+        return {"evidence_key": _cheap_prevalidate_v3_conflict_proof(message)}
     if message_type in {
         ind_token.TRANSPARENCY_ROOT_ANNOUNCEMENT_TYPE,
         ind_token.TRANSPARENCY_EQUIVOCATION_PROOF_TYPE,
         ind_token.TRANSPARENCY_OPERATOR_POLICY_VIOLATION_TYPE,
     }:
-        return
+        return {}
     protocol_v3.validate_gossip_envelope_shape(message)
+    return {}
+
+
+def _cheap_require_int(value, label, minimum=None):
+    if type(value) is not int:
+        raise ind_token.ValidationError(f"{label} must be an integer")
+    if minimum is not None and value < int(minimum):
+        raise ind_token.ValidationError(f"{label} is below the allowed range")
+    return value
+
+
+def _cheap_require_hex32(value, label):
+    if not isinstance(value, str) or len(value) != 64:
+        raise ind_token.ValidationError(f"invalid {label}")
+    try:
+        bytes.fromhex(value)
+    except ValueError as exc:
+        raise ind_token.ValidationError(f"invalid {label}") from exc
+    return value.lower()
+
+
+def _cheap_prevalidate_v3_conflict_proof(message):
+    from . import protocol_v3
+
+    if not isinstance(message, dict) or set(message) != set(protocol_v3.CONFLICT_PROOF_FIELDS):
+        raise ind_token.ValidationError("malformed ConflictProofV3")
+    if message["type"] != protocol_v3.CONFLICT_PROOF_TYPE:
+        raise ind_token.ValidationError("not a ConflictProofV3")
+    if _cheap_require_int(message["version"], "ConflictProofV3 version") != protocol_v3.VERSION:
+        raise ind_token.ValidationError("unsupported ConflictProofV3 version")
+    network_id = _cheap_require_int(
+        message["network_id"], "ConflictProofV3 network id", minimum=0
+    )
+    _cheap_require_hex32(message["token_id"], "ConflictProofV3 token id")
+    _cheap_require_hex32(message["previous_hash"], "ConflictProofV3 previous hash")
+    _cheap_require_int(message["sequence"], "ConflictProofV3 sequence", minimum=1)
+    _cheap_require_hex32(message["spend_key"], "ConflictProofV3 spend key")
+    _cheap_require_hex32(message["transfer_hash_a"], "ConflictProofV3 transfer hash a")
+    _cheap_require_hex32(message["transfer_hash_b"], "ConflictProofV3 transfer hash b")
+    _cheap_require_int(message["detected_at"], "ConflictProofV3 detected_at", minimum=0)
+    _cheap_require_hex32(message["proof_hash"], "ConflictProofV3 proof hash")
+
+    transfer_a = message["transfer_a"]
+    transfer_b = message["transfer_b"]
+    try:
+        protocol_v3._validate_transfer_shape(transfer_a, network_id)
+        protocol_v3._validate_transfer_shape(transfer_b, network_id)
+    except Exception as exc:
+        raise ind_token.ValidationError(str(exc)) from exc
+
+    for transfer in (transfer_a, transfer_b):
+        if transfer["token_id"] != message["token_id"]:
+            raise ind_token.ValidationError(
+                "ConflictProofV3 transfers reference different bills"
+            )
+        if transfer["previous_hash"] != message["previous_hash"]:
+            raise ind_token.ValidationError(
+                "ConflictProofV3 transfers do not share a previous hash"
+            )
+        if int(transfer["sequence"]) != int(message["sequence"]):
+            raise ind_token.ValidationError("ConflictProofV3 transfers do not share a sequence")
+        if transfer["sender_address"] != message["sender_address"]:
+            raise ind_token.ValidationError("ConflictProofV3 transfers do not share a sender")
+
+    spend_key = protocol_v3.spend_key_for_transfer(transfer_a)
+    if spend_key != protocol_v3.spend_key_for_transfer(transfer_b):
+        raise ind_token.ValidationError("ConflictProofV3 transfers do not share a spend key")
+    if spend_key != message["spend_key"]:
+        raise ind_token.ValidationError("ConflictProofV3 spend key mismatch")
+
+    hash_a = protocol_v3.transfer_hash(transfer_a)
+    hash_b = protocol_v3.transfer_hash(transfer_b)
+    if hash_a == hash_b:
+        raise ind_token.ValidationError("ConflictProofV3 requires two different transfers")
+    expected_hash_a, expected_hash_b = sorted((hash_a, hash_b))
+    if (
+        message["transfer_hash_a"] != expected_hash_a
+        or message["transfer_hash_b"] != expected_hash_b
+    ):
+        raise ind_token.ValidationError("ConflictProofV3 transfer hash mismatch")
+
+    try:
+        key = protocol_v3.conflict_proof_key(message)
+    except Exception as exc:
+        raise ind_token.ValidationError(str(exc)) from exc
+    return "conflict_v3:" + key
 
 
 def prepare_incoming_gossip(peer_ip, raw, seen, rate_limiter):
@@ -831,10 +958,36 @@ def prepare_incoming_gossip(peer_ip, raw, seen, rate_limiter):
     message = ind_token.unpack_wire_message(raw)
     if not isinstance(message, dict):
         raise ind_token.ValidationError("malformed gossip message")
-    _prevalidate_v3_gossip_envelope(message)
+    prevalidation = _prevalidate_v3_gossip_envelope(message)
+    evidence_key = prevalidation.get("evidence_key") if isinstance(prevalidation, dict) else None
     mh = ind_token.message_hash(message)
-    if mh in seen:
+    if mh in seen or (evidence_key and evidence_key in seen):
         return {"accepted": False, "duplicate": True, "message_hash": mh, "message": message}
+    if evidence_key:
+        decision = rate_limiter.allow_lane(peer_ip, "evidence")
+        if not decision.allowed:
+            return {
+                "accepted": False,
+                "rate_limited": True,
+                "retry_after_seconds": decision.retry_after_seconds,
+                "message_hash": mh,
+                "message": message,
+                "lane": "critical",
+                "evidence_key": evidence_key,
+            }
+        from . import protocol_v3
+
+        protocol_v3.verify_conflict_proof(
+            message,
+            expected_network_id=message["network_id"],
+        )
+        return {
+            "accepted": True,
+            "message_hash": mh,
+            "message": message,
+            "lane": "critical",
+            "evidence_key": evidence_key,
+        }
     lane, _limit = gossip_rate_bucket(message.get("type"))
     decision = rate_limiter.allow_lane(peer_ip, lane)
     if not decision.allowed:
@@ -874,6 +1027,14 @@ def _gossip_type_requires_sync_ingest(message_type):
     return message_type == protocol_v3.CONFLICT_PROOF_TYPE
 
 
+def _prepared_seen_keys(prepared):
+    keys = [prepared.get("message_hash")]
+    evidence_key = prepared.get("evidence_key")
+    if evidence_key:
+        keys.append(evidence_key)
+    return [key for key in keys if key]
+
+
 def _ingest_prepared_gossip(
     peer_ip,
     prepared,
@@ -886,14 +1047,17 @@ def _ingest_prepared_gossip(
 ):
     message = prepared["message"]
     message_hash = prepared["message_hash"]
+    seen_keys = _prepared_seen_keys(prepared)
     try:
         result = store.ingest_message(message, peer_id=peer_ip)
     except Exception as exc:
         if _transient_ingest_error(exc):
             if keep_seen_on_retry:
-                seen_gossip.add(message_hash)
+                for key in seen_keys:
+                    seen_gossip.add(key)
             else:
-                seen_gossip.discard(message_hash)
+                for key in seen_keys:
+                    seen_gossip.discard(key)
             logger.warning("deferred IND gossip from %s: %s", peer_ip, exc)
             return {
                 "status": "retryable",
@@ -903,11 +1067,13 @@ def _ingest_prepared_gossip(
             }
         if _should_penalize_ingest_error(exc):
             penalties.penalize(peer_ip)
-        seen_gossip.discard(message_hash)
+        for key in seen_keys:
+            seen_gossip.discard(key)
         logger.warning("rejected invalid IND gossip from %s: %s", peer_ip, exc)
         return {"status": "rejected", "message_hash": message_hash, "error": str(exc)}
     if result.get("accepted"):
-        seen_gossip.add(message_hash)
+        for key in seen_keys:
+            seen_gossip.add(key)
         if result.get("relay", True):
             append_gossip(
                 gossip_pool,
@@ -915,7 +1081,8 @@ def _ingest_prepared_gossip(
                 high_priority=_high_priority_gossip_type(message.get("type")),
             )
     else:
-        seen_gossip.discard(message_hash)
+        for key in seen_keys:
+            seen_gossip.discard(key)
     queue_store_result_gossip(gossip_pool, result)
     if result.get("conflict_proof"):
         logger.warning("queued double-spend proof from %s", peer_ip)
@@ -950,7 +1117,8 @@ def _ingest_prepared_gossip_with_transient_retry(
             return result
         if attempt < attempts:
             time.sleep(retry_delay)
-    seen_gossip.discard(prepared["message_hash"])
+    for key in _prepared_seen_keys(prepared):
+        seen_gossip.discard(key)
     logger.warning(
         "dropped deferred IND gossip from %s after %s transient verification attempts",
         peer_ip,
@@ -962,7 +1130,8 @@ def _ingest_prepared_gossip_with_transient_retry(
 def _queue_async_gossip_ingest(peer_ip, prepared, seen_gossip, store, gossip_pool, penalties):
     if not _ASYNC_GOSSIP_INGEST_SLOTS.acquire(blocking=False):
         return False
-    seen_gossip.add(prepared["message_hash"])
+    for key in _prepared_seen_keys(prepared):
+        seen_gossip.add(key)
 
     def ingest():
         try:
@@ -1018,11 +1187,13 @@ class GossipIngestQueue:
         lane = prepared.get("lane") or _gossip_lane(prepared["message"].get("type"))
         target_queue = self._queue_for_lane(lane)
         try:
-            self.seen_gossip.add(prepared["message_hash"])
+            for key in _prepared_seen_keys(prepared):
+                self.seen_gossip.add(key)
             target_queue.put_nowait((peer_ip, prepared))
             return RateLimitDecision(True, 0.0)
         except queue.Full:
-            self.seen_gossip.discard(prepared["message_hash"])
+            for key in _prepared_seen_keys(prepared):
+                self.seen_gossip.discard(key)
             maxsize = max(1, int(target_queue.maxsize))
             retry_after = max(1.0, min(30.0, 1.0 + (target_queue.qsize() / maxsize) * 10.0))
             return RateLimitDecision(False, retry_after)

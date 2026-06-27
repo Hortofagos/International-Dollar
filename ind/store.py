@@ -186,7 +186,12 @@ class INDLocalStore:
         if self.transparency_submitter is not None and self.transparency_verifier is None:
             self.transparency_verifier = _environment_transparency_verifier()
         if self.transparency_root_gossip and self.transparency_verifier is None:
-            self.transparency_verifier = _environment_transparency_verifier()
+            try:
+                self.transparency_verifier = _environment_transparency_verifier()
+            except Exception:
+                if self.require_transparency:
+                    raise
+                self.transparency_verifier = None
         if transparency_submission_verify_timeout_seconds is None:
             self.transparency_submission_verify_timeout_seconds = _env_int(
                 "IND_LOG_SUBMISSION_VERIFY_TIMEOUT_SECONDS",
@@ -1468,6 +1473,40 @@ class INDLocalStore:
                     continue
                 return protocol_v3.decode_bill(bytes(row["bill_blob"]))
         return None
+
+    def spendable_bill_v3_display_ids(self, owner_address, display_ids):
+        display_ids = [str(display_id).strip() for display_id in display_ids if str(display_id).strip()]
+        if not display_ids:
+            return set()
+        found = set()
+        chunk_size = 800
+        with self._connect() as conn:
+            for offset in range(0, len(display_ids), chunk_size):
+                chunk = display_ids[offset : offset + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"""
+                    SELECT display_id, token_id, sequence
+                    FROM bills_v3
+                    WHERE owner_address = ?
+                      AND status IN ('settled', 'verified')
+                      AND display_id IN ({placeholders})
+                    ORDER BY display_id, sequence DESC, LENGTH(bill_blob) ASC, updated_at DESC
+                    """,
+                    (str(owner_address), *chunk),
+                ).fetchall()
+                for row in rows:
+                    display_id = str(row["display_id"])
+                    if display_id in found:
+                        continue
+                    if self._has_materialized_newer_v3_branch_conn(
+                        conn,
+                        row["token_id"],
+                        int(row["sequence"]),
+                    ):
+                        continue
+                    found.add(display_id)
+        return found
 
     # List stored BillV3 records for one owner address.
     def bill_v3_records_for_owner(self, owner_address, statuses=None, limit=1000, offset=0):

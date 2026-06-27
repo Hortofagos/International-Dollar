@@ -62,6 +62,19 @@ def _live_v3_operator_and_verifier(fixture, label):
     return operator, verifier
 
 
+def test_optional_root_gossip_ignores_unavailable_environment_verifier(tmp_path, monkeypatch):
+    monkeypatch.setattr(store_module, "_configured_transparency_submitter", lambda: None)
+
+    def fail_environment_verifier():
+        raise ValueError("production settings are incomplete")
+
+    monkeypatch.setattr(store_module, "_environment_transparency_verifier", fail_environment_verifier)
+
+    store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
+
+    assert store.transparency_verifier is None
+
+
 def _pending_v3_fixture(tmp_path):
     fixture = native_v3_archive_fixture(tmp_path)
     store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
