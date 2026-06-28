@@ -45,6 +45,8 @@ def test_collect_transparency_flags_required_public_mirror_staleness(tmp_path, m
     testnet_monitor.collect_transparency(
         report,
         "https://operator.example/v3/root",
+        "",
+        "",
         static_root_path,
         archive_path,
         freshness_warn_seconds=180,
@@ -85,6 +87,8 @@ def test_collect_transparency_flags_same_size_mirror_hash_mismatch(tmp_path, mon
     testnet_monitor.collect_transparency(
         report,
         "https://operator.example/v3/root",
+        "",
+        "",
         static_root_path,
         archive_path,
         freshness_warn_seconds=180,
@@ -94,6 +98,51 @@ def test_collect_transparency_flags_same_size_mirror_hash_mismatch(tmp_path, mon
     codes = {issue["code"] for issue in report["issues"]}
     assert "mirror_root_hash_mismatch" in codes
     assert report["transparency"]["mirror_roots"][0]["ok"] is False
+
+
+def test_collect_transparency_flags_operator_storage_backend_mismatch(tmp_path, monkeypatch):
+    static_root_path = tmp_path / "latest.json"
+    archive_path = tmp_path / "archive-manifest.json"
+    _write_json(static_root_path, _root(timestamp=990))
+    _write_json(
+        archive_path,
+        {
+            "archived_entry_count": 10,
+            "signed_root_tree_size": 10,
+            "signed_root_timestamp": 990,
+            "manifest_timestamp": 990,
+            "segments": [],
+        },
+    )
+
+    def fake_fetch(url, timeout=10):
+        if url == "https://operator.example/v3/status":
+            return {
+                "state": "active",
+                "storage_backend": "sqlite",
+                "storage_healthy": True,
+                "tree_size": 10,
+            }
+        if url == "https://operator.example/v3/root":
+            return _root(timestamp=990)
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(testnet_monitor, "fetch_json", fake_fetch)
+    report = {"timestamp": 1_000, "issues": []}
+
+    testnet_monitor.collect_transparency(
+        report,
+        "https://operator.example/v3/root",
+        "",
+        "mariadb",
+        static_root_path,
+        archive_path,
+        freshness_warn_seconds=180,
+    )
+
+    codes = {issue["code"] for issue in report["issues"]}
+    assert "operator_storage_backend_mismatch" in codes
+    assert report["transparency"]["operator_status"]["storage_backend"] == "sqlite"
 
 
 def test_build_report_with_retries_stops_after_ok(monkeypatch):

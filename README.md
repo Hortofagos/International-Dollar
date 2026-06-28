@@ -16,7 +16,7 @@ A native V3 genesis reference commits to:
 
 After genesis, no further issuance occurs. A BillV3 can be validated from its payload plus referenced proof material using the V3 implementation in `ind/protocol_v3.py` and the shared helpers in the `ind/` package.
 
-The launch constants intentionally carry the IND numerology motif: 33 billion fixed supply, 33-character current wallet addresses, a 777 angel-number marker, the 8/8888 money motif already used by the node port, and the 9 / 09.10.2003 birthday motif. Native V3 genesis metadata includes a deterministic `ind_alignment` seal so the motif is committed without changing transfer validation rules.
+The launch constants define the fixed 33 billion bill supply and current 33-character wallet addresses. Native V3 genesis metadata stays limited to auditable supply-manifest context and does not carry symbolic alignment fields.
 
 Public nodes must pin accepted genesis issuer keys with `IND_TRUSTED_GENESIS_ISSUER_KEYS`, exact supply manifests with `IND_TRUSTED_GENESIS_MANIFEST_HASHES`, or both. If neither is set, genesis validation fails unless `IND_ALLOW_UNTRUSTED_GENESIS=1` is explicitly enabled for local tests.
 
@@ -89,6 +89,14 @@ stronger backend such as PostgreSQL or RocksDB if the workload requires it. A
 SQL server alone does not fix scale if roots and proofs are rebuilt from every
 stored spend claim.
 
+Append-capable operators can opt into MariaDB with `IND_LOG_BACKEND=mariadb`
+after installing `requirements-operator.txt`. MariaDB is only for the
+transparency operator's canonical append log; wallets and ordinary gossip nodes
+still use local SQLite. Do not use Redis or NoSQL as canonical operator truth.
+For mainnet, migration tooling must treat existing SQLite databases, genesis
+manifests, and published hash files as read-only inputs. Copy into MariaDB only
+after verification, and never delete or overwrite current mainnet runtime data.
+
 Useful environment switches:
 
 - `IND_SUBMIT_TO_TRANSPARENCY_LOG=0`: local-development escape hatch; default settings submit accepted transfer announcements to `IND_LOG_OPERATOR_URL`
@@ -98,8 +106,10 @@ Useful environment switches:
 - `IND_LOG_OPERATOR_PUBLIC_KEY`: expected operator signing key
 - `IND_OPERATOR_APPEND_FANOUT`: maximum append-capable operators contacted for one transfer, default `5`
 - `IND_OPERATOR_CORE_DOMAINS`: operator URL domains always pinned into the append pool, default `international-dollar.com,internetofthebots.com`
-- `IND_OPERATOR_FINALITY_MIN_PROOFS`: distinct append-capable operator proofs required for V3 `strong_local`; `0` means all selected append-capable operators
+- `IND_OPERATOR_FINALITY_MIN_PROOFS`: distinct append-capable operator proofs required for V3 `strong_local`; `0` means a majority of selected append-capable operators
 - `IND_ALLOW_UNTRUSTED_EMBEDDED_ROOTS=1`: dev/test-only escape hatch for compact bills; production compact verification must use a mirrored verifier or pinned operator key
+- `IND_LOG_BACKEND=sqlite|mariadb`: operator storage backend; defaults to `sqlite`
+- `IND_LOG_MARIADB_PASSWORD_FILE`: path to the MariaDB operator password file; avoid putting DB passwords directly in service files
 - `IND_LOG_MIN_MIRRORS`: required count of independent signed-root mirrors, default `2`
 - `IND_LOG_UNSAFE_SINGLE_MIRROR=1`: local development escape hatch for one mirror; incompatible with `IND_REQUIRE_TRANSPARENCY_LOG=1`
 - `IND_LOG_OBSERVED_ROOTS_DB`: local SQLite store for observed signed roots, default `files/transparency_observed_roots.db`
@@ -202,15 +212,16 @@ well backed up.
 
 ## Wallet Sync and Local Confidence
 
-When B receives a valid bill transfer whose latest owner is B's address, the bill is stored as verified and is locally spendable. Receipts are not active protocol messages and are not broadcast to nodes. Wallets track local sync cursors and known bill sequences, then ask peers for newer owner-addressed BillV3 records instead of replaying the entire wallet.
+When B receives a valid bill transfer whose latest owner is B's address, the bill is stored as verified. In local-only mode that verified bill is locally spendable; when settlement quorum is enabled, `verified` means valid but awaiting finality and only `settled` bills are wallet-spendable. Receipts are not active protocol messages and are not broadcast to nodes. Wallets track local sync cursors and known bill sequences, then ask peers for newer owner-addressed BillV3 records instead of replaying the entire wallet.
 
 - If a node already knows one branch, a later sibling transfer from the same bill state is rejected locally.
 - `pending` is reserved for actual finality, quorum, or transparency-proof waiting.
-- Conflict proofs remain portable evidence, but they do not burn or invalidate an already accepted bill.
+- `settled` means the transfer survived the local finality buffer and, when quorum is enabled, a majority of configured append-capable operators prove the same spend-map claim.
+- Conflict proofs remain portable evidence, but they do not burn or invalidate an already settled bill. Stale post-settlement conflict proofs may be dropped locally instead of stored forever.
 
 The conflict proof is a cryptographic fact: both signatures are from the same key, reference the same bill state, and spend it to different recipients. No vote is needed.
 
-Merchants can apply stricter local policy before releasing real-world value. The local store exposes `token_confidence(...)` so wallets and merchants can reject unknown, pending, wrong-owner, conflicted, or too-fresh bills and optionally require extra settled age for larger payments. Late conflict proofs are evidence against the signer, not a rule that destroys downstream holders' bills, so acceptance remains local and order-dependent rather than blockchain-style global finality.
+Merchants can apply stricter local policy before releasing real-world value. The local store exposes `token_confidence(...)` so wallets and merchants can reject unknown, pending, wrong-owner, conflicted, or too-fresh bills and optionally require extra settled age for larger payments. Late conflict proofs are evidence against the signer, not a rule that destroys downstream holders' bills; with operator quorum enabled, final settlement depends on the majority operator spend-map proof for the exact spend key and transfer hash.
 
 ## Network Topology
 

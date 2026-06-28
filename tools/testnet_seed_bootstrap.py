@@ -14,6 +14,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from ind.io_utils import atomic_write_text
 from tools import render_operator_env, testnet_peers
 
 DEFAULT_REPO_DIR = "/opt/international-dollar"
@@ -68,6 +69,31 @@ DEFAULT_MIRRORS = (
         target_subdir="iotb-operator",
     ),
 )
+
+
+def mirror_targets_from_operator_set(operator_set_path):
+    try:
+        operator_set = render_operator_env.load_operator_set(operator_set_path)
+    except Exception:
+        return list(DEFAULT_MIRRORS)
+    mirrors = []
+    for operator in operator_set["operators"]:
+        mirror_urls = tuple(operator.get("mirrors") or ())
+        if not mirror_urls:
+            continue
+        name = str(operator["name"])
+        target_subdir = "" if name == "primary" else name
+        if name == "iotb":
+            target_subdir = "iotb-operator"
+        mirrors.append(
+            MirrorTarget(
+                name=name,
+                source_url=mirror_urls[0],
+                public_mirror_urls=mirror_urls,
+                target_subdir=target_subdir,
+            )
+        )
+    return mirrors or list(DEFAULT_MIRRORS)
 
 
 def _dedupe(items):
@@ -211,7 +237,7 @@ def _mirror_static_paths(args, mirror):
     return prefix + "/latest.json", prefix + "/archive/manifest.json"
 
 
-def _monitor_args(args, mirror, convergence_peers):
+def _monitor_args(args, mirror, convergence_peers, mirror_names):
     static_root, archive_manifest = _mirror_static_paths(args, mirror)
     command = [
         f"{args.repo_dir}/.venv/bin/python",
@@ -232,11 +258,7 @@ def _monitor_args(args, mirror, convergence_peers):
     ]
     for url in mirror.public_mirror_urls:
         command.extend(["--mirror-root-url", url])
-    for unit in [
-        args.node_unit,
-        "ind-testnet-primary-mirror.timer",
-        "ind-testnet-iotb-mirror.timer",
-    ]:
+    for unit in [args.node_unit, *[f"ind-testnet-{name}-mirror.timer" for name in mirror_names]]:
         command.extend(["--systemd-unit", unit])
     for path in [args.runtime_dir, args.web_root]:
         command.extend(["--disk-path", path])
@@ -258,7 +280,7 @@ def _systemd_exec(command):
     return " ".join(_systemd_word(item) for item in command)
 
 
-def render_monitor_service(args, mirror, convergence_peers):
+def render_monitor_service(args, mirror, convergence_peers, mirror_names):
     return f"""[Unit]
 Description=Monitor IND testnet {mirror.name} mirror on this seed
 Wants=network-online.target
@@ -269,7 +291,7 @@ Type=oneshot
 WorkingDirectory={args.runtime_dir}
 Environment=IND_NETWORK=testnet
 Environment=PYTHONPATH={args.repo_dir}
-ExecStart={_systemd_exec(_monitor_args(args, mirror, convergence_peers))}
+ExecStart={_systemd_exec(_monitor_args(args, mirror, convergence_peers, mirror_names))}
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
@@ -298,15 +320,19 @@ def render_nginx_site(web_root):
 """
 
 
-def render_local_verify(args):
+def render_local_verify(args, mirrors=None):
+    mirrors = mirrors or mirror_targets_from_operator_set(args.operator_set)
+    mirror_checks = "".join(
+        f"curl -fsS http://127.0.0.1{mirror.workdir_suffix}/transparency/latest.json >/dev/null\n"
+        for mirror in mirrors
+    ).rstrip()
     return f"""#!/bin/sh
 set -eu
 systemctl is-active --quiet {args.node_unit}
 ss -ltn | grep -E ':{int(args.node_port)}[[:space:]]' >/dev/null
 operator_api_status="$(curl -sS -o /dev/null -w '%{{http_code}}' http://127.0.0.1/operator-api/ || true)"
 test "$operator_api_status" = "404"
-curl -fsS http://127.0.0.1/transparency/latest.json >/dev/null
-curl -fsS http://127.0.0.1/iotb-operator/transparency/latest.json >/dev/null
+{mirror_checks}
 """
 
 
@@ -320,13 +346,15 @@ def generated_files(args):
     peers = testnet_peers.parse_peer_args(args.peer)
     convergence_seed = args.convergence_peer or peers
     convergence_peers = filter_self_peers(convergence_seed, args.public_host)
+    mirrors = mirror_targets_from_operator_set(args.operator_set)
+    mirror_names = [mirror.name for mirror in mirrors]
     files = [
         GeneratedFile(
             args.start_pre,
             render_start_pre(args.runtime_dir, args.repo_dir, args.node_user),
             0o755,
         ),
-        GeneratedFile(args.verify_script, render_local_verify(args), 0o755),
+        GeneratedFile(args.verify_script, render_local_verify(args, mirrors), 0o755),
         GeneratedFile(args.node_env, render_node_env(args.repo_dir, peers, args.node_port), 0o640),
         GeneratedFile(args.operator_env, render_operator_env_file(args.operator_set), 0o640),
         GeneratedFile(
@@ -334,7 +362,7 @@ def generated_files(args):
             render_seed_service(args),
         ),
     ]
-    for index, mirror in enumerate(DEFAULT_MIRRORS):
+    for index, mirror in enumerate(mirrors):
         files.extend(
             [
                 GeneratedFile(
@@ -351,7 +379,7 @@ def generated_files(args):
                 ),
                 GeneratedFile(
                     f"{args.systemd_dir}/ind-testnet-{mirror.name}-monitor.service",
-                    render_monitor_service(args, mirror, convergence_peers),
+                    render_monitor_service(args, mirror, convergence_peers, mirror_names),
                 ),
                 GeneratedFile(
                     f"{args.systemd_dir}/ind-testnet-{mirror.name}-monitor.timer",
@@ -370,10 +398,7 @@ def generated_files(args):
 
 def _atomic_write(path, text, mode):
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    atomic_write_text(path, text)
     path.chmod(mode)
 
 
@@ -404,7 +429,8 @@ def install_generated_files(args, files):
         )
     _run(["install", "-d", "-m", "750", "-o", args.node_user, "-g", args.node_user, args.runtime_dir])
     _run(["install", "-d", "-m", "755", "-o", args.node_user, "-g", args.node_user, args.web_root])
-    for mirror in DEFAULT_MIRRORS:
+    mirrors = mirror_targets_from_operator_set(args.operator_set)
+    for mirror in mirrors:
         _run(
             [
                 "install",
@@ -435,10 +461,8 @@ def install_generated_files(args, files):
     if not args.no_enable:
         units = [
             args.node_unit,
-            "ind-testnet-primary-mirror.timer",
-            "ind-testnet-iotb-mirror.timer",
-            "ind-testnet-primary-monitor.timer",
-            "ind-testnet-iotb-monitor.timer",
+            *[f"ind-testnet-{mirror.name}-mirror.timer" for mirror in mirrors],
+            *[f"ind-testnet-{mirror.name}-monitor.timer" for mirror in mirrors],
         ]
         _run(["systemctl", "enable", "--now", *units])
     return {"installed": [item.path for item in files], "enabled": not args.no_enable}

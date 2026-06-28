@@ -12,6 +12,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_OPERATOR_SET = ROOT_DIR / "testnet" / "operator_set.testnet.json"
 DEFAULT_OPERATOR_APPEND_FANOUT = 5
 DEFAULT_OPERATOR_CORE_DOMAINS = ["international-dollar.com", "internetofthebots.com"]
+DEFAULT_NODE_PORTS = {"mainnet": 8888, "testnet": 18888}
 
 
 class OperatorSetError(RuntimeError):
@@ -51,6 +52,21 @@ def _http_origin(value):
     if port is None:
         port = 443 if parsed.scheme == "https" else 80
     return f"{parsed.scheme}://{parsed.hostname.lower()}:{port}"
+
+
+def _operator_node_peer(value, node_port):
+    parsed = urlparse(str(value).strip())
+    if not parsed.hostname:
+        return ""
+    host = parsed.hostname.lower()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"{host}:{int(node_port)}"
+
+
+def _majority(count):
+    count = max(0, int(count))
+    return count // 2 + 1 if count else 0
 
 
 def normalize_operator_set(data):
@@ -109,8 +125,11 @@ def normalize_operator_set(data):
                 "proof_archives": archives,
             }
         )
+    network = str(data.get("network") or "testnet")
+    node_port = int(data.get("node_port") or DEFAULT_NODE_PORTS.get(network, 8888))
     return {
-        "network": str(data.get("network") or "testnet"),
+        "network": network,
+        "node_port": node_port,
         "min_root_mirrors": min_root_mirrors,
         "operator_append_fanout": operator_append_fanout,
         "operator_core_domains": operator_core_domains,
@@ -136,7 +155,15 @@ def env_from_operator_set(operator_set):
     count = len(operators)
     append_fanout = int(operator_set.get("operator_append_fanout", DEFAULT_OPERATOR_APPEND_FANOUT))
     append_target = min(count, append_fanout)
+    finality_target = _majority(append_target)
     core_domains = operator_set.get("operator_core_domains") or DEFAULT_OPERATOR_CORE_DOMAINS
+    settlement_peers = []
+    seen_peers = set()
+    for item in operator_set["operators"][:append_target]:
+        peer = _operator_node_peer(item["url"], operator_set["node_port"])
+        if peer and peer not in seen_peers:
+            seen_peers.add(peer)
+            settlement_peers.append(peer)
     return {
         "IND_NETWORK": operator_set["network"],
         "IND_REQUIRE_TRANSPARENCY_LOG": "1",
@@ -144,16 +171,18 @@ def env_from_operator_set(operator_set):
         "IND_LOG_OPERATORS": json.dumps(operators, sort_keys=True, separators=(",", ":")),
         "IND_OPERATOR_APPEND_FANOUT": str(append_fanout),
         "IND_OPERATOR_CORE_DOMAINS": ",".join(core_domains),
-        "IND_OPERATOR_FINALITY_MIN_PROOFS": str(append_target),
+        "IND_OPERATOR_FINALITY_MIN_PROOFS": str(finality_target),
         "IND_LOG_MIN_MIRRORS": str(operator_set["min_root_mirrors"]),
         "IND_SETTLEMENT_QUORUM_ENABLED": "1",
+        "IND_SETTLEMENT_PEERS": ",".join(settlement_peers),
+        "IND_SETTLEMENT_MIN_REMOTE_CONFIRMATIONS": "0",
         "IND_SETTLEMENT_REQUIRE_ALL_CONFIGURED_PEERS": "1",
         "IND_TRANSPARENCY_SUBMIT_ASYNC": "1",
     }
 
 
 def _systemd_quote(value):
-    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
 
 
 def _systemd_envfile_quote(value):

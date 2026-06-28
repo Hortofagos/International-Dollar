@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import log_client
+from ind import transparency_client as log_client
 from operator_tools import hash_log_exporter
 
 EMERGENCY_REVOCATION_WARNING = (

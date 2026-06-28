@@ -13,8 +13,14 @@ def test_testnet_operator_set_loads():
     assert operator_set["operators"][2]["url"] == "http://108.61.23.82/operator-api"
     env = render_operator_env.env_from_operator_set(operator_set)
     assert env["IND_OPERATOR_APPEND_FANOUT"] == "5"
-    assert env["IND_OPERATOR_FINALITY_MIN_PROOFS"] == "3"
+    assert env["IND_OPERATOR_FINALITY_MIN_PROOFS"] == "2"
     assert env["IND_OPERATOR_CORE_DOMAINS"] == "international-dollar.com,internetofthebots.com"
+    assert env["IND_SETTLEMENT_PEERS"] == (
+        "testnet-seed.international-dollar.com:18888,"
+        "testnet-seed.internetofthebots.com:18888,"
+        "108.61.23.82:18888"
+    )
+    assert env["IND_SETTLEMENT_MIN_REMOTE_CONFIRMATIONS"] == "0"
 
 
 def test_powershell_rendering_quotes_operator_json_safely():
@@ -28,6 +34,12 @@ def test_powershell_rendering_quotes_operator_json_safely():
 
     assert "$env:IND_LOG_OPERATORS = '[{\"public_key\":\"indpk3:a&b\\\"c\"}]'" in rendered
     assert "$env:IND_TEST_VALUE = 'single '' quote'" in rendered
+
+
+def test_systemd_rendering_escapes_specifier_percent():
+    rendered = render_operator_env.render_env({"IND_TEST_VALUE": "literal%value"}, "systemd")
+
+    assert 'Environment=IND_TEST_VALUE="literal%%value"' in rendered
 
 
 def test_operator_set_rejects_same_origin_mirror(tmp_path):

@@ -20,6 +20,8 @@ class FakeStore:
 
     def ingest_wire_message(self, raw, peer_id=None):
         self.ingested.append((raw, peer_id))
+        if raw == "packed-conflict":
+            self.status = "conflict"
         return {"accepted": True}
 
     def status_record_for_ref(self, _ref):
@@ -264,6 +266,15 @@ def _enable_settlement(monkeypatch, response):
     )
 
 
+def _matching_settlement_response(token_id="token-a"):
+    return {
+        "type": "ind.peer_settlement_response.v3",
+        "token_id": token_id,
+        "matches_query": True,
+        "messages": [],
+    }
+
+
 def test_public_status_lookup_does_not_finalize_pending(monkeypatch):
     def fail_finalize(*_args, **_kwargs):
         raise AssertionError("public status must not run settlement finalization")
@@ -331,6 +342,301 @@ def test_v3_settlement_reconcile_treats_peer_conflict_as_conflict(monkeypatch):
 
     assert decision["decision"] == "conflict"
     assert store.ingested == [("packed-conflict", "peer-a")]
+
+
+def test_v3_settlement_reconcile_ignores_unproved_peer_conflict_flag(monkeypatch):
+    response = {
+        "type": "ind.peer_settlement_response.v3",
+        "token_id": "token-a",
+        "matches_query": False,
+        "conflict": True,
+        "messages": [],
+    }
+    _enable_settlement(monkeypatch, response)
+
+    decision = node_client._reconcile_v3_settlement_candidate(
+        FakeStore(),
+        {"token_id": "token-a", "query": {"token_id": "token-a"}},
+    )
+
+    assert decision["decision"] == "await"
+    assert decision["failures"][0]["status"] == "unproved_conflict"
+
+
+def test_v3_settlement_reconcile_does_not_require_offline_peers_when_min_is_zero(monkeypatch):
+    monkeypatch.setattr(node_client, "_settlement_enabled", lambda: True)
+    monkeypatch.setattr(node_client, "_settlement_peers", lambda: ["peer-a", "peer-b"])
+    monkeypatch.setattr(
+        node_client.ind_settings,
+        "settlement_min_remote_confirmations",
+        lambda: 0,
+    )
+    monkeypatch.setattr(
+        node_client.ind_settings,
+        "settlement_require_all_configured_peers",
+        lambda: True,
+    )
+
+    def query(peer, _query):
+        if peer == "peer-a":
+            return {
+                "ok": True,
+                "peer": peer,
+                "response": {
+                    "type": "ind.peer_settlement_response.v3",
+                    "token_id": "token-a",
+                    "matches_query": True,
+                    "messages": [],
+                },
+            }
+        return {"ok": False, "peer": peer, "status": "timeout", "error": "timeout"}
+
+    monkeypatch.setattr(node_client, "_query_settlement_peer", query)
+
+    decision = node_client._reconcile_v3_settlement_candidate(
+        FakeStore(),
+        {"token_id": "token-a", "query": {"token_id": "token-a"}},
+    )
+
+    assert decision["decision"] == "settle"
+
+
+def test_v3_settlement_reconcile_settles_majority_with_offline_peer(monkeypatch):
+    monkeypatch.setattr(node_client, "_settlement_enabled", lambda: True)
+    monkeypatch.setattr(
+        node_client,
+        "_settlement_peers",
+        lambda: ["peer-a", "peer-b", "peer-c"],
+    )
+    monkeypatch.setattr(
+        node_client.ind_settings,
+        "settlement_min_remote_confirmations",
+        lambda: 2,
+    )
+    monkeypatch.setattr(
+        node_client.ind_settings,
+        "settlement_require_all_configured_peers",
+        lambda: True,
+    )
+
+    def query(peer, _query):
+        if peer == "peer-c":
+            return {"ok": False, "peer": peer, "status": "timeout", "error": "timeout"}
+        return {"ok": True, "peer": peer, "response": _matching_settlement_response()}
+
+    monkeypatch.setattr(node_client, "_query_settlement_peer", query)
+
+    decision = node_client._reconcile_v3_settlement_candidate(
+        FakeStore(),
+        {"token_id": "token-a", "query": {"token_id": "token-a"}},
+    )
+
+    assert decision["decision"] == "settle"
+    assert decision["confirmations"] == 2
+
+
+def test_v3_settlement_reconcile_queries_peers_concurrently(monkeypatch):
+    monkeypatch.setattr(node_client, "_settlement_enabled", lambda: True)
+    monkeypatch.setattr(node_client, "_settlement_peers", lambda: ["peer-a", "peer-b"])
+    monkeypatch.setattr(
+        node_client.ind_settings,
+        "settlement_min_remote_confirmations",
+        lambda: 0,
+    )
+    monkeypatch.setattr(
+        node_client.ind_settings,
+        "settlement_require_all_configured_peers",
+        lambda: True,
+    )
+    lock = threading.Lock()
+    all_started = threading.Event()
+    active = {"current": 0, "max": 0, "started": 0}
+
+    def query(peer, _query):
+        with lock:
+            active["current"] += 1
+            active["started"] += 1
+            active["max"] = max(active["max"], active["current"])
+            if active["started"] == 2:
+                all_started.set()
+        all_started.wait(1)
+        try:
+            return {
+                "ok": True,
+                "peer": peer,
+                "response": {
+                    "type": "ind.peer_settlement_response.v3",
+                    "token_id": "token-a",
+                    "matches_query": True,
+                    "messages": [],
+                },
+            }
+        finally:
+            with lock:
+                active["current"] -= 1
+
+    monkeypatch.setattr(node_client, "_query_settlement_peer", query)
+
+    decision = node_client._reconcile_v3_settlement_candidate(
+        FakeStore(),
+        {"token_id": "token-a", "query": {"token_id": "token-a"}},
+    )
+
+    assert decision["decision"] == "settle"
+    assert active["max"] == 2
+
+
+def test_v3_settlement_reconcile_divergence_vetoes_even_with_majority(monkeypatch):
+    monkeypatch.setattr(node_client, "_settlement_enabled", lambda: True)
+    monkeypatch.setattr(
+        node_client,
+        "_settlement_peers",
+        lambda: ["peer-a", "peer-b", "peer-c"],
+    )
+    monkeypatch.setattr(
+        node_client.ind_settings,
+        "settlement_min_remote_confirmations",
+        lambda: 2,
+    )
+    monkeypatch.setattr(
+        node_client.ind_settings,
+        "settlement_require_all_configured_peers",
+        lambda: True,
+    )
+
+    def query(peer, _query):
+        if peer == "peer-c":
+            return {
+                "ok": True,
+                "peer": peer,
+                "response": {
+                    "type": "ind.peer_settlement_response.v3",
+                    "token_id": "token-a",
+                    "matches_query": False,
+                    "local_transfer_hash": "different-branch",
+                    "messages": [],
+                },
+            }
+        return {"ok": True, "peer": peer, "response": _matching_settlement_response()}
+
+    monkeypatch.setattr(node_client, "_query_settlement_peer", query)
+
+    decision = node_client._reconcile_v3_settlement_candidate(
+        FakeStore(),
+        {"token_id": "token-a", "query": {"token_id": "token-a"}},
+    )
+
+    assert decision["decision"] == "await"
+    assert decision["reason"] == "peer has divergent spend"
+
+
+def test_v3_settlement_reconcile_proved_conflict_vetoes_even_with_majority(monkeypatch):
+    monkeypatch.setattr(node_client, "_settlement_enabled", lambda: True)
+    monkeypatch.setattr(
+        node_client,
+        "_settlement_peers",
+        lambda: ["peer-a", "peer-b", "peer-c"],
+    )
+    monkeypatch.setattr(
+        node_client.ind_settings,
+        "settlement_min_remote_confirmations",
+        lambda: 2,
+    )
+    monkeypatch.setattr(
+        node_client.ind_settings,
+        "settlement_require_all_configured_peers",
+        lambda: True,
+    )
+
+    def query(peer, _query):
+        if peer == "peer-c":
+            return {
+                "ok": True,
+                "peer": peer,
+                "response": {
+                    "type": "ind.peer_settlement_response.v3",
+                    "token_id": "token-a",
+                    "matches_query": False,
+                    "conflict": True,
+                    "messages": ["packed-conflict"],
+                },
+            }
+        return {"ok": True, "peer": peer, "response": _matching_settlement_response()}
+
+    monkeypatch.setattr(node_client, "_query_settlement_peer", query)
+    store = FakeStore()
+
+    decision = node_client._reconcile_v3_settlement_candidate(
+        store,
+        {"token_id": "token-a", "query": {"token_id": "token-a"}},
+    )
+
+    assert decision["decision"] == "conflict"
+    assert ("packed-conflict", "peer-c") in store.ingested
+
+
+def test_v3_settlement_reconcile_query_exception_does_not_block_majority(monkeypatch):
+    monkeypatch.setattr(node_client, "_settlement_enabled", lambda: True)
+    monkeypatch.setattr(
+        node_client,
+        "_settlement_peers",
+        lambda: ["peer-a", "peer-b", "peer-c"],
+    )
+    monkeypatch.setattr(
+        node_client.ind_settings,
+        "settlement_min_remote_confirmations",
+        lambda: 2,
+    )
+    monkeypatch.setattr(
+        node_client.ind_settings,
+        "settlement_require_all_configured_peers",
+        lambda: True,
+    )
+
+    def query(peer, _query):
+        if peer == "peer-c":
+            raise RuntimeError("boom")
+        return {"ok": True, "peer": peer, "response": _matching_settlement_response()}
+
+    monkeypatch.setattr(node_client, "_query_settlement_peer", query)
+
+    decision = node_client._reconcile_v3_settlement_candidate(
+        FakeStore(),
+        {"token_id": "token-a", "query": {"token_id": "token-a"}},
+    )
+
+    assert decision["decision"] == "settle"
+    assert decision["confirmations"] == 2
+
+
+def test_v3_settlement_reconcile_wrong_token_response_does_not_count(monkeypatch):
+    monkeypatch.setattr(node_client, "_settlement_enabled", lambda: True)
+    monkeypatch.setattr(node_client, "_settlement_peers", lambda: ["peer-a", "peer-b"])
+    monkeypatch.setattr(
+        node_client.ind_settings,
+        "settlement_min_remote_confirmations",
+        lambda: 2,
+    )
+    monkeypatch.setattr(
+        node_client.ind_settings,
+        "settlement_require_all_configured_peers",
+        lambda: True,
+    )
+
+    def query(peer, _query):
+        token_id = "token-b" if peer == "peer-b" else "token-a"
+        return {"ok": True, "peer": peer, "response": _matching_settlement_response(token_id)}
+
+    monkeypatch.setattr(node_client, "_query_settlement_peer", query)
+
+    decision = node_client._reconcile_v3_settlement_candidate(
+        FakeStore(),
+        {"token_id": "token-a", "query": {"token_id": "token-a"}},
+    )
+
+    assert decision["decision"] == "await"
+    assert decision["confirmations"] == 1
+    assert decision["failures"][0]["status"] == "wrong_token"
 
 
 def test_token_bucket_refills_and_lanes_are_isolated():
@@ -856,6 +1162,27 @@ def test_auto_capacity_profile_uses_local_operator_role(monkeypatch):
     monkeypatch.setattr(node_client, "_runtime_operator_enabled", lambda: False)
 
     assert node_client.resolve_node_capacity_profile() == "operator"
+
+
+def test_gossip_pool_tracks_hash_metadata_and_dedupes():
+    pool = node_client.GossipPool(limit=2)
+    first = _v3_transfer_wire(1)
+    duplicate = _v3_transfer_wire(1)
+    urgent = _v3_transfer_wire(2)
+
+    assert node_client.append_gossip(pool, first)
+    assert not node_client.append_gossip(pool, duplicate)
+    assert node_client.append_gossip(pool, urgent, high_priority=True)
+
+    entries = pool.entry_snapshot()
+
+    assert pool == [urgent, first]
+    assert len(entries) == 2
+    assert entries[0]["raw"] == urgent
+    assert entries[0]["priority"] == 1
+    assert entries[0]["type"] == protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE
+    assert entries[0]["last_broadcast"] == 0
+    assert first in pool
 
 
 def test_v3_transfer_gossip_acknowledges_before_store_ingest_finishes():

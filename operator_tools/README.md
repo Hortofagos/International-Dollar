@@ -88,12 +88,18 @@ still stays peer-to-peer.
 
 ## Storage Guidance
 
-The reference log operator currently uses a local SQLite database. That is fine
-for development, desktop experiments, and early testnet operation. A production
-operator may later run on PostgreSQL, RocksDB, FoundationDB, or another backend,
-but the first scale fix is algorithmic: the spend map must be incremental and
-persistent so publishing a root or serving a proof does not rebuild from every
-stored spend claim.
+The reference log operator uses local SQLite by default. That is fine for
+development, desktop experiments, and early testnet operation. Serious
+append-capable operators may opt into MariaDB with `IND_LOG_BACKEND=mariadb`
+after installing `requirements-operator.txt`; ordinary wallets, gossip nodes,
+and mirror-only servers stay on SQLite. Redis/NoSQL may be used only as cache,
+never as canonical operator truth.
+
+For mainnet, treat the existing SQLite database, genesis manifests, hash files,
+operator keys, mirror roots, and archive outputs as read-only inputs. Copy into
+MariaDB with `tools/operator_db.py sqlite-to-mariadb --allow-mainnet-read-only-copy`
+only after backups are verified, and never delete or overwrite the current
+mainnet runtime files during migration.
 
 For public mirrors, set `IND_LOG_WRITE_MIRROR_PROOF_ARCHIVES=0` and publish
 segmented hash-log exports instead of writing a complete proof archive for every

@@ -2,10 +2,10 @@
 
 import json
 import base64
-import os
 import time
 from pathlib import Path
 
+from .io_utils import atomic_write_json
 from . import keys_v3
 from . import protocol as ind_token
 
@@ -45,16 +45,6 @@ def canonical_bytes(data):
 
 def sha3_hex(data):
     return ind_token.sha3_hex(data)
-
-
-def atomic_write_json(path, data):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(
-        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
-    )
-    os.replace(tmp, path)
 
 
 def _unsigned(record):

@@ -3,12 +3,18 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-import log_client
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from ind import transparency_client as log_client  # noqa: E402
+from ind.io_utils import atomic_write_text  # noqa: E402
 
 DEFAULT_OPERATOR_URL = "http://127.0.0.1:8890"
 DEFAULT_GIT_MIRROR_DIR = "operator_tools/git-root-mirror"
@@ -40,14 +46,6 @@ def root_state_key(root):
         str(root["root_hash"]),
         str(root.get("spend_map_root") or ""),
     )
-
-
-def atomic_write_text(path, text):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(path.name + ".tmp")
-    temp_path.write_text(text, encoding="utf-8")
-    temp_path.replace(path)
 
 
 def load_state(path):

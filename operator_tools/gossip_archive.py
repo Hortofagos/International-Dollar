@@ -16,6 +16,7 @@ from ind import settings as ind_settings
 from ind import keys_v3
 from ind import protocol_v3
 from ind import token as ind_token
+from ind.io_utils import atomic_write_text
 from tools import testnet_peers
 
 GOSSIP_ARCHIVE_MANIFEST_TYPE = "ind.public_gossip_archive_manifest.v3"
@@ -38,14 +39,6 @@ def canonical_json(data):
 
 def canonical_bytes(data):
     return canonical_json(data).encode("utf-8")
-
-
-def atomic_write_text(path, text):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8", newline="\n")
-    tmp.replace(path)
 
 
 def read_key_file(path, field):

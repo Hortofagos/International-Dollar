@@ -13,6 +13,7 @@ from pathlib import Path
 
 import requests
 
+from . import env as ind_env
 from . import runtime as runtime_json
 from . import settings as ind_settings
 from . import token as ind_token
@@ -23,29 +24,8 @@ logger = logging.getLogger(__name__)
 already_tried = []
 PORT = 8888
 
-
-def _env_int(name, default, minimum=None, maximum=None):
-    try:
-        result = int(os.environ.get(name, default))
-    except (TypeError, ValueError):
-        result = int(default)
-    if minimum is not None:
-        result = max(int(minimum), result)
-    if maximum is not None:
-        result = min(int(maximum), result)
-    return result
-
-
-def _env_float(name, default, minimum=None, maximum=None):
-    try:
-        result = float(os.environ.get(name, default))
-    except (TypeError, ValueError):
-        result = float(default)
-    if minimum is not None:
-        result = max(float(minimum), result)
-    if maximum is not None:
-        result = min(float(maximum), result)
-    return result
+_env_int = ind_env.int_value
+_env_float = ind_env.float_value
 
 
 MAX_PEERS_PER_IPV4_C_BLOCK = 3
@@ -77,6 +57,18 @@ WALLET_SYNC_RECONCILE_REQUEST_BUDGET_SECONDS = _env_int(
 )
 WALLET_SYNC_FETCH_BUDGET_SECONDS = 30
 WALLET_SYNC_TOKEN_CURSOR_LIMIT = 0
+WALLET_SYNC_DISPLAY_RANGE_LIMIT = _env_int(
+    "IND_WALLET_SYNC_DISPLAY_RANGE_LIMIT",
+    2048,
+    minimum=0,
+    maximum=100000,
+)
+WALLET_SYNC_DISPLAY_RANGE_BYTES = _env_int(
+    "IND_WALLET_SYNC_DISPLAY_RANGE_BYTES",
+    128 * 1024,
+    minimum=0,
+    maximum=1024 * 1024,
+)
 WALLET_SYNC_RESPONSE_LIMIT = 100
 WALLET_SEND_WINDOW_SECONDS = _env_int("IND_WALLET_SEND_WINDOW_SECONDS", 5, minimum=1)
 WALLET_MAX_BILLS_PER_SECOND = _env_float(
@@ -166,8 +158,7 @@ def node_port():
     return ind_settings.node_port()
 
 
-def _env_enabled(name):
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+_env_enabled = ind_env.enabled
 
 
 def _allow_development_transparency_fallback():
@@ -1960,31 +1951,170 @@ def _wallet_sync_record_identity(record):
         return ""
 
 
+def _compact_wallet_sync_display_ranges(display_ranges):
+    normalized = []
+    for item in display_ranges or []:
+        try:
+            if isinstance(item, dict):
+                value = int(item.get("value", item.get("v")))
+                start = int(item.get("start", item.get("s")))
+                end = int(item.get("end", item.get("e", start)))
+                sequence = int(item.get("sequence", item.get("q")))
+            else:
+                value, start, end, sequence = item[:4]
+                value = int(value)
+                start = int(start)
+                end = int(end)
+                sequence = int(sequence)
+        except Exception:
+            continue
+        if start > end or sequence <= 0:
+            continue
+        normalized.append((value, start, end, sequence))
+    if not normalized:
+        return []
+
+    normalized.sort(key=lambda item: (item[0], item[3], item[1], item[2]))
+    merged = []
+    for value, start, end, sequence in normalized:
+        if (
+            merged
+            and merged[-1][0] == value
+            and merged[-1][3] == sequence
+            and start <= merged[-1][2] + 1
+        ):
+            previous = merged[-1]
+            merged[-1] = (previous[0], previous[1], max(previous[2], end), previous[3])
+            continue
+        merged.append((value, start, end, sequence))
+
+    selected = []
+    used_bytes = 2
+    for item in merged:
+        encoded = json.dumps(list(item), separators=(",", ":"))
+        extra = len(encoded.encode("utf-8")) + (1 if selected else 0)
+        if (
+            len(selected) >= WALLET_SYNC_DISPLAY_RANGE_LIMIT
+            or used_bytes + extra > WALLET_SYNC_DISPLAY_RANGE_BYTES
+        ):
+            break
+        selected.append(list(item))
+        used_bytes += extra
+    return selected
+
+
+def _wallet_display_ids_from_lines(wallet_lines):
+    display_ids = []
+    for line in runtime_json.wallet_bill_lines(wallet_lines):
+        parts = str(line).split()
+        if not parts:
+            continue
+        display_id = parts[0].lstrip("-")
+        if display_id:
+            display_ids.append(display_id)
+    return display_ids
+
+
+def _spendable_wallet_display_ids_for_ranges(store, address, wallet_lines):
+    display_ids = _wallet_display_ids_from_lines(wallet_lines)
+    if not display_ids:
+        return set()
+    try:
+        return wallet_services.spendable_wallet_display_ids(
+            address,
+            display_ids,
+            store=store,
+        )
+    except Exception:
+        logger.debug("could not read spendable wallet display ids for sync hint", exc_info=True)
+        return set()
+
+
+def _wallet_known_display_ranges_from_lines(wallet_lines, known_display_ids=None):
+    try:
+        from . import protocol_v3
+    except Exception:
+        return []
+    known_display_ids = set(known_display_ids or [])
+    if not known_display_ids:
+        return []
+    known_points = {}
+    for line in runtime_json.wallet_bill_lines(wallet_lines):
+        parts = str(line).split()
+        if len(parts) < 2:
+            continue
+        display_id = parts[0].lstrip("-")
+        if display_id not in known_display_ids:
+            continue
+        try:
+            parsed = protocol_v3.parse_display_id(display_id, "wallet bill display id")
+            sequence = int(parts[1])
+        except Exception:
+            continue
+        if sequence <= 0:
+            continue
+        point = (int(parsed["value"]), int(parsed["serial"]))
+        known_points[point] = max(int(known_points.get(point, 0)), sequence)
+    ranges = [
+        [value, serial, serial, sequence]
+        for (value, serial), sequence in known_points.items()
+    ]
+    return _compact_wallet_sync_display_ranges(ranges)
+
+
+def _wallet_sync_request_with_wallet_ranges(sync_request, store, address, wallet_lines):
+    if not isinstance(sync_request, dict):
+        return sync_request
+    spendable_display_ids = _spendable_wallet_display_ids_for_ranges(
+        store,
+        address,
+        wallet_lines,
+    )
+    wallet_ranges = _wallet_known_display_ranges_from_lines(
+        wallet_lines,
+        known_display_ids=spendable_display_ids,
+    )
+    if not wallet_ranges:
+        return sync_request
+    existing_ranges = sync_request.get("known_display_ranges")
+    combined_ranges = list(existing_ranges) if isinstance(existing_ranges, list) else []
+    combined_ranges.extend(wallet_ranges)
+    merged_ranges = _compact_wallet_sync_display_ranges(combined_ranges)
+    if not merged_ranges:
+        return sync_request
+    updated_request = dict(sync_request)
+    updated_request["known_display_ranges"] = merged_ranges
+    return updated_request
+
+
 def _wallet_sync_request_for_address(
     store,
     address,
     response_limit=WALLET_SYNC_RESPONSE_LIMIT,
     direction="backfill",
     page_cursor=None,
+    wallet_lines=None,
 ):
     request_builder = getattr(store, "wallet_delta_sync_request", None)
     if not callable(request_builder):
         return None
     try:
-        return request_builder(
+        request = request_builder(
             address,
             token_limit=WALLET_SYNC_TOKEN_CURSOR_LIMIT,
             response_limit=response_limit,
             direction=direction,
             page_cursor=page_cursor,
         )
+        return _wallet_sync_request_with_wallet_ranges(request, store, address, wallet_lines)
     except TypeError:
         try:
-            return request_builder(
+            request = request_builder(
                 address,
                 token_limit=WALLET_SYNC_TOKEN_CURSOR_LIMIT,
                 response_limit=response_limit,
             )
+            return _wallet_sync_request_with_wallet_ranges(request, store, address, wallet_lines)
         except Exception as exc:
             logger.debug("could not build wallet delta sync request for %s: %s", address, exc)
             return None
@@ -2335,10 +2465,10 @@ def receive_bills(
                     )
                 return []
 
-            def wallet_record_history_timestamp(record):
+            def wallet_record_history_timestamp(record, current_address=address):
                 fallback = record.get("updated_at") or time.time()
                 bill = None
-                if "bill_blob" not in record and keys_v3.is_address(address):
+                if "bill_blob" not in record and keys_v3.is_address(current_address):
                     lookup = getattr(store, "get_bill_v3_by_display_id_sequence", None)
                     if callable(lookup):
                         try:
@@ -2480,7 +2610,13 @@ def receive_bills(
                         )
                 return True
 
-            def process_records(records, source, peer="", context=wallet_context):
+            def process_records(
+                records,
+                source,
+                peer="",
+                context=wallet_context,
+                known_sequences=local_known_sequences,
+            ):
                 current_address = context["address"]
                 progress_started = time.monotonic()
                 progress_last_emit = progress_started
@@ -2519,7 +2655,7 @@ def receive_bills(
                     summary["checked_records"] += 1
                     progress_since_emit += 1
                     if token_id and sequence is not None:
-                        known_sequence = local_known_sequences.get(token_id)
+                        known_sequence = known_sequences.get(token_id)
                         if known_sequence is not None and int(known_sequence) >= sequence:
                             summary["skipped_known_records"] += 1
                             emit_record_check_progress(display_id=display_id, sequence=sequence)
@@ -2530,8 +2666,8 @@ def receive_bills(
                         if result.get("accepted"):
                             summary["accepted_records"] += 1
                             if token_id and sequence is not None:
-                                local_known_sequences[token_id] = max(
-                                    int(local_known_sequences.get(token_id, 0) or 0),
+                                known_sequences[token_id] = max(
+                                    int(known_sequences.get(token_id, 0) or 0),
                                     sequence,
                                 )
                             state = result.get("state")
@@ -2599,6 +2735,7 @@ def receive_bills(
                         response_limit=response_limit,
                         direction=sync_direction,
                         page_cursor=page_cursor,
+                        wallet_lines=wallet_context["wallet"],
                     )
                     legacy_request_without_builder = (
                         sync_request is None

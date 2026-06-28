@@ -14,7 +14,6 @@ import argparse
 import base64
 import copy
 import json
-import os
 import sys
 import time
 import urllib.parse
@@ -26,9 +25,10 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-import log_client
+from ind import transparency_client as log_client
 from ind import keys_v3
 from ind import protocol as ind_token
+from ind.io_utils import atomic_write_json
 from tools import render_operator_env
 
 BUNDLE_TYPE = "ind.operator_admission_bundle.v3"
@@ -59,15 +59,7 @@ def record_hash(data):
     return sha3_256(canonical_bytes(data)).hexdigest()
 
 
-def _atomic_write_json(path, data):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(
-        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n",
-        encoding="utf-8",
-    )
-    os.replace(tmp, path)
+_atomic_write_json = atomic_write_json
 
 
 def _read_json(path):

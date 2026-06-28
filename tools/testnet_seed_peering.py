@@ -2,7 +2,6 @@
 # Render or install durable testnet seed peering systemd drop-ins.
 
 import argparse
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +10,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from ind.io_utils import atomic_write_text
 from tools import testnet_peers
 
 DEFAULT_UNIT = "ind-testnet-seed-node.service"
@@ -33,9 +33,7 @@ def install_dropin(unit, peers, dropin_root="/etc/systemd/system", reload_daemon
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / "10-explicit-testnet-peers.conf"
     text = render_dropin(peers)
-    tmp = target.with_name(target.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, target)
+    atomic_write_text(target, text)
     if reload_daemon:
         subprocess.run(["systemctl", "daemon-reload"], check=True)
     return target

@@ -87,6 +87,11 @@ from ind import transparency_server as log_server
 from ind import wallet_services
 
 payload = json.loads(base64.b64decode("__PAYLOAD_B64__").decode("utf-8"))
+if payload.get("log_backend"):
+    os.environ["IND_LOG_BACKEND"] = str(payload["log_backend"])
+for key, value in (payload.get("operator_env") or {}).items():
+    if value is not None:
+        os.environ[str(key)] = str(value)
 operator_private, operator_public = log_server.load_or_create_operator_keys(
     payload["private_key_file"],
     payload["public_key_file"],
@@ -163,6 +168,14 @@ def _load_trusted_genesis_context():
 
 
 def _deindex_invalid_historical_claims():
+    if payload.get("log_backend") == "mariadb":
+        return {
+            "checked": 0,
+            "invalid": [],
+            "updated": 0,
+            "skipped": True,
+            "reason": "sqlite_rowid_cleanup_not_applicable",
+        }
     invalid = []
     checked = 0
     with log._connect() as conn:
@@ -544,10 +557,17 @@ def _run_ssh(node, remote_command, *, stdin_text=None, timeout=120):
 
 def _remote_issue_command(node, payload):
     payload = dict(payload)
+    operator_env = {
+        str(key): str(value)
+        for key, value in (node.get("operator_env") or {}).items()
+        if str(key).startswith("IND_LOG_") and value is not None
+    }
     payload.update(
         {
             "node": node["name"],
             "db": node["db"],
+            "log_backend": node.get("log_backend") or node.get("db_backend") or "sqlite",
+            "operator_env": operator_env,
             "private_key_file": node["private_key_file"],
             "public_key_file": node["public_key_file"],
             "genesis_manifest_file": node.get("genesis_manifest_file"),
@@ -566,14 +586,23 @@ def _remote_issue_command(node, payload):
         + "_operator_issue"
     )
     db_basename = Path(node["db"]).name
+    if payload["log_backend"] == "mariadb":
+        db_backup = (
+            "printf 'MariaDB backend configured; SQLite file backup skipped. "
+            "Use tools/operator_db.py verify and mariadb-backup for database backup.\\n'\n"
+        )
+    else:
+        db_backup = (
+            f"sudo -n cp -a {node['db']} \"$backup_dir/{db_basename}.before-issue\"\n"
+            f"if [ -f {node['db']}-wal ]; then sudo -n cp -a {node['db']}-wal \"$backup_dir/{db_basename}-wal.before-issue\"; fi\n"
+            f"if [ -f {node['db']}-shm ]; then sudo -n cp -a {node['db']}-shm \"$backup_dir/{db_basename}-shm.before-issue\"; fi\n"
+        )
     return (
         "set -eu\n"
         f"{sudo_prelude}\n"
         f"backup_dir=$HOME/ind-code-backups/{backup_label}\n"
         "mkdir -p \"$backup_dir\"\n"
-        f"sudo -n cp -a {node['db']} \"$backup_dir/{db_basename}.before-issue\"\n"
-        f"if [ -f {node['db']}-wal ]; then sudo -n cp -a {node['db']}-wal \"$backup_dir/{db_basename}-wal.before-issue\"; fi\n"
-        f"if [ -f {node['db']}-shm ]; then sudo -n cp -a {node['db']}-shm \"$backup_dir/{db_basename}-shm.before-issue\"; fi\n"
+        f"{db_backup}"
         "sudo -n chown -R $(id -u):$(id -g) \"$backup_dir\"\n"
         f"trap 'sudo -n systemctl start {node['service']} >/dev/null 2>&1 || true' EXIT\n"
         f"sudo -n systemctl stop {node['service']}\n"

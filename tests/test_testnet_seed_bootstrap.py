@@ -80,6 +80,17 @@ def test_monitor_runs_as_root_retries_and_skips_self_peer():
     assert "--retry-delay-seconds 20" in monitor
     assert "--convergence-peer seed-a.example.test" in monitor
     assert "--convergence-peer 108.61.23.82" not in monitor
+    assert "--systemd-unit ind-testnet-operator3-mirror.timer" in monitor
+
+
+def test_generated_seed_services_include_operator3_from_operator_set():
+    files = testnet_seed_bootstrap.generated_files(_args())
+
+    operator3_mirror = _file(files, "ind-testnet-operator3-mirror.service").text
+    operator3_monitor = _file(files, "ind-testnet-operator3-monitor.service").text
+
+    assert "--source-url http://167.233.115.216/operator3/transparency" in operator3_mirror
+    assert "/operator3/transparency/latest.json" in operator3_monitor
 
 
 def test_local_verify_checks_port_mirrors_and_absent_operator_api():
@@ -90,3 +101,4 @@ def test_local_verify_checks_port_mirrors_and_absent_operator_api():
     assert 'test "$operator_api_status" = "404"' in text
     assert "/transparency/latest.json" in text
     assert "/iotb-operator/transparency/latest.json" in text
+    assert "/operator3/transparency/latest.json" in text

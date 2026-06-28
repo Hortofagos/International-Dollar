@@ -166,6 +166,32 @@ def test_wallet_balance_counts_uses_lightweight_records_and_wallet_lines():
     assert counts["balance"] == 6
 
 
+def test_wallet_balance_counts_treats_verified_as_pending_when_quorum_requires_settled():
+    address, _private_key, _public_key = keys_v3.generate_keypair(b"\x45" * 32)
+
+    class Store:
+        def spendable_bill_v3_statuses(self):
+            return ("settled",)
+
+        def bill_v3_count_records_for_owner(self, owner_address, statuses=None):
+            assert owner_address == address
+            assert statuses == ("settled", "verified", "pending")
+            return [
+                {"display_id": "5x3", "sequence": 1, "status": "settled"},
+                {"display_id": "2x4", "sequence": 1, "status": "verified"},
+            ]
+
+    counts = wallet_services.wallet_balance_counts(
+        address,
+        store=Store(),
+        bill_values=(2, 5),
+    )
+
+    assert counts["bill_counts"] == {2: 0, 5: 1}
+    assert counts["pending_bill_counts"] == {2: 1, 5: 0}
+    assert counts["balance"] == 5
+
+
 def test_spendable_wallet_metadata_records_use_lightweight_query_and_filter_sent():
     address, _private_key, _public_key = keys_v3.generate_keypair(b"\x43" * 32)
 

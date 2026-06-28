@@ -46,6 +46,7 @@ class GenesisManifestV3Error(ind_token.ValidationError):
     pass
 
 
+# Return the canonical JSON bytes used for manifest hashing and signatures.
 def _canonical_bytes(data):
     return ind_token.canonical_json(data).encode("utf-8")
 
@@ -54,6 +55,7 @@ def _sha3_json(data):
     return sha3_256(_canonical_bytes(data)).hexdigest()
 
 
+# Enforce that signed manifest objects use the exact field set the protocol expects.
 def _require_exact_fields(data, required, label):
     if not isinstance(data, dict) or set(data) != set(required):
         raise GenesisManifestV3Error(f"malformed {label}")
@@ -94,11 +96,13 @@ def _signature_bytes(signature_hex):
         raise GenesisManifestV3Error("invalid genesis manifest signature") from exc
 
 
+# Derive the public issuer key text from the private issuer seed.
 def public_key_from_private_key(private_key_text):
     seed = keys_v3.decode_private_key(private_key_text)
     return keys_v3.encode_public_key(keys_v3.crypto_ed25519.public_key_from_private_seed(seed))
 
 
+# Compute the stable issuer identity committed into every manifest.
 def issuer_key_id(issuer_public_key):
     keys_v3.decode_public_key(issuer_public_key)
     return _sha3_json(
@@ -109,6 +113,7 @@ def issuer_key_id(issuer_public_key):
     )
 
 
+# Return the manifest fields that are covered by the Ed25519 signature.
 def unsigned_manifest(manifest):
     unsigned = copy.deepcopy(manifest)
     unsigned.pop("signature", None)
@@ -116,6 +121,7 @@ def unsigned_manifest(manifest):
     return unsigned
 
 
+# Hash a manifest without its self-hash or signature fields.
 def manifest_hash(manifest):
     return _sha3_json(unsigned_manifest(manifest))
 
@@ -147,6 +153,7 @@ def _normalize_network(value):
     return aliases.get(value, value or "mainnet")
 
 
+# Normalize ranges and reject overlap before supply totals are trusted.
 def _validate_ranges(ranges):
     if not isinstance(ranges, list) or not ranges:
         raise GenesisManifestV3Error("genesis manifest must contain ranges")
@@ -189,6 +196,7 @@ def _validate_ranges(ranges):
     return normalized, total_count, total_value
 
 
+# Convert validated range metadata back to the signed manifest shape.
 def _manifest_ranges(normalized):
     return [
         {
@@ -202,6 +210,7 @@ def _manifest_ranges(normalized):
     ]
 
 
+# Build denomination ranges that assign the full fixed supply to one owner.
 def full_supply_ranges(owner_address, seed_prefix="IND-MAINNET-GENESIS-V3"):
     owner_address = keys_v3.validate_address(owner_address, "genesis owner address")
     return full_supply_ranges_by_denomination(
@@ -210,6 +219,7 @@ def full_supply_ranges(owner_address, seed_prefix="IND-MAINNET-GENESIS-V3"):
     )
 
 
+# Build full-supply ranges while allowing each denomination to have its own owner.
 def full_supply_ranges_by_denomination(owner_addresses, seed_prefix="IND-MAINNET-GENESIS-V3"):
     if not isinstance(owner_addresses, dict):
         raise GenesisManifestV3Error("denomination owner addresses must be a mapping")
@@ -242,6 +252,7 @@ def full_supply_ranges_by_denomination(owner_addresses, seed_prefix="IND-MAINNET
     return ranges
 
 
+# Create and sign a native V3 genesis manifest from validated supply ranges.
 def make_manifest(
     ranges,
     issuer_private_key,
@@ -263,7 +274,6 @@ def make_manifest(
     metadata = copy.deepcopy(metadata or {})
     metadata.setdefault("project", "IND")
     metadata.setdefault("purpose", f"{network} V3 genesis supply manifest")
-    metadata.setdefault(ind_token.NUMEROLOGY_METADATA_KEY, ind_token.numerology_signature())
     ind_token._require_metadata(metadata, ind_token.MAX_GENESIS_METADATA_BYTES, "genesis manifest")
     unsigned = {
         "type": GENESIS_MANIFEST_TYPE,
@@ -287,6 +297,7 @@ def make_manifest(
     return manifest
 
 
+# Verify manifest shape, totals, trust pinning, self-hash, and issuer signature.
 def verify_manifest(
     manifest,
     *,
@@ -358,6 +369,7 @@ def verify_manifest(
     }
 
 
+# Locate the manifest range that covers a particular denomination serial.
 def _range_for_serial(ranges, value, serial):
     value = ind_token.validate_bill_value(value, "genesis ref value")
     serial = ind_token.validate_bill_serial(value, serial, "genesis ref serial")
@@ -367,6 +379,7 @@ def _range_for_serial(ranges, value, serial):
     raise GenesisManifestV3Error("genesis serial is not covered by manifest")
 
 
+# Derive the deterministic nonce used to make one genesis hash unique.
 def derive_nonce(manifest, value, serial):
     verified = verify_manifest(manifest)
     range_def = _range_for_serial(verified["ranges"], value, serial)
@@ -384,6 +397,7 @@ def derive_nonce(manifest, value, serial):
     )
 
 
+# Derive the canonical genesis hash for one issued denomination serial.
 def derive_genesis_hash(manifest, value, serial):
     verified = verify_manifest(manifest)
     range_def = _range_for_serial(verified["ranges"], value, serial)
@@ -403,6 +417,7 @@ def derive_genesis_hash(manifest, value, serial):
     )
 
 
+# Build the compact reference that links a token back to the signed manifest.
 def derive_genesis_ref(manifest, value, serial):
     verified = verify_manifest(manifest)
     serial = ind_token.validate_bill_serial(value, serial, "genesis ref serial")
@@ -418,6 +433,7 @@ def derive_genesis_ref(manifest, value, serial):
     }
 
 
+# Build the sequence-zero token state implied by a verified genesis manifest.
 def derive_base_state(manifest, value, serial):
     verified = verify_manifest(manifest)
     range_def = _range_for_serial(verified["ranges"], value, serial)

@@ -19,6 +19,11 @@ from pathlib import Path, PurePosixPath
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from ind.io_utils import atomic_write_json
+
 DEFAULT_VPS_HOST = os.environ.get("IND_TESTNET_VPS_HOST", "")
 DEFAULT_VPS_USER = os.environ.get("IND_TESTNET_VPS_USER", "")
 DEFAULT_SSH_KEY = os.environ.get("IND_TESTNET_SSH_KEY", "")
@@ -99,16 +104,6 @@ def b64encode(data):
 
 def b64decode(text):
     return base64.b64decode(text.encode("ascii"))
-
-
-def atomic_write_json(path, data):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(
-        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
-    )
-    os.replace(tmp, path)
 
 
 def load_or_create_backup_key(path):

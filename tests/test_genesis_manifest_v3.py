@@ -40,6 +40,10 @@ def test_native_v3_genesis_manifest_round_trips_full_supply():
     assert verified["manifest_hash"] == manifest["manifest_hash"]
     assert verified["total_token_count"] == ind_token.TOTAL_SUPPLY
     assert verified["issuer_key_id"] == manifest["issuer_key_id"]
+    assert manifest["metadata"] == {
+        "project": "IND",
+        "purpose": "unit test mainnet genesis manifest",
+    }
 
 
 def test_native_v3_genesis_manifest_derives_genesis_ref_and_base_state():

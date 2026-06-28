@@ -49,7 +49,7 @@ from .protocol import (
     verify_transparency_root_announcement,
 )
 
-STORE_SCHEMA_VERSION = 9
+STORE_SCHEMA_VERSION = 10
 DEFAULT_FIRST_CHECKPOINT_AFTER_TRANSFERS = 10
 DEFAULT_CHECKPOINT_INTERVAL_TRANSFERS = 10
 DEFAULT_HIGH_VALUE_CHECKPOINT_THRESHOLD = 0
@@ -60,6 +60,7 @@ BILL_V3_STATUS_RANK = {
     "verified": 3,
     "settled": 3,
 }
+_INTERNAL_PREVERIFIED_SENTINEL = object()
 V3_CONFLICT_ANCHOR_STATUSES = ("pending", "verified", "settled")
 V3_LOG_PROVEN_STATUS = "log_proven"
 V3_LOG_PENDING_STATUS = "log_pending"
@@ -80,6 +81,17 @@ WALLET_SYNC_SERVER_SCAN_LIMIT = max(
 )
 
 
+# Mark a conflict proof as already validated by the gossip layer before storage.
+def preverified_conflict_proof_v3(proof, *, message_hash=None):
+    return {
+        "type": "conflict_proof_v3",
+        "proof_hash": proof["proof_hash"],
+        "network_id": int(proof["network_id"]),
+        "message_hash": message_hash,
+        "_sentinel": _INTERNAL_PREVERIFIED_SENTINEL,
+    }
+
+
 def _policy_int(value, default, minimum=0):
     try:
         result = int(value)
@@ -88,6 +100,7 @@ def _policy_int(value, default, minimum=0):
     return max(int(minimum), result)
 
 
+# Keep the stronger BillV3 status when duplicate rows are merged.
 def _stronger_bill_v3_status(current, incoming):
     current = str(current or "")
     incoming = str(incoming or "")
@@ -96,6 +109,7 @@ def _stronger_bill_v3_status(current, incoming):
     return incoming
 
 
+# Reject wallet rows whose stored blob no longer matches its display id or token id.
 def _bill_v3_record_has_allowed_value(record):
     try:
         from . import protocol_v3
@@ -111,6 +125,7 @@ def _bill_v3_record_has_allowed_value(record):
         return False
 
 
+# Reject wallet metadata rows with display ids unsupported by the active V3 parser.
 def _bill_v3_record_has_supported_display_id(record):
     try:
         from . import protocol_v3
@@ -137,6 +152,7 @@ def _invalid_bill_v3_reason(record):
     return ""
 
 
+# Extract the source archive segment hash carried by proof-bundle evidence.
 def _source_archive_segment_hash_v3(bundle):
     if not isinstance(bundle, dict):
         return None
@@ -184,7 +200,12 @@ class INDLocalStore:
         if self.transparency_submitter is None:
             self.transparency_submitter = _configured_transparency_submitter()
         if self.transparency_submitter is not None and self.transparency_verifier is None:
-            self.transparency_verifier = _environment_transparency_verifier()
+            try:
+                self.transparency_verifier = _environment_transparency_verifier()
+            except Exception:
+                if self.require_transparency:
+                    raise
+                self.transparency_verifier = None
         if self.transparency_root_gossip and self.transparency_verifier is None:
             try:
                 self.transparency_verifier = _environment_transparency_verifier()
@@ -206,6 +227,12 @@ class INDLocalStore:
         except Exception:
             self.transparency_submit_async = os.environ.get(
                 "IND_TRANSPARENCY_SUBMIT_ASYNC", ""
+            ).strip().lower() in {"1", "true", "yes", "on"}
+        try:
+            self.settlement_quorum_enabled = ind_settings.settlement_quorum_enabled()
+        except Exception:
+            self.settlement_quorum_enabled = os.environ.get(
+                "IND_SETTLEMENT_QUORUM_ENABLED", ""
             ).strip().lower() in {"1", "true", "yes", "on"}
         self.first_checkpoint_after_transfers = _policy_int(
             (
@@ -267,7 +294,9 @@ class INDLocalStore:
 
     # Create the tables used for compact bill storage and local settlement.
     def _init_db(self):
+        initial_version = 0
         with self._connect() as conn:
+            initial_version = self._schema_version(conn)
             self._migrate_db(conn)
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS tokens (
@@ -402,8 +431,31 @@ class INDLocalStore:
                     ON bills_v3(display_id);
                 CREATE INDEX IF NOT EXISTS idx_bills_v3_owner_status
                     ON bills_v3(owner_address, status);
+                CREATE INDEX IF NOT EXISTS idx_bills_v3_owner_updated
+                    ON bills_v3(owner_address, updated_at DESC, sequence DESC, token_id DESC);
+                CREATE INDEX IF NOT EXISTS idx_bills_v3_owner_status_updated
+                    ON bills_v3(owner_address, status, updated_at DESC, sequence DESC, token_id DESC);
+                CREATE INDEX IF NOT EXISTS idx_bills_v3_token_sequence_updated
+                    ON bills_v3(token_id, sequence DESC, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_bills_v3_proof_bundle
                     ON bills_v3(proof_bundle_hash);
+
+                CREATE TABLE IF NOT EXISTS bill_tips_v3 (
+                    bill_hash TEXT PRIMARY KEY,
+                    token_id TEXT NOT NULL,
+                    spend_key TEXT,
+                    tip_transfer_hash TEXT,
+                    previous_hash TEXT,
+                    sequence INTEGER NOT NULL,
+                    sender_address TEXT,
+                    owner_address TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_bill_tips_v3_spend
+                    ON bill_tips_v3(spend_key, token_id, previous_hash, sequence, sender_address);
+                CREATE INDEX IF NOT EXISTS idx_bill_tips_v3_token_sequence
+                    ON bill_tips_v3(token_id, sequence DESC, updated_at DESC);
 
                 CREATE TABLE IF NOT EXISTS conflicts_v3 (
                     proof_hash TEXT PRIMARY KEY,
@@ -466,6 +518,11 @@ class INDLocalStore:
                     ON issued_checkpoints_v3(display_id);
                 """)
             self._set_schema_version(conn, STORE_SCHEMA_VERSION)
+        if initial_version < 10:
+            try:
+                self.rebuild_bill_tips_v3()
+            except Exception as exc:
+                logger.warning("BillV3 tip-cache backfill failed; cache will rebuild lazily: %s", exc)
 
     def _schema_version(self, conn):
         try:
@@ -491,6 +548,7 @@ class INDLocalStore:
             (str(int(version)), int(time.time())),
         )
 
+    # Run one-way schema migrations before the current tables are ensured.
     def _migrate_db(self, conn):
         version = self._schema_version(conn)
         if version > STORE_SCHEMA_VERSION:
@@ -1235,6 +1293,134 @@ class INDLocalStore:
             logger.warning("automatic native V3 compaction failed: %s", exc)
             return None
 
+    def _bill_tip_record_v3(self, bill, state, status, bill_hash_value=None, updated_at=None):
+        from . import protocol_v3
+
+        if isinstance(bill, bytes):
+            bill = protocol_v3.decode_bill(bill)
+        bill_hash_value = bill_hash_value or protocol_v3.bill_hash(bill).hex()
+        updated_at = int(updated_at if updated_at is not None else time.time())
+        transfers = bill.get("recent_transfers") if isinstance(bill, dict) else None
+        tip = transfers[-1] if transfers else None
+        spend_key = None
+        tip_transfer_hash = None
+        previous_hash = None
+        sender_address = None
+        if tip is not None:
+            spend_key = protocol_v3.spend_key_for_transfer(tip)
+            tip_transfer_hash = protocol_v3.transfer_hash(tip)
+            previous_hash = tip["previous_hash"]
+            sender_address = tip["sender_address"]
+        return {
+            "bill_hash": bill_hash_value,
+            "token_id": state.token_id,
+            "spend_key": spend_key,
+            "tip_transfer_hash": tip_transfer_hash,
+            "previous_hash": previous_hash,
+            "sequence": int(state.sequence),
+            "sender_address": sender_address,
+            "owner_address": state.owner_address,
+            "status": str(status),
+            "updated_at": updated_at,
+        }
+
+    def _store_bill_tip_v3_conn(self, conn, bill, state, status, bill_hash_value=None, updated_at=None):
+        record = self._bill_tip_record_v3(
+            bill,
+            state,
+            status,
+            bill_hash_value=bill_hash_value,
+            updated_at=updated_at,
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO bill_tips_v3(
+                bill_hash, token_id, spend_key, tip_transfer_hash, previous_hash,
+                sequence, sender_address, owner_address, status, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record["bill_hash"],
+                record["token_id"],
+                record["spend_key"],
+                record["tip_transfer_hash"],
+                record["previous_hash"],
+                int(record["sequence"]),
+                record["sender_address"],
+                record["owner_address"],
+                record["status"],
+                int(record["updated_at"]),
+            ),
+        )
+        return record
+
+    def rebuild_bill_tips_v3(self, *, verify=True, limit=None):
+        """Rebuild the local BillV3 tip cache from stored bills.
+
+        This table is an index/cache only. Deleting or rebuilding it must never
+        change which bills are accepted; it only affects lookup speed.
+        """
+
+        from . import protocol_v3
+
+        params = []
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = " LIMIT ?"
+            params.append(max(0, int(limit)))
+        rebuilt = 0
+        skipped = 0
+        with self._connect() as conn:
+            if limit is None:
+                conn.execute("DELETE FROM bill_tips_v3")
+            rows = conn.execute(
+                f"""
+                SELECT bill_hash, bill_blob, status
+                FROM bills_v3
+                ORDER BY updated_at DESC{limit_clause}
+                """,
+                params,
+            ).fetchall()
+            for row in rows:
+                try:
+                    bill = protocol_v3.decode_bill(bytes(row["bill_blob"]))
+                    if verify:
+                        state = protocol_v3.verify_bill(
+                            bill,
+                            proof_bundle_resolver=self.proof_bundle_resolver_v3,
+                            transparency_verifier=self.transparency_verifier,
+                            trusted_operator_public_key=self._trusted_operator_key_from_bill_v3(bill),
+                            archive_segment_resolver=self.archive_segment_resolver_v3,
+                        )
+                    else:
+                        base_state = protocol_v3._initial_state_from_checkpoint_core(
+                            bill["checkpoint_core"]
+                        )
+                        materialized_state = protocol_v3.verify_transfer_sequence_from_state(
+                            bill["token_id"],
+                            base_state,
+                            bill.get("recent_transfers") or [],
+                            network_id=int(bill.get("network_id", protocol_v3.DEFAULT_NETWORK_ID)),
+                        )
+                        state = protocol_v3._token_state_from_v3_state(
+                            bill["token_id"], materialized_state
+                        )
+                    self._store_bill_tip_v3_conn(
+                        conn,
+                        bill,
+                        state,
+                        row["status"],
+                        bill_hash_value=row["bill_hash"],
+                    )
+                    rebuilt += 1
+                except Exception:
+                    skipped += 1
+                    logger.debug("skipping BillV3 during tip-cache rebuild", exc_info=True)
+        return {"rebuilt": rebuilt, "skipped": skipped}
+
+    def repair_bill_tips_v3(self, **kwargs):
+        return self.rebuild_bill_tips_v3(**kwargs)
+
     def _store_bill_v3_conn(self, conn, bill, state, status):
         from . import protocol_v3
 
@@ -1270,6 +1456,14 @@ class INDLocalStore:
                 now,
                 stored_status,
             ),
+        )
+        self._store_bill_tip_v3_conn(
+            conn,
+            bill,
+            state,
+            stored_status,
+            bill_hash_value=bill_hash_value,
+            updated_at=now,
         )
         return bill_hash_value
 
@@ -1420,7 +1614,10 @@ class INDLocalStore:
                 """,
                 (bill_hash,),
             )
-            return bool(conn.execute("SELECT changes() AS count_value").fetchone()["count_value"])
+            deleted = int(conn.execute("SELECT changes() AS count_value").fetchone()["count_value"])
+            if deleted:
+                conn.execute("DELETE FROM bill_tips_v3 WHERE bill_hash = ?", (bill_hash,))
+            return bool(deleted)
 
     def _bill_v3_row_tip_transfer_hash(self, row):
         from . import protocol_v3
@@ -1450,19 +1647,29 @@ class INDLocalStore:
         ).fetchone()
         return row is not None
 
+    def spendable_bill_v3_statuses(self):
+        if self.settlement_quorum_enabled:
+            return ("settled",)
+        return ("settled", "verified")
+
+    # Return the newest locally spendable BillV3 for an owner/display id pair.
     def get_spendable_bill_v3_by_display_id(self, display_id, owner_address):
         from . import protocol_v3
 
+        statuses = self.spendable_bill_v3_statuses()
+        placeholders = ",".join("?" for _ in statuses)
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM bills_v3
                 WHERE display_id = ?
                   AND owner_address = ?
-                  AND status IN ('settled', 'verified')
-                ORDER BY sequence DESC, LENGTH(bill_blob) ASC, updated_at DESC
+                  AND status IN ({placeholders})
+                ORDER BY sequence DESC,
+                         CASE status WHEN 'settled' THEN 3 WHEN 'verified' THEN 2 ELSE 1 END DESC,
+                         LENGTH(bill_blob) ASC, updated_at DESC
                 """,
-                (str(display_id), str(owner_address)),
+                (str(display_id), str(owner_address), *statuses),
             ).fetchall()
             for row in rows:
                 if self._has_materialized_newer_v3_branch_conn(
@@ -1474,12 +1681,15 @@ class INDLocalStore:
                 return protocol_v3.decode_bill(bytes(row["bill_blob"]))
         return None
 
+    # Return display ids from a batch that currently have spendable local tips.
     def spendable_bill_v3_display_ids(self, owner_address, display_ids):
         display_ids = [str(display_id).strip() for display_id in display_ids if str(display_id).strip()]
         if not display_ids:
             return set()
         found = set()
         chunk_size = 800
+        statuses = self.spendable_bill_v3_statuses()
+        status_placeholders = ",".join("?" for _ in statuses)
         with self._connect() as conn:
             for offset in range(0, len(display_ids), chunk_size):
                 chunk = display_ids[offset : offset + chunk_size]
@@ -1489,11 +1699,13 @@ class INDLocalStore:
                     SELECT display_id, token_id, sequence
                     FROM bills_v3
                     WHERE owner_address = ?
-                      AND status IN ('settled', 'verified')
+                      AND status IN ({status_placeholders})
                       AND display_id IN ({placeholders})
-                    ORDER BY display_id, sequence DESC, LENGTH(bill_blob) ASC, updated_at DESC
+                    ORDER BY display_id, sequence DESC,
+                             CASE status WHEN 'settled' THEN 3 WHEN 'verified' THEN 2 ELSE 1 END DESC,
+                             LENGTH(bill_blob) ASC, updated_at DESC
                     """,
-                    (str(owner_address), *chunk),
+                    (str(owner_address), *statuses, *chunk),
                 ).fetchall()
                 for row in rows:
                     display_id = str(row["display_id"])
@@ -1953,7 +2165,9 @@ class INDLocalStore:
         if configured > 0:
             return configured
         operator_count = self._append_operator_target_count_v3()
-        return max(1, operator_count)
+        if operator_count <= 0:
+            return 1
+        return operator_count // 2 + 1
 
     def _submit_v3_transfer_to_all_operators(self, message):
         if self.transparency_submitter is None:
@@ -2009,6 +2223,23 @@ class INDLocalStore:
         spend_key = protocol_v3.spend_key_for_transfer(transfer)
         response = response or {}
         now = int(time.time())
+        existing = conn.execute(
+            """
+            SELECT status
+            FROM transfer_log_status_v3
+            WHERE transfer_hash = ? AND log_id = ?
+            """,
+            (transfer_hash_value, identity["log_id"]),
+        ).fetchone()
+        status_rank = {
+            V3_LOG_UNLOGGED_STATUS: 0,
+            V3_LOG_PENDING_STATUS: 1,
+            V3_LOG_PROVEN_STATUS: 2,
+        }
+        if existing is not None and status_rank.get(status, 0) < status_rank.get(
+            existing["status"], 0
+        ):
+            return
         conn.execute(
             """
             INSERT OR REPLACE INTO transfer_log_status_v3(
@@ -2315,6 +2546,7 @@ class INDLocalStore:
             ).fetchone()
         return row is not None
 
+    # Return whether the bill tip has enough independent operator log proofs.
     def _bill_v3_tip_log_proven(self, bill):
         from . import protocol_v3
 
@@ -2331,6 +2563,7 @@ class INDLocalStore:
         proven_log_ids = {row["log_id"] for row in statuses}
         return len(proven_log_ids) >= self._operator_finality_required_proofs_v3()
 
+    # Submit a native V3 transfer to append-capable operators and record each result.
     def _submit_v3_transfer_to_transparency_log(self, message, decoded):
         from . import protocol_v3
 
@@ -2471,6 +2704,7 @@ class INDLocalStore:
             f"transparency log append was not proven by a mirror before timeout: {last_error}"
         )
 
+    # Retry native V3 proof verification until timeout to tolerate mirror lag.
     def _verify_transparency_submission_v3(self, transfer, entry_hash, leaf_index, verifier=None):
         from . import protocol_v3
         from . import transparency_client as log_client
@@ -2635,6 +2869,7 @@ class INDLocalStore:
             return None
         raise ValidationError("conflicting transfer rejected")
 
+    # Drain pending transparency-gossip evidence from the verifier into node gossip.
     def _drain_transparency_gossip(self):
         if self.transparency_verifier is None:
             return []
@@ -2643,6 +2878,7 @@ class INDLocalStore:
             return []
         return drain()
 
+    # Return persisted equivocation evidence produced by transparency verification.
     def transparency_equivocation_messages(self, limit=100):
         if self.transparency_verifier is None:
             return []
@@ -2651,6 +2887,7 @@ class INDLocalStore:
             return []
         return persisted(limit=limit)
 
+    # Return persisted operator-policy evidence produced by transparency verification.
     def transparency_operator_policy_violation_messages(self, limit=100):
         if self.transparency_verifier is None:
             return []
@@ -2670,6 +2907,24 @@ class INDLocalStore:
         protocol_v3.verify_conflict_proof(proof)
         return proof
 
+    def _post_settlement_conflict_v3_settled_row(self, conn, proof):
+        return conn.execute(
+            """
+            SELECT bill_hash, token_id, display_id, owner_address, sequence, updated_at, status
+            FROM bills_v3
+            WHERE token_id = ?
+              AND status = 'settled'
+              AND sequence >= ?
+            ORDER BY sequence DESC, updated_at DESC
+            LIMIT 1
+            """,
+            (str(proof["token_id"]), int(proof["sequence"])),
+        ).fetchone()
+
+    def _is_post_settlement_conflict_v3(self, conn, proof):
+        return self._post_settlement_conflict_v3_settled_row(conn, proof) is not None
+
+    # Return whether a stored bill tip can anchor this conflict proof locally.
     def _bill_v3_matches_conflict_anchor(self, bill, state, proof):
         from . import protocol_v3
 
@@ -2689,6 +2944,7 @@ class INDLocalStore:
             and str(getattr(state, "owner_address", "")) == str(proof["sender_address"])
         )
 
+    # Search locally known BillV3 tips for evidence that the conflict belongs here.
     def _conflict_proof_has_local_v3_anchor(self, conn, proof):
         from . import protocol_v3
 
@@ -2726,26 +2982,50 @@ class INDLocalStore:
                 )
         return False
 
+    # Reject conflict proof gossip unless it is anchored to local bill history.
     def _require_conflict_proof_v3_anchor(self, conn, proof):
         if not self._conflict_proof_has_local_v3_anchor(conn, proof):
             raise ValidationError("unanchored V3 conflict proof")
 
-    def _store_conflict_proof_v3_conn(self, conn, proof, *, expected_network_id=None):
+    # Verify, anchor, dedupe, and persist one ConflictProofV3 row.
+    def _store_conflict_proof_v3_conn(
+        self,
+        conn,
+        proof,
+        *,
+        expected_network_id=None,
+        preverified=None,
+    ):
         from . import protocol_v3
 
         if expected_network_id is None:
             expected_network_id = protocol_v3.DEFAULT_NETWORK_ID
-        protocol_v3.verify_conflict_proof(proof, expected_network_id=expected_network_id)
+        already_verified = (
+            isinstance(preverified, dict)
+            and preverified.get("_sentinel") is _INTERNAL_PREVERIFIED_SENTINEL
+            and preverified.get("type") == "conflict_proof_v3"
+            and preverified.get("proof_hash") == proof.get("proof_hash")
+            and int(preverified.get("network_id", -1)) == int(expected_network_id)
+            and int(proof.get("network_id", -2)) == int(expected_network_id)
+        )
+        if not already_verified:
+            protocol_v3.verify_conflict_proof(proof, expected_network_id=expected_network_id)
         self._require_conflict_proof_v3_anchor(conn, proof)
         proof_hash_value = proof["proof_hash"]
         conflict_key_value = protocol_v3.conflict_proof_key(proof)
-        inserted = (
-            conn.execute(
-                "SELECT 1 FROM conflicts_v3 WHERE conflict_key = ?",
-                (conflict_key_value,),
-            ).fetchone()
-            is None
-        )
+        if self._is_post_settlement_conflict_v3(conn, proof):
+            return {
+                "proof": proof,
+                "inserted": False,
+                "ignored": True,
+                "proof_hash": proof_hash_value,
+                "conflict_key": conflict_key_value,
+            }
+        existing = conn.execute(
+            "SELECT proof_hash FROM conflicts_v3 WHERE conflict_key = ?",
+            (conflict_key_value,),
+        ).fetchone()
+        inserted = existing is None
         if inserted:
             conn.execute(
                 """
@@ -2765,6 +3045,7 @@ class INDLocalStore:
         return {
             "proof": proof,
             "inserted": bool(inserted),
+            "ignored": False,
             "proof_hash": proof_hash_value,
             "conflict_key": conflict_key_value,
         }
@@ -2782,6 +3063,8 @@ class INDLocalStore:
             try:
                 proof = self._load_conflict_proof_v3_row(row)
                 self._require_conflict_proof_v3_anchor(conn, proof)
+                if self._is_post_settlement_conflict_v3(conn, proof):
+                    continue
                 return proof
             except Exception as exc:
                 conn.execute(
@@ -2920,6 +3203,10 @@ class INDLocalStore:
                     deleted_bills += conn.execute("SELECT changes() AS count_value").fetchone()[
                         "count_value"
                     ]
+                    conn.execute(
+                        "DELETE FROM bill_tips_v3 WHERE bill_hash = ?",
+                        (item["bill_hash"],),
+                    )
                 for token_id in token_ids:
                     conn.execute("DELETE FROM messages WHERE token_id = ?", (token_id,))
                     deleted_messages += conn.execute("SELECT changes() AS count_value").fetchone()[
@@ -2950,6 +3237,8 @@ class INDLocalStore:
                 try:
                     proof = self._load_conflict_proof_v3_row(row)
                     self._require_conflict_proof_v3_anchor(conn, proof)
+                    if self._is_post_settlement_conflict_v3(conn, proof):
+                        continue
                     messages.append(proof)
                 except Exception as exc:
                     conn.execute(
@@ -2974,7 +3263,9 @@ class INDLocalStore:
             """
             SELECT * FROM bills_v3
             WHERE token_id = ?
-            ORDER BY sequence DESC, LENGTH(bill_blob) ASC, updated_at DESC
+            ORDER BY sequence DESC,
+                     CASE status WHEN 'settled' THEN 3 WHEN 'verified' THEN 2 WHEN 'pending' THEN 1 ELSE 0 END DESC,
+                     LENGTH(bill_blob) ASC, updated_at DESC
             LIMIT 1
             """,
             (ref,),
@@ -2985,7 +3276,9 @@ class INDLocalStore:
             """
             SELECT * FROM bills_v3
             WHERE display_id = ?
-            ORDER BY sequence DESC, LENGTH(bill_blob) ASC, updated_at DESC
+            ORDER BY sequence DESC,
+                     CASE status WHEN 'settled' THEN 3 WHEN 'verified' THEN 2 WHEN 'pending' THEN 1 ELSE 0 END DESC,
+                     LENGTH(bill_blob) ASC, updated_at DESC
             LIMIT 1
             """,
             (ref,),
@@ -3026,7 +3319,7 @@ class INDLocalStore:
     def _status_record_for_bill_v3_row(self, ref, row, *, min_settled_seconds=0):
         with self._connect() as conn:
             conflict_proof = self._latest_conflict_proof_v3_for_token(conn, row["token_id"])
-        if conflict_proof:
+        if conflict_proof and row["status"] != "settled":
             return self._conflict_status_record_v3(
                 ref,
                 row["token_id"],
@@ -3123,29 +3416,24 @@ class INDLocalStore:
         from . import protocol_v3
 
         incoming_hash = protocol_v3.bill_hash(bill).hex()
-        rows = conn.execute(
-            """
-            SELECT bill_hash, bill_blob FROM bills_v3
-            WHERE token_id = ?
-            ORDER BY sequence DESC, updated_at DESC
-            """,
-            (str(bill["token_id"]),),
-        ).fetchall()
-        for row in rows:
-            if str(row["bill_hash"]) == incoming_hash:
-                continue
+        tried_hashes = {incoming_hash}
+        incoming_operator_key = trusted_operator_public_key or self._trusted_operator_key_from_bill_v3(
+            bill
+        )
+
+        def try_stored_bill(row):
+            row_hash = str(row["bill_hash"])
+            if row_hash in tried_hashes:
+                return None
+            tried_hashes.add(row_hash)
             try:
                 existing = protocol_v3.decode_bill(bytes(row["bill_blob"]))
             except Exception:
                 logger.debug(
                     "skipping invalid stored V3 bill while checking conflicts", exc_info=True
                 )
-                continue
-            operator_key = (
-                trusted_operator_public_key
-                or self._trusted_operator_key_from_bill_v3(bill)
-                or self._trusted_operator_key_from_bill_v3(existing)
-            )
+                return None
+            operator_key = incoming_operator_key or self._trusted_operator_key_from_bill_v3(existing)
             try:
                 return protocol_v3.create_conflict_proof(
                     existing,
@@ -3157,6 +3445,51 @@ class INDLocalStore:
                 )
             except Exception:
                 logger.debug("stored V3 bill is not a conflicting branch", exc_info=True)
+                return None
+
+        transfers = bill.get("recent_transfers") if isinstance(bill, dict) else None
+        if transfers:
+            try:
+                incoming_tip = transfers[-1]
+                incoming_spend_key = protocol_v3.spend_key_for_transfer(incoming_tip)
+                incoming_tip_hash = protocol_v3.transfer_hash(incoming_tip)
+                rows = conn.execute(
+                    """
+                    SELECT bills_v3.bill_hash, bills_v3.bill_blob
+                    FROM bill_tips_v3
+                    JOIN bills_v3 ON bills_v3.bill_hash = bill_tips_v3.bill_hash
+                    WHERE bill_tips_v3.token_id = ?
+                      AND bill_tips_v3.spend_key = ?
+                      AND bill_tips_v3.tip_transfer_hash IS NOT NULL
+                      AND bill_tips_v3.tip_transfer_hash != ?
+                    ORDER BY bill_tips_v3.sequence DESC, bill_tips_v3.updated_at DESC
+                    LIMIT 25
+                    """,
+                    (
+                        str(bill["token_id"]),
+                        incoming_spend_key,
+                        incoming_tip_hash,
+                    ),
+                ).fetchall()
+                for row in rows:
+                    proof = try_stored_bill(row)
+                    if proof:
+                        return proof
+            except Exception:
+                logger.debug("BillV3 tip-cache conflict prefilter failed", exc_info=True)
+
+        rows = conn.execute(
+            """
+            SELECT bill_hash, bill_blob FROM bills_v3
+            WHERE token_id = ?
+            ORDER BY sequence DESC, updated_at DESC
+            """,
+            (str(bill["token_id"]),),
+        ).fetchall()
+        for row in rows:
+            proof = try_stored_bill(row)
+            if proof:
+                return proof
         return None
 
     def _ingest_transfer_announcement_v3(self, conn, message):
@@ -3211,9 +3544,19 @@ class INDLocalStore:
             trusted_operator_public_key=trusted_operator_public_key,
         )
         if conflict_proof:
+            conflict_record = self._store_conflict_proof_v3_conn(conn, conflict_proof)
+            if conflict_record.get("ignored"):
+                return {
+                    "accepted": True,
+                    "status": "ignored_conflict",
+                    "state": decoded["state"],
+                    "duplicate_conflict": not conflict_record["inserted"],
+                    "ignored_conflict": True,
+                    "relay": False,
+                    "gossip_messages": self._drain_transparency_gossip(),
+                }
             self._store_bill_v3_conn(conn, decoded["bill"], decoded["state"], "verified")
             self._record_message(conn, message, decoded["state"])
-            conflict_record = self._store_conflict_proof_v3_conn(conn, conflict_proof)
             result = {
                 "accepted": True,
                 "status": "conflict",
@@ -3225,19 +3568,21 @@ class INDLocalStore:
                 result["conflict_proof"] = conflict_record["proof"]
             return result
         self._submit_v3_transfer_to_transparency_log(message, decoded)
-        self._store_bill_v3_conn(conn, decoded["bill"], decoded["state"], "verified")
+        accepted_status = "pending" if self.settlement_quorum_enabled else "verified"
+        self._store_bill_v3_conn(conn, decoded["bill"], decoded["state"], accepted_status)
         self._record_message(conn, message, decoded["state"])
         conn.commit()
-        self._maybe_compact_bill_v3(
-            decoded["bill"],
-            proof_bundle=bundle_for_segments,
-            status="verified",
-            trusted_operator_public_key=trusted_operator_public_key,
-            transparency_verifier=self.transparency_verifier,
-        )
+        if accepted_status == "verified":
+            self._maybe_compact_bill_v3(
+                decoded["bill"],
+                proof_bundle=bundle_for_segments,
+                status=accepted_status,
+                trusted_operator_public_key=trusted_operator_public_key,
+                transparency_verifier=self.transparency_verifier,
+            )
         return {
             "accepted": True,
-            "status": "verified",
+            "status": accepted_status,
             "state": decoded["state"],
             "gossip_messages": self._drain_transparency_gossip(),
         }
@@ -3280,8 +3625,20 @@ class INDLocalStore:
     def _ingest_conflict_proof(self, conn, message):
         self._reject_non_v3_bill_protocol("non-V3 conflict proof ingest")
 
-    def _ingest_conflict_proof_v3(self, conn, message):
-        conflict_record = self._store_conflict_proof_v3_conn(conn, message)
+    def _ingest_conflict_proof_v3(self, conn, message, *, preverified=None):
+        conflict_record = self._store_conflict_proof_v3_conn(
+            conn,
+            message,
+            preverified=preverified,
+        )
+        if conflict_record.get("ignored"):
+            return {
+                "accepted": True,
+                "status": "ignored_conflict",
+                "duplicate_conflict": not conflict_record["inserted"],
+                "relay": False,
+                "ignored_conflict": True,
+            }
         self._record_message(conn, message)
         result = {
             "accepted": True,
@@ -3345,7 +3702,7 @@ class INDLocalStore:
         }
 
     # Validate one gossip message, update local state, and emit conflicts if found.
-    def ingest_message(self, message, peer_id=None):
+    def ingest_message(self, message, peer_id=None, preverified=None):
         from . import protocol_v3
 
         if isinstance(message, bytes):
@@ -3372,7 +3729,11 @@ class INDLocalStore:
             if message_type == protocol_v3.CONFLICT_PROOF_TYPE:
                 if "network_id" not in message:
                     self._reject_non_v3_bill_protocol("non-V3 conflict proof ingest")
-                return self._ingest_conflict_proof_v3(conn, message)
+                return self._ingest_conflict_proof_v3(
+                    conn,
+                    message,
+                    preverified=preverified,
+                )
 
             if message_type == TRANSPARENCY_ROOT_ANNOUNCEMENT_TYPE:
                 return self._ingest_transparency_root(conn, message, peer_id=peer_id)
@@ -3480,6 +3841,8 @@ class INDLocalStore:
                         continue
                 except Exception:
                     continue
+            if message.get("type") == protocol_v3.CONFLICT_PROOF_TYPE:
+                continue
             messages.append(message)
         return messages
 
@@ -3559,6 +3922,8 @@ class INDLocalStore:
         require_v3_log_proof=False,
     ):
         now = int(now or time.time())
+        if self.settlement_quorum_enabled:
+            require_v3_log_proof = True
         finalized = []
         compact_candidates = []
         v3_rows = self.pending_v3_settlement_candidates(now=now, buffer_seconds=buffer_seconds)
@@ -3577,6 +3942,12 @@ class INDLocalStore:
                     continue
                 if not self._bill_v3_tip_log_proven(bill):
                     continue
+            if self.settlement_quorum_enabled and settlement_reconciler is None:
+                logger.info(
+                    "V3 settlement awaiting operator-node quorum reconciler for %s",
+                    row["token_id"],
+                )
+                continue
             if settlement_reconciler is not None:
                 decision = settlement_reconciler(row)
                 if not isinstance(decision, dict) or decision.get("decision") != "settle":
@@ -3808,20 +4179,13 @@ class INDLocalStore:
     ):
         now = int(now or time.time())
         with self._connect() as conn:
-            conflict_proof = self._latest_conflict_proof_v3_for_token(conn, token_id)
-            if conflict_proof:
-                return {
-                    "accepted": False,
-                    "level": "conflict",
-                    "reason": "V3 bill has a stored conflict proof",
-                    "sequence": int(conflict_proof["sequence"]),
-                    "conflict_proof_hash": conflict_proof["proof_hash"],
-                }
             row = conn.execute(
                 """
                 SELECT * FROM bills_v3
                 WHERE token_id = ?
-                ORDER BY sequence DESC, updated_at DESC
+                ORDER BY sequence DESC,
+                         CASE status WHEN 'settled' THEN 3 WHEN 'verified' THEN 2 WHEN 'pending' THEN 1 ELSE 0 END DESC,
+                         updated_at DESC
                 LIMIT 1
                 """,
                 (str(token_id),),
@@ -3836,7 +4200,9 @@ class INDLocalStore:
                     WHERE token_id = ?
                       AND owner_address = ?
                       AND status IN ('settled', 'verified')
-                    ORDER BY sequence DESC, LENGTH(bill_blob) ASC, updated_at DESC
+                    ORDER BY sequence DESC,
+                             CASE status WHEN 'settled' THEN 3 WHEN 'verified' THEN 2 ELSE 1 END DESC,
+                             LENGTH(bill_blob) ASC, updated_at DESC
                     LIMIT 1
                     """,
                     (str(token_id), str(expected_owner)),
@@ -3847,6 +4213,15 @@ class INDLocalStore:
                     int(fallback["sequence"]),
                 ):
                     record = dict(fallback)
+            conflict_proof = self._latest_conflict_proof_v3_for_token(conn, token_id)
+            if conflict_proof and record["status"] != "settled":
+                return {
+                    "accepted": False,
+                    "level": "conflict",
+                    "reason": "V3 bill has a stored conflict proof before local settlement",
+                    "sequence": int(conflict_proof["sequence"]),
+                    "conflict_proof_hash": conflict_proof["proof_hash"],
+                }
         settled_age = now - int(record["updated_at"])
         invalid_reason = _invalid_bill_v3_reason(record)
         if invalid_reason:
@@ -3872,6 +4247,14 @@ class INDLocalStore:
                 "accepted": False,
                 "level": record["status"],
                 "reason": "V3 bill is not locally spendable",
+            }
+        if record["status"] == "verified" and self.settlement_quorum_enabled:
+            return {
+                "accepted": False,
+                "level": "verified",
+                "reason": "V3 bill is verified but awaiting settlement quorum",
+                "settled_age": 0,
+                "sequence": int(record["sequence"]),
             }
         if record["status"] == "settled" and settled_age < int(min_settled_seconds):
             return {

@@ -22,6 +22,7 @@ from pymerkle.core import InvalidChallenge
 from pymerkle.hasher import MerkleHasher
 from pymerkle.proof import InvalidProof, MerkleProof
 
+from . import env as ind_env
 from . import keys_v3
 from . import protocol as ind_token
 from .transparency_policy import TransparencyVerifierPolicy
@@ -134,20 +135,8 @@ def canonical_bytes(data):
     return canonical_json(data).encode("utf-8")
 
 
-def _env_true(name):
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_int(name, default, minimum=None, maximum=None):
-    try:
-        result = int(os.environ.get(name, default))
-    except (TypeError, ValueError):
-        result = int(default)
-    if minimum is not None:
-        result = max(int(minimum), result)
-    if maximum is not None:
-        result = min(int(maximum), result)
-    return result
+_env_true = ind_env.enabled
+_env_int = ind_env.int_value
 
 
 def _settings_module():
@@ -183,8 +172,7 @@ def _testnet_mode_enabled():
     return ind_settings.is_testnet(settings)
 
 
-def _env_false(name):
-    return os.environ.get(name, "").strip().lower() in {"0", "false", "no", "off"}
+_env_false = ind_env.disabled
 
 
 def accept_legacy_algorithm_names():
@@ -3391,6 +3379,7 @@ def _operator_matches_core_domain(operator, core_domains):
     return any(_hostname_matches_domain(hostname, domain) for domain in core_domains)
 
 
+# Derive a deterministic rotation key so non-core append targets spread load predictably.
 def _operator_selection_key(operator, announcement):
     identity = operator_identity(operator)
     label = (
@@ -3406,7 +3395,9 @@ def _operator_selection_key(operator, announcement):
     return sha3_256(f"{seed}\n{label}".encode()).hexdigest()
 
 
+# Submitter that fans out appends across multiple transparency operators.
 class MultiTransparencySubmitter:
+    # Normalize configured operators and preserve core-domain append priority.
     def __init__(
         self,
         operators,
@@ -3421,6 +3412,7 @@ class MultiTransparencySubmitter:
         )
         self.identity_id = ("multi-operator", str(len(self.operators)))
 
+    # Return configured operator identities for finality and status accounting.
     def operator_identities(self):
         return [
             identity
@@ -3428,6 +3420,7 @@ class MultiTransparencySubmitter:
             if identity.get("log_id")
         ]
 
+    # Pick append candidates with core operators first and deterministic rotation after.
     def _append_operator_candidates(self, announcement=None):
         if len(self.operators) <= self.append_fanout:
             return list(self.operators)
@@ -3443,6 +3436,7 @@ class MultiTransparencySubmitter:
         )
         return core + rotated
 
+    # Return the current append fanout slice for one announcement.
     def selected_append_operators(self, announcement=None):
         limit = min(self.append_fanout, len(self.operators))
         if limit <= 0:
@@ -3450,9 +3444,11 @@ class MultiTransparencySubmitter:
         candidates = self._append_operator_candidates(announcement)
         return candidates[:limit]
 
+    # Return how many operators should be attempted for each append.
     def operator_append_target_count(self):
         return min(self.append_fanout, len(self.operators))
 
+    # Yield only operators whose status endpoint says they are active.
     def _active_operators(self, operators=None):
         active_operators = operators if operators is not None else self.selected_append_operators()
         for operator in active_operators:
@@ -3467,6 +3463,7 @@ class MultiTransparencySubmitter:
                     continue
             yield operator
 
+    # Match a configured operator by explicit public key or derived log id.
     def _operator_matches(self, operator, operator_public_key=None, log_id=None):
         if operator_public_key:
             configured = str(getattr(operator, "operator_public_key", "") or "").strip()
@@ -3478,6 +3475,7 @@ class MultiTransparencySubmitter:
             return log_id_from_public_key(configured) == str(log_id).strip()
         return True
 
+    # Submit to the first matching active operator and collect useful failure detail.
     def _submit(self, method_name, announcement, *, operator_public_key=None, log_id=None):
         errors = []
         operators = self.operators if operator_public_key or log_id else None
@@ -3499,6 +3497,7 @@ class MultiTransparencySubmitter:
     def submit_transfer_announcement(self, announcement):
         return self._submit("submit_transfer_announcement", announcement)
 
+    # Submit a transfer announcement to selected operators and keep per-operator results.
     def submit_transfer_announcement_to_all(self, announcement):
         results = []
         limit = self.operator_append_target_count()
@@ -3576,6 +3575,7 @@ def _coerce_operator(operator):
     return operator
 
 
+# Return the log identity advertised by an operator-like object.
 def operator_identity(operator):
     public_key = str(getattr(operator, "operator_public_key", "") or "").strip()
     log_id = str(getattr(operator, "log_id", "") or "").strip()
@@ -3588,6 +3588,7 @@ def operator_identity(operator):
     return {"log_id": log_id, "operator_public_key": public_key}
 
 
+# Convert configured mirror values into HTTP, directory, or static root mirror clients.
 def _coerce_mirror(mirror):
     if isinstance(mirror, str) and mirror.startswith(("http://", "https://")):
         parsed = urllib.parse.urlparse(mirror)
@@ -3686,6 +3687,7 @@ class TransparencyVerifier:
         if start_background_checks and self.consistency_check_interval_seconds > 0:
             self.start_background_consistency_checks()
 
+    # Build the durable observed-root store, falling back only outside strict mode.
     def _build_observed_root_store(self, observed_root_store, observed_roots_path):
         if observed_root_store is not None:
             return observed_root_store
@@ -3703,6 +3705,7 @@ class TransparencyVerifier:
             )
             return InMemoryObservedRootStore()
 
+    # Persist a configured root anchor so future observations are checked against it.
     def _load_consistency_anchor(self, consistency_anchor=None, consistency_anchor_path=None):
         if consistency_anchor_path:
             text = Path(consistency_anchor_path).read_text(encoding="utf-8")
@@ -3723,6 +3726,7 @@ class TransparencyVerifier:
             checked_at=now,
         )
 
+    # Perform startup consistency checks and enforce strict-mode freshness.
     def _run_startup_consistency_check(self):
         try:
             self.check_latest_consistency()
@@ -3737,6 +3741,7 @@ class TransparencyVerifier:
         if self.strict_mode:
             self._enforce_known_log_status()
 
+    # Enforce the minimum independent mirror count for the current mode.
     def _validated_min_mirrors(self, min_mirrors):
         requested = int(min_mirrors)
         floor = (
@@ -3759,6 +3764,7 @@ class TransparencyVerifier:
             )
         return requested
 
+    # Reject current-root freshness settings that would allow replayed roots.
     def _validate_current_root_freshness_config(self):
         if self.max_current_root_age_seconds <= 0:
             raise TransparencyLogError(
@@ -3792,6 +3798,7 @@ class TransparencyVerifier:
                 "configure fresher mirrors or disable strict mode."
             )
 
+    # Confirm configured mirror identities are independent from each other and the operator.
     def _validate_mirror_sources(self, operator, mirrors):
         mirrors = list(mirrors)
         operator_identity = transparency_source_identity(operator)
@@ -3824,6 +3831,7 @@ class TransparencyVerifier:
             )
         return identities
 
+    # Return deduplicated sources that can serve inclusion and spend-map proofs.
     def _proof_sources(self):
         sources = [self.operator]
         sources.extend(self.proof_archives)
@@ -3838,6 +3846,7 @@ class TransparencyVerifier:
             deduped.append(source)
         return deduped
 
+    # Return the first proof from an operator, archive, or mirror that can serve it.
     def _first_proof(self, method_name, *args):
         errors = []
         for source in self._proof_sources():
@@ -4177,6 +4186,7 @@ class TransparencyVerifier:
             )
         return ""
 
+    # Collect fresh roots from independent mirrors and persist observations.
     def _current_roots_from_mirrors(self, now=None, error_context="current verification"):
         now = self._current_time(now)
         roots_by_identity = {}
@@ -4298,10 +4308,12 @@ class TransparencyVerifier:
             self._enforce_consistency_freshness(log_id)
         return root
 
+    # Observe every mirror root after mirror-disagreement checks pass.
     def _observe_roots(self, roots_by_identity):
         for identity, root in roots_by_identity.items():
             self.observe_root(root, identity)
 
+    # Fetch current roots and force append-only consistency verification.
     def check_latest_consistency(self, now=None):
         return self._current_roots_from_mirrors(now=now, error_context="consistency check")
 
@@ -4415,6 +4427,7 @@ class TransparencyVerifier:
     def stop_background_consistency_checks(self):
         self._background_stop.set()
 
+    # Return the first mirrored root at or after a historical timestamp.
     def mirrored_root_for_timestamp(self, timestamp):
         timestamp = int(timestamp)
         roots_by_identity = {}
@@ -4448,6 +4461,7 @@ class TransparencyVerifier:
             candidates, key=lambda root: (int(root["timestamp"]), int(root["tree_size"]))
         )[0]
 
+    # Return whether recovery-feed witnesses can justify accepting a late root.
     def _recovery_witnesses_allow_late_root(self, witnesses, message_hash, timestamp):
         if not witnesses or not message_hash:
             return False
@@ -4464,6 +4478,7 @@ class TransparencyVerifier:
         except Exception:
             return False
 
+    # Find an independently mirrored root that contains a specific leaf index.
     def mirrored_root_containing_leaf(
         self,
         timestamp,
@@ -4519,14 +4534,17 @@ class TransparencyVerifier:
         self._observe_roots(roots_by_identity)
         return sorted(roots, key=lambda root: (int(root["timestamp"]), int(root["tree_size"])))[0]
 
+    # Return the newest fresh current root agreed on by enough mirrors.
     def current_mirrored_root(self, now=None):
         roots = self._current_roots_from_mirrors(now=now)
         return sorted(roots, key=lambda root: (int(root["tree_size"]), int(root["timestamp"])))[-1]
 
+    # Require that the current mirrored root is fresh and append-only.
     def verify_current_root(self, now=None):
         self.current_mirrored_root(now=now)
         return True
 
+    # Discover the log leaf index for an entry using available proof sources.
     def _leaf_index_for_entry(self, entry_hash):
         errors = []
         for source in self._proof_sources():
@@ -4547,7 +4565,7 @@ class TransparencyVerifier:
         detail = "; ".join(errors) if errors else "no proof source available"
         raise InclusionProofError(f"could not discover transparency leaf index: {detail}")
 
-    # Verify that this transfer was logged in a root close to its timestamp.
+    # Extract recovery witness metadata carried by a transfer, if present.
     def _transfer_recovery_witnesses(self, transfer):
         transparency = transfer.get("transparency") if isinstance(transfer, dict) else None
         if isinstance(transparency, dict):
@@ -4560,6 +4578,7 @@ class TransparencyVerifier:
             transfer.get("recovery_message_hash") if isinstance(transfer, dict) else None,
         )
 
+    # Verify that a transfer was logged in a root close to its timestamp.
     def verify_transfer_history(
         self,
         transfer,
@@ -4701,18 +4720,21 @@ class TransparencyVerifier:
             raise
         return True
 
+    # Verify a checkpoint historically and, when required, against current spend state.
     def verify_checkpoint(self, checkpoint, now=None, require_current_root=True):
         self.verify_checkpoint_history(checkpoint)
         if require_current_root:
             self.verify_checkpoint_current_spend(checkpoint, now=now)
         return True
 
+    # Verify a transfer historically and, when required, against current spend state.
     def verify_transfer(self, transfer, now=None, require_current_root=True):
         self.verify_transfer_history(transfer)
         if require_current_root:
             self.verify_transfer_current_spend(transfer, now=now)
         return True
 
+    # Verify every transfer in a token history against transparency proofs.
     def verify_token(self, token, now=None, require_current_root=True):
         history = (
             token.get("recent_history", [])
@@ -4730,6 +4752,7 @@ class TransparencyVerifier:
     def verify_token_history(self, token):
         return self.verify_token(token, require_current_root=False)
 
+    # Verify append-only consistency between two signed roots.
     def verify_consistency_between(self, old_root, new_root):
         proof = self.operator.consistency_proof(old_root["tree_size"], new_root["tree_size"])
         return verify_consistency_proof(

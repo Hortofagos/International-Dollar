@@ -17,11 +17,17 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from ind.io_utils import atomic_write_json
+
 
 DEFAULT_STATUS_FILE = os.environ.get(
     "IND_TESTNET_MONITOR_STATUS_FILE", "files/testnet/monitor_status.json"
 )
 DEFAULT_OPERATOR_ROOT_URL = "http://127.0.0.1:8890/v3/root"
+DEFAULT_OPERATOR_STATUS_URL = os.environ.get("IND_TESTNET_MONITOR_OPERATOR_STATUS_URL", "")
+DEFAULT_EXPECTED_OPERATOR_STORAGE_BACKEND = os.environ.get(
+    "IND_TESTNET_MONITOR_EXPECTED_OPERATOR_STORAGE_BACKEND", ""
+)
 DEFAULT_STATIC_ROOT = os.environ.get("IND_TESTNET_MONITOR_STATIC_ROOT", "")
 DEFAULT_ARCHIVE_MANIFEST = os.environ.get("IND_TESTNET_MONITOR_ARCHIVE_MANIFEST", "")
 DEFAULT_PEER_DIR = os.environ.get("IND_TESTNET_MONITOR_PEER_DIR", "ip_folder")
@@ -65,16 +71,6 @@ def run_command(args, timeout=10):
         return {"returncode": 127, "stdout": "", "stderr": f"{args[0]} not found"}
     except subprocess.TimeoutExpired:
         return {"returncode": 124, "stdout": "", "stderr": "command timed out"}
-
-
-def atomic_write_json(path, data):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(
-        json.dumps(data, sort_keys=True, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
-    )
-    os.replace(tmp, path)
 
 
 def load_json_file(path):
@@ -218,9 +214,49 @@ def collect_mirror_roots(
     transparency["mirror_roots"] = mirrors
 
 
+def collect_operator_status(report, transparency, operator_status_url, expected_storage_backend):
+    if not operator_status_url and not expected_storage_backend:
+        return
+    url = operator_status_url
+    try:
+        status = fetch_json(url)
+        storage_backend = str(status.get("storage_backend") or "")
+        storage_healthy = bool(status.get("storage_healthy", True))
+        transparency["operator_status"] = {
+            "ok": storage_healthy,
+            "url": url,
+            "state": status.get("state", ""),
+            "storage_backend": storage_backend,
+            "storage_healthy": storage_healthy,
+            "tree_size": int(status.get("tree_size", 0)),
+            "updated_at": int(status.get("updated_at", 0)),
+        }
+        if not storage_healthy:
+            add_issue(
+                report,
+                "error",
+                "operator_storage_unhealthy",
+                f"{url} reports unhealthy operator storage",
+            )
+        expected = str(expected_storage_backend or "").strip().lower()
+        if expected and storage_backend.lower() != expected:
+            transparency["operator_status"]["ok"] = False
+            add_issue(
+                report,
+                "error",
+                "operator_storage_backend_mismatch",
+                f"{url} reports {storage_backend or 'unknown'} storage, expected {expected}",
+            )
+    except Exception as exc:  # noqa: BLE001 - this is an operator health probe.
+        transparency["operator_status"] = {"ok": False, "url": url, "error": str(exc)}
+        add_issue(report, "error", "operator_status_unavailable", f"{url} unavailable: {exc}")
+
+
 def collect_transparency(
     report,
     operator_root_url,
+    operator_status_url,
+    expected_storage_backend,
     static_root_path,
     archive_manifest_path,
     freshness_warn_seconds,
@@ -229,6 +265,16 @@ def collect_transparency(
     transparency = {}
     now = int(report["timestamp"])
     operator_root = None
+
+    status_url = operator_status_url
+    if not status_url and expected_storage_backend:
+        status_url = operator_root_url.rsplit("/", 1)[0] + "/status"
+    collect_operator_status(
+        report,
+        transparency,
+        status_url,
+        expected_storage_backend,
+    )
 
     try:
         root = fetch_json(operator_root_url)
@@ -457,6 +503,8 @@ def build_report(args):
     collect_transparency(
         report,
         args.operator_root_url,
+        args.operator_status_url,
+        args.expected_operator_storage_backend,
         args.static_root,
         args.archive_manifest,
         args.root_freshness_warn_seconds,
@@ -483,6 +531,12 @@ def parse_args(argv=None):
     )
     parser.add_argument("--status-file", default=DEFAULT_STATUS_FILE)
     parser.add_argument("--operator-root-url", default=DEFAULT_OPERATOR_ROOT_URL)
+    parser.add_argument("--operator-status-url", default=DEFAULT_OPERATOR_STATUS_URL)
+    parser.add_argument(
+        "--expected-operator-storage-backend",
+        default=DEFAULT_EXPECTED_OPERATOR_STORAGE_BACKEND,
+        choices=("", "sqlite", "mariadb"),
+    )
     parser.add_argument("--static-root", default=DEFAULT_STATIC_ROOT)
     parser.add_argument(
         "--mirror-root-url",

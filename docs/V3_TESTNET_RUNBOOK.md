@@ -232,6 +232,65 @@ extract. Extraction refuses path traversal, device files, FIFOs, hard links, and
 symlinks. A production operator should run this drill after backup changes and
 before any mainnet genesis material depends on that operator.
 
+## MariaDB Operator Storage
+
+MariaDB is optional and only for append-capable transparency operators. Do not
+move wallet/node gossip stores to MariaDB, and do not use Redis/NoSQL as
+canonical operator truth.
+
+Install the optional Python dependency only on operator hosts:
+
+```bash
+/opt/international-dollar/.venv/bin/pip install -r /opt/international-dollar/requirements-operator.txt
+```
+
+Each append-capable operator should use a local MariaDB database:
+
+- primary testnet: `ind_operator_primary_testnet`
+- iotb testnet: `ind_operator_iotb_testnet`
+- operator3 testnet: `ind_operator3_testnet`
+
+Keep MariaDB bound to a local socket or `127.0.0.1`. Use SSH tunnels or on-box
+sudo for remote administration; do not expose port `3306` publicly.
+
+Initialize a MariaDB target after setting `IND_LOG_MARIADB_*` in the operator
+service environment:
+
+```bash
+cd /var/lib/ind-node
+export PYTHONPATH=/opt/international-dollar
+export IND_LOG_BACKEND=mariadb
+/opt/international-dollar/.venv/bin/python /opt/international-dollar/tools/operator_db.py init-mariadb
+```
+
+Copy an existing testnet operator SQLite log into an empty MariaDB database:
+
+```bash
+/opt/international-dollar/.venv/bin/python /opt/international-dollar/tools/operator_db.py sqlite-to-mariadb \
+  --network testnet \
+  --sqlite-db /var/lib/ind-node/ind_transparency_testnet_log.db \
+  --operator-public-key "$IND_LOG_OPERATOR_PUBLIC_KEY"
+```
+
+For mainnet, the migration helper requires `--allow-mainnet-read-only-copy` and
+still treats the SQLite database as a read-only source. Do not overwrite or
+delete `/var/lib/ind-mainnet-node` databases, genesis manifests, signed hash
+files, operator keys, mirror roots, or archive outputs. Mainnet rollback must
+write a new SQLite file with `mariadb-to-sqlite`, verify roots, and only then be
+considered for a manual service switch.
+
+Recommended testnet rollout order:
+
+1. Migrate operator3 on `108.61.23.82` as the MariaDB canary.
+2. Observe append fanout, root freshness, hash-log export, and backups for 24-48 hours.
+3. Migrate iotb on `91.99.175.174`.
+4. Migrate primary on `167.233.115.216`.
+5. Leave OVH `51.83.199.25` mirror/seed-only; it should not hold canonical operator truth.
+
+After a service switch, `/v3/status` must report `storage_backend=mariadb` and
+`storage_healthy=true`; strict monitors should fail if an expected MariaDB
+operator reports otherwise.
+
 ## Operator Gate
 
 Before advertising an operator:

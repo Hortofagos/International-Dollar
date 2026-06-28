@@ -9,8 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import ind_token
-import log_client
+from ind import token as ind_token
+from ind import transparency_client as log_client
+from ind.io_utils import atomic_write_text
 
 DEFAULT_OPERATOR_URL = "http://127.0.0.1:8890"
 DEFAULT_ARCHIVE_DIR = "operator_tools/hash-log-archive"
@@ -41,14 +42,6 @@ def read_key_file(path, field):
         except json.JSONDecodeError:
             return ""
     return text
-
-
-def atomic_write_text(path, text):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(path.name + ".tmp")
-    temp_path.write_text(text, encoding="utf-8")
-    temp_path.replace(path)
 
 
 def load_state(path):
@@ -269,42 +262,98 @@ class StaticHashLogArchive:
         tree_size = int(tree_size)
         if tree_size == 0:
             return []
+        segments_on_disk = self._entry_segments()
+        self._validate_overlap_consistency(segments_on_disk)
+        segments = []
+        expected = 0
+        while expected < tree_size:
+            candidates = [
+                segment
+                for segment in segments_on_disk
+                if segment["first"] == expected and segment["last"] < tree_size
+            ]
+            if not candidates:
+                raise HashLogExportError("hash log archive segments are not contiguous from leaf 0")
+            segment = max(candidates, key=lambda item: item["last"])
+            relative_path = segment["path"].relative_to(self.archive_dir).as_posix()
+            segments.append(
+                {
+                    "path": relative_path,
+                    "first_leaf_index": segment["first"],
+                    "last_leaf_index": segment["last"],
+                    "entry_count": len(segment["entries"]),
+                    "segment_hash": segment_hash(segment["data"], SEGMENT_HASH_ALGORITHM),
+                    "byte_length": len(segment["data"]),
+                }
+            )
+            expected = segment["last"] + 1
+        return segments
+
+    def contiguous_prefix(self, tree_size):
+        tree_size = int(tree_size)
+        if tree_size <= 0:
+            return 0
+        segments = self._entry_segments()
+        self._validate_overlap_consistency(segments)
+        expected = 0
+        while expected < tree_size:
+            candidates = [
+                segment
+                for segment in segments
+                if segment["first"] <= expected <= segment["last"]
+            ]
+            if not candidates:
+                break
+            best = max(candidates, key=lambda item: item["last"])
+            if best["last"] >= tree_size:
+                return tree_size
+            expected = best["last"] + 1
+        return expected
+
+    def next_segment_start_after(self, leaf_index):
+        entries_dir = self.archive_dir / "entries"
+        files = sorted(entries_dir.glob("entries_*.jsonl")) if entries_dir.exists() else []
+        leaf_index = int(leaf_index)
+        for file_path in files:
+            entries = self._entries_from_segment_bytes(file_path.read_bytes())
+            if not entries:
+                continue
+            first = int(entries[0]["leaf_index"])
+            if first > leaf_index:
+                return first
+        return None
+
+    def _entry_segments(self):
         entries_dir = self.archive_dir / "entries"
         files = sorted(entries_dir.glob("entries_*.jsonl")) if entries_dir.exists() else []
         segments = []
-        expected = 0
         for file_path in files:
             data = file_path.read_bytes()
             entries = self._entries_from_segment_bytes(data)
             if not entries:
                 continue
-            first = int(entries[0]["leaf_index"])
-            last = int(entries[-1]["leaf_index"])
-            if first != expected:
-                raise HashLogExportError("hash log archive segments are not contiguous from leaf 0")
-            if last >= tree_size:
-                raise HashLogExportError(
-                    "hash log archive segment extends beyond signed root tree size"
-                )
-            relative_path = file_path.relative_to(self.archive_dir).as_posix()
             segments.append(
                 {
-                    "path": relative_path,
-                    "first_leaf_index": first,
-                    "last_leaf_index": last,
-                    "entry_count": len(entries),
-                    "segment_hash": segment_hash(data, SEGMENT_HASH_ALGORITHM),
-                    "byte_length": len(data),
+                    "path": file_path,
+                    "data": data,
+                    "entries": entries,
+                    "first": int(entries[0]["leaf_index"]),
+                    "last": int(entries[-1]["leaf_index"]),
                 }
             )
-            expected = last + 1
-            if expected == tree_size:
-                break
-        if expected != tree_size:
-            raise HashLogExportError(
-                "hash log archive does not contain a complete prefix for signed root"
-            )
         return segments
+
+    def _validate_overlap_consistency(self, segments):
+        seen = {}
+        for segment in segments:
+            for entry in segment["entries"]:
+                leaf_index = int(entry["leaf_index"])
+                previous = seen.get(leaf_index)
+                if previous is not None and previous != entry:
+                    raise HashLogExportError(
+                        "hash log archive contains conflicting overlapping segments"
+                    )
+                seen[leaf_index] = entry
 
     def _validate_entries(self, entries):
         expected = int(entries[0]["leaf_index"])
@@ -331,14 +380,22 @@ def export_once(source, archive, state_path, page_size=DEFAULT_PAGE_SIZE):
     signed_root = source.latest_root()
     log_client.verify_signed_root(signed_root, operator_public_key=archive.operator_public_key)
     tree_size = int(signed_root["tree_size"])
-    start = int(state.get("next_leaf_index", 0))
+    start = archive.contiguous_prefix(tree_size)
+    state_leaf = int(state.get("next_leaf_index", 0))
+    if state_leaf != start:
+        state["repaired_next_leaf_index_from"] = state_leaf
+        state["repaired_next_leaf_index_at"] = int(time.time())
     if start >= tree_size:
         archive.write_manifest(signed_root)
+        state["next_leaf_index"] = tree_size
         state["updated_at"] = int(time.time())
         save_state(state_path, state)
         return 0
 
+    next_segment_start = archive.next_segment_start_after(start)
     end = min(start + int(page_size) - 1, tree_size - 1)
+    if next_segment_start is not None:
+        end = min(end, int(next_segment_start) - 1)
     entries, tree_size = source.entries(start, end, page_size)
     if not entries:
         raise HashLogExportError("operator did not return entries required for signed root archive")

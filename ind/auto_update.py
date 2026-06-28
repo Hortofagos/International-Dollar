@@ -14,6 +14,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import env as ind_env
 from . import settings as ind_settings
 from . import update_manifest
 
@@ -84,8 +85,7 @@ def _process_error(process):
     return ((process.stderr or process.stdout) or "").strip()
 
 
-def _env_true(name):
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+_env_true = ind_env.enabled
 
 
 def _git_available(repo_path):

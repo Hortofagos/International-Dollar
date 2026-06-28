@@ -12,23 +12,13 @@ from hashlib import sha3_256
 
 import base58
 
+from . import env as ind_env
 
-def _env_int(name, default):
-    try:
-        return int(os.environ.get(name, default))
-    except (TypeError, ValueError):
-        return int(default)
-
-
-def _env_true(name):
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+_env_int = ind_env.int_value
+_env_true = ind_env.enabled
 
 
 MASTER_SUPPLY_NUMBER = 33
-ANGEL_NUMBER = 777
-MONEY_NUMBER = 8
-BIRTHDAY_NUMBER = 9
-BIRTHDAY_CODE = "09.10.2003"
 TOTAL_SUPPLY = MASTER_SUPPLY_NUMBER * 1_000_000_000
 ALLOWED_BILL_VALUES = (
     1,
@@ -101,7 +91,6 @@ PREVIOUS_ADDRESS_LENGTH = (
 )
 LEGACY_ADDRESS_LENGTH = 30
 BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-NUMEROLOGY_METADATA_KEY = "ind_alignment"
 
 TOKEN_TYPE = "ind.token.v3"
 BILL_TYPE = "ind.bill.v3"
@@ -233,6 +222,7 @@ class TokenState:
     value: int
 
 
+# Serialize protocol data in the exact deterministic JSON form used for hashes.
 def canonical_json(data):
     _validate_json_value(data, "protocol object")
     return json.dumps(
@@ -261,6 +251,7 @@ def _reject_json_float(_value):
     raise ValidationError("JSON floating-point values are not part of the IND protocol")
 
 
+# Parse JSON with duplicate keys, NaN, and floats rejected before validation.
 def _json_loads_strict(raw):
     try:
         return json.loads(
@@ -275,6 +266,7 @@ def _json_loads_strict(raw):
         raise ValidationError("invalid JSON payload") from exc
 
 
+# Recursively enforce the JSON shape and size limits accepted by the protocol.
 def _validate_json_value(value, label, depth=0):
     if depth > MAX_JSON_DEPTH:
         raise ValidationError(f"{label} exceeds maximum JSON depth")
@@ -309,6 +301,7 @@ def _validate_json_value(value, label, depth=0):
     raise ValidationError(f"{label} contains unsupported JSON value type")
 
 
+# Require a dict to contain only the declared protocol fields.
 def _require_exact_fields(data, required, label, optional=()):
     if not isinstance(data, dict):
         raise ValidationError(f"malformed {label}")
@@ -334,6 +327,7 @@ def _require_int(value, label, minimum=None, maximum=None):
     return value
 
 
+# Validate one fixed IND denomination value.
 def validate_bill_value(value, label="bill value"):
     value = _require_int(value, label, minimum=1)
     if value not in ALLOWED_BILL_VALUE_SET:
@@ -341,6 +335,7 @@ def validate_bill_value(value, label="bill value"):
     return value
 
 
+# Validate a denomination-specific serial within the fixed supply cap.
 def validate_bill_serial(value, serial, label="bill serial"):
     value = validate_bill_value(value, "bill serial value")
     cap = DENOMINATION_SERIAL_CAPS[value]
@@ -359,6 +354,7 @@ def _require_str(value, label, max_bytes=MAX_JSON_STRING_BYTES):
     return value
 
 
+# Bound user-provided metadata before it is signed, hashed, or gossiped.
 def _require_metadata(metadata, limit, label):
     if not isinstance(metadata, dict):
         raise ValidationError(f"{label} metadata must be an object")
@@ -384,6 +380,7 @@ def _max_b85_encoded_size(decoded_size):
     return full_groups * 5 + remainder + 1
 
 
+# Decompress one packed wire payload while enforcing expansion limits.
 def _safe_zlib_decompress(data):
     try:
         decompressor = zlib.decompressobj()
@@ -400,6 +397,7 @@ def _safe_zlib_decompress(data):
         raise ValidationError("invalid compressed wire payload") from exc
 
 
+# Decode either plain JSON or the compressed indz1 wire representation.
 def _unpacked_json(raw):
     if isinstance(raw, bytes):
         try:
@@ -428,6 +426,7 @@ def _unpacked_json(raw):
     return _json_loads_strict(raw)
 
 
+# Normalize a message to the compressed wire format used by peer gossip.
 def pack_wire_message(message):
     if isinstance(message, bytes):
         message = message.decode("utf-8")
@@ -438,6 +437,7 @@ def pack_wire_message(message):
     return _packed_json(message)
 
 
+# Decode a gossip message from dict, JSON text, bytes, or compressed wire text.
 def unpack_wire_message(raw):
     if isinstance(raw, dict):
         return raw
@@ -480,31 +480,6 @@ def b85_sign_domain(private_key_base85, domain, data):
 
 def b85_verify_domain(public_key_base85, signature_base85, domain, data):
     return b85_verify(public_key_base85, signature_base85, signature_payload(domain, data))
-
-
-def numerology_signature():
-    material = (
-        f"IND:{TOTAL_SUPPLY}:{ADDRESS_LENGTH}:{ANGEL_NUMBER}:{MONEY_NUMBER}:{BIRTHDAY_CODE}".encode(
-            "ascii"
-        )
-    )
-    return {
-        "master_number": MASTER_SUPPLY_NUMBER,
-        "angel_number": ANGEL_NUMBER,
-        "money_number": MONEY_NUMBER,
-        "birthday_number": BIRTHDAY_NUMBER,
-        "birthday_code": BIRTHDAY_CODE,
-        "address_length": ADDRESS_LENGTH,
-        "fixed_supply": TOTAL_SUPPLY,
-        "seal": sha3_256(material).hexdigest()[:ADDRESS_TARGET_LENGTH],
-    }
-
-
-def _with_numerology_metadata(metadata, limit, label):
-    metadata = copy.deepcopy(metadata or {})
-    metadata.setdefault(NUMEROLOGY_METADATA_KEY, numerology_signature())
-    _require_metadata(metadata, limit, label)
-    return metadata
 
 
 def _address_payload_from_public_key(public_key_base85, payload_chars=ADDRESS_PAYLOAD_CHARS):
@@ -658,6 +633,7 @@ def _timestamp_day(timestamp):
     return int(timestamp) // 86400
 
 
+# Return the transfer history list regardless of legacy token or active BillV3 shape.
 def _bill_history(token):
     if not isinstance(token, dict):
         return []
@@ -676,6 +652,7 @@ def _last_history_timestamp(token):
     return int(history[-1]["timestamp"])
 
 
+# Return the newest transfer in a bill history or fail if the bill is empty.
 def _last_transfer(token):
     history = _bill_history(token)
     if not history:
@@ -683,6 +660,7 @@ def _last_transfer(token):
     return history[-1]
 
 
+# Convert a verified token state into the compact reference stored in SQLite.
 def _state_ref_from_state(state):
     return {
         "type": TOKEN_STATE_REF_TYPE,
@@ -696,14 +674,17 @@ def _state_ref_from_state(state):
     }
 
 
+# Hash a genesis record using canonical protocol JSON.
 def genesis_hash(genesis):
     return sha3_hex(_canonical_bytes(genesis))
 
 
+# Hash a transfer using canonical protocol JSON.
 def transfer_hash(transfer):
     return sha3_hex(_canonical_bytes(transfer))
 
 
+# Hash any gossip message using canonical protocol JSON.
 def message_hash(message):
     return sha3_hex(_canonical_bytes(message))
 
@@ -738,6 +719,7 @@ def current_time(now=None):
     return _require_timestamp(int(time.time() if now is None else now), "current time")
 
 
+# Build the strict transparency verifier required by current security settings.
 def _configured_transparency_verifier():
     try:
         from . import settings as ind_settings
@@ -757,6 +739,7 @@ def _configured_transparency_verifier():
     return verifier
 
 
+# Read the pinned transparency operator key from settings or the environment.
 def _configured_transparency_operator_public_key():
     try:
         from . import settings as ind_settings
@@ -796,6 +779,7 @@ def _embedded_root_operator_key(
     return operator_public_key
 
 
+# Build the configured transparency submitter when log submission is enabled.
 def _configured_transparency_submitter():
     try:
         from . import settings as ind_settings
@@ -840,6 +824,7 @@ def _conflicting_transfers(token_a, token_b):
     return False
 
 
+# Derive a stable key for one pair of conflicting transfer hashes.
 def conflict_proof_key(proof):
     if isinstance(proof, str):
         proof = _load_json(proof)
@@ -860,6 +845,7 @@ def conflict_proof_key(proof):
     return sha3_hex(_canonical_bytes(identity))
 
 
+# Wrap a signed transparency root in the bounded peer-gossip message format.
 def create_transparency_root_announcement(root, observed_at=None):
     from . import transparency_client as log_client
 
@@ -869,6 +855,7 @@ def create_transparency_root_announcement(root, observed_at=None):
     return message
 
 
+# Validate a gossiped transparency root before it enters local consistency checks.
 def verify_transparency_root_announcement(message, operator_public_key=None):
     from . import transparency_client as log_client
 
@@ -885,6 +872,7 @@ def verify_transparency_root_announcement(message, operator_public_key=None):
         raise ValidationError(f"invalid transparency root announcement: {exc}") from exc
 
 
+# Build peer-gossip evidence that one operator signed inconsistent roots.
 def create_transparency_equivocation_proof(root_a, root_b, collision_type=None, detected_at=None):
     from . import transparency_client as log_client
 
@@ -899,6 +887,7 @@ def create_transparency_equivocation_proof(root_a, root_b, collision_type=None, 
     return message
 
 
+# Verify gossiped equivocation evidence before persisting or rebroadcasting it.
 def verify_transparency_equivocation_proof(message, operator_public_key=None):
     from . import transparency_client as log_client
 
@@ -917,6 +906,7 @@ def verify_transparency_equivocation_proof(message, operator_public_key=None):
         raise ValidationError(f"invalid transparency equivocation proof: {exc}") from exc
 
 
+# Build evidence that a signed root accepted a conflicting spend-map claim.
 def create_transparency_operator_policy_violation_proof(
     root, spend_proof, violation_type=None, detected_at=None
 ):
@@ -936,6 +926,7 @@ def create_transparency_operator_policy_violation_proof(
     return message
 
 
+# Verify gossiped operator-policy evidence before local blacklisting decisions.
 def verify_transparency_operator_policy_violation_proof(message, operator_public_key=None):
     from . import transparency_client as log_client
 

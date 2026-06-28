@@ -1,6 +1,7 @@
 import copy
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -227,6 +228,111 @@ def test_http_operator_rejects_append_with_text_plain_content_type(tmp_path):
 
     assert exc_info.value.code == 415
     assert fixture["log"].tree_size() == before_tree_size
+
+
+def test_http_operator_append_backpressure_is_retryable(tmp_path):
+    fixture = native_v3_archive_fixture(tmp_path)
+    announcement = protocol_v3.create_checkpoint_announcement(
+        fixture["checkpoint_core"],
+        [fixture["archive_segment"]],
+        now=BASE_TIMESTAMP + 56,
+    )
+
+    class BusyLane:
+        def submit(self, *_args, **_kwargs):
+            raise log_server.AppendValidationBackpressure(
+                "append validation busy",
+                retry_after_seconds=7,
+            )
+
+    server = log_server.ThreadingHTTPServer(("127.0.0.1", 0), log_server.TransparencyLogHandler)
+    server.transparency_log = fixture["log"]
+    server.root_interval_seconds = 60
+    server.append_validation_queue = BusyLane()
+    before_tree_size = fixture["log"].tree_size()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{server.server_address[1]}/v3/append",
+        data=json.dumps(announcement).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(request, timeout=3)
+        body = json.loads(exc_info.value.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert exc_info.value.code == 503
+    assert exc_info.value.headers["Retry-After"] == "7"
+    assert body["error"] == "append validation busy"
+    assert body["retry_after_seconds"] == 7
+    assert fixture["log"].tree_size() == before_tree_size
+
+
+def test_append_validation_queue_rotates_ready_ips_fairly():
+    queue = log_server.AppendValidationQueue(workers=1, queue_max=4, per_ip_queue_max=4)
+    started = threading.Event()
+    release = threading.Event()
+    order = []
+    errors = []
+
+    def submit(peer_ip, operation):
+        try:
+            queue.submit(peer_ip, {}, operation, result_timeout=5)
+        except Exception as exc:
+            errors.append(exc)
+
+    def slow_first():
+        order.append("a1")
+        started.set()
+        release.wait(timeout=5)
+        return {"accepted": True}
+
+    def mark(label):
+        def operation():
+            order.append(label)
+            return {"accepted": True}
+
+        return operation
+
+    def wait_for_queued(count):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            with queue._condition:
+                if queue._queued_count >= count:
+                    return
+            time.sleep(0.01)
+        raise AssertionError(f"timed out waiting for {count} queued validation jobs")
+
+    threads = [
+        threading.Thread(target=submit, args=("203.0.113.1", slow_first), daemon=True)
+    ]
+    threads[0].start()
+    assert started.wait(timeout=3)
+    for peer_ip, operation, queued_count in (
+        ("203.0.113.1", mark("a2"), 1),
+        ("203.0.113.1", mark("a3"), 2),
+        ("203.0.113.2", mark("b1"), 3),
+    ):
+        thread = threading.Thread(target=submit, args=(peer_ip, operation), daemon=True)
+        threads.append(thread)
+        thread.start()
+        wait_for_queued(queued_count)
+
+    release.set()
+    try:
+        for thread in threads:
+            thread.join(timeout=3)
+    finally:
+        queue.close()
+
+    assert errors == []
+    assert order == ["a1", "a2", "b1", "a3"]
 
 
 def test_http_operator_get_append_returns_method_not_allowed(tmp_path):

@@ -1,6 +1,7 @@
 import copy
 import json
 import sqlite3
+import time
 import urllib.error
 
 import pytest
@@ -130,6 +131,33 @@ def _mark_transfer_log_proven(store, transferred, proof_bundle, operator_public_
         )
 
 
+def _late_conflict_proof_for_transferred(fixture, store, transferred):
+    bill = protocol_v3.create_bill_from_checkpoint_core(
+        fixture["genesis_ref"],
+        fixture["checkpoint_core"],
+        fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=store.archive_segment_resolver_v3,
+    )
+    sibling = protocol_v3.create_transfer(
+        bill,
+        fixture["bob_private"],
+        fixture["bob_public"],
+        fixture["alice_address"],
+        proof_bundle_resolver=store.proof_bundle_resolver_v3,
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=store.archive_segment_resolver_v3,
+        timestamp=BASE_TIMESTAMP + 51,
+    )
+    return protocol_v3.create_conflict_proof(
+        transferred,
+        sibling,
+        proof_bundle_resolver=store.proof_bundle_resolver_v3,
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=store.archive_segment_resolver_v3,
+    )
+
+
 def test_store_v3_persists_archive_bundle_and_bill(tmp_path):
     fixture = native_v3_archive_fixture(tmp_path)
     store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
@@ -165,6 +193,71 @@ def test_store_v3_persists_archive_bundle_and_bill(tmp_path):
         archive_segment_resolver=store.archive_segment_resolver_v3,
     )
     assert state.owner_address == fixture["bob_address"]
+
+
+def test_bill_tips_v3_cache_is_rebuildable(tmp_path):
+    fixture = native_v3_archive_fixture(tmp_path)
+    store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
+    store.store_archive_segment_v3(fixture["archive_segment"])
+    store.store_proof_bundle_v3(
+        fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+    )
+    bill = protocol_v3.create_bill_from_checkpoint_core(
+        fixture["genesis_ref"],
+        fixture["checkpoint_core"],
+        fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=store.archive_segment_resolver_v3,
+    )
+    transferred = protocol_v3.create_transfer(
+        bill,
+        fixture["bob_private"],
+        fixture["bob_public"],
+        fixture["carol_address"],
+        proof_bundle_resolver=store.proof_bundle_resolver_v3,
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=store.archive_segment_resolver_v3,
+        timestamp=BASE_TIMESTAMP + 50,
+    )
+    bill_hash = store.store_bill_v3(
+        transferred,
+        proof_bundle=fixture["bundle"],
+        status="verified",
+        trusted_operator_public_key=fixture["log_public"],
+    )
+    transfer = transferred["recent_transfers"][-1]
+    expected_spend_key = protocol_v3.spend_key_for_transfer(transfer)
+    expected_transfer_hash = protocol_v3.transfer_hash(transfer)
+
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT spend_key, tip_transfer_hash FROM bill_tips_v3 WHERE bill_hash = ?",
+            (bill_hash,),
+        ).fetchone()
+        conn.execute("DELETE FROM bill_tips_v3")
+
+    assert row["spend_key"] == expected_spend_key
+    assert row["tip_transfer_hash"] == expected_transfer_hash
+
+    result = store.repair_bill_tips_v3()
+
+    with store._connect() as conn:
+        rebuilt = conn.execute(
+            """
+            SELECT spend_key, tip_transfer_hash, owner_address, sequence
+            FROM bill_tips_v3
+            WHERE bill_hash = ?
+            """,
+            (bill_hash,),
+        ).fetchone()
+
+    assert result == {"rebuilt": 1, "skipped": 0}
+    assert rebuilt["spend_key"] == expected_spend_key
+    assert rebuilt["tip_transfer_hash"] == expected_transfer_hash
+    assert rebuilt["owner_address"] == fixture["carol_address"]
+    assert rebuilt["sequence"] == int(transfer["sequence"])
+    assert store.get_bill_v3(bill_hash) == transferred
 
 
 def test_discard_unsettled_bill_v3_restores_previous_spendable_tip(tmp_path):
@@ -1048,6 +1141,20 @@ def test_v3_finality_waits_for_peer_quorum_decision(tmp_path):
     assert store.status_record_for_ref(fixture["token_id"])["status"] == "pending"
 
 
+def test_v3_quorum_mode_does_not_finalize_without_reconciler(tmp_path):
+    fixture, store, transferred = _pending_v3_fixture(tmp_path)
+    store.settlement_quorum_enabled = True
+    _mark_transfer_log_proven(store, transferred, fixture["bundle"])
+
+    finalized = store.finalize_pending(
+        now=2_000_000_000,
+        buffer_seconds=0,
+    )
+
+    assert finalized == []
+    assert store.status_record_for_ref(fixture["token_id"])["status"] == "pending"
+
+
 def test_v3_finality_settles_after_log_proof_and_peer_quorum(tmp_path):
     fixture, store, transferred = _pending_v3_fixture(tmp_path)
     _mark_transfer_log_proven(store, transferred, fixture["bundle"])
@@ -1065,6 +1172,184 @@ def test_v3_finality_settles_after_log_proof_and_peer_quorum(tmp_path):
             fixture["token_id"],
             min_settled_seconds=-(10**12),
         )["status"]
+        == "strong_local"
+    )
+
+
+def test_late_conflict_proof_after_settlement_does_not_downgrade_v3_bill(tmp_path):
+    fixture, store, transferred = _pending_v3_fixture(tmp_path)
+    _mark_transfer_log_proven(store, transferred, fixture["bundle"])
+    finalized = store.finalize_pending(
+        now=int(time.time()),
+        buffer_seconds=0,
+        require_v3_log_proof=True,
+        settlement_reconciler=lambda _candidate: {"decision": "settle"},
+    )
+    assert finalized == [fixture["token_id"]]
+
+    proof = _late_conflict_proof_for_transferred(fixture, store, transferred)
+    store.store_conflict_proof_v3(proof)
+
+    confidence = store.bill_v3_confidence(
+        fixture["token_id"],
+        expected_owner=fixture["carol_address"],
+        min_settled_seconds=0,
+    )
+    record = store.status_record_for_ref(fixture["token_id"], min_settled_seconds=0)
+
+    assert confidence["accepted"] is True
+    assert confidence["level"] == "strong_local"
+    assert record["status"] == "strong_local"
+    assert record["owner_address"] == fixture["carol_address"]
+    assert wallet_services.bill_is_spendable_v3(
+        store,
+        transferred,
+        fixture["carol_address"],
+        trusted_operator_public_key=fixture["log_public"],
+    )
+    assert store.conflict_messages() == []
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM conflicts_v3 WHERE proof_hash = ?",
+            (proof["proof_hash"],),
+        ).fetchone()
+    assert row is None
+
+    response = store.peer_settlement_response_v3(
+        {
+            "type": "ind.peer_settlement_query.v3",
+            "network_id": protocol_v3.DEFAULT_NETWORK_ID,
+            "token_id": fixture["token_id"],
+            "display_id": fixture["checkpoint_core"]["display_id"],
+        }
+    )
+    assert response["status"] == "strong_local"
+    assert response["conflict"] is False
+    assert response["conflict_proof_hash"] == ""
+    assert response["messages"] == []
+
+
+def test_pending_conflict_proof_vetoes_v3_settlement(tmp_path):
+    fixture, store, transferred = _pending_v3_fixture(tmp_path)
+    _mark_transfer_log_proven(store, transferred, fixture["bundle"])
+    proof = _late_conflict_proof_for_transferred(fixture, store, transferred)
+
+    result = store.ingest_message(proof)
+    finalized = store.finalize_pending(
+        now=int(time.time()),
+        buffer_seconds=0,
+        require_v3_log_proof=True,
+        settlement_reconciler=lambda _candidate: {"decision": "settle"},
+    )
+    record = store.status_record_for_ref(fixture["token_id"], min_settled_seconds=0)
+
+    assert result["status"] == "conflict"
+    assert finalized == []
+    assert record["status"] == "conflict"
+    assert store.conflict_messages()[0]["proof_hash"] == proof["proof_hash"]
+
+
+def test_late_conflicting_transfer_after_settlement_is_ignored(tmp_path):
+    fixture, store, transferred = _pending_v3_fixture(tmp_path)
+    _mark_transfer_log_proven(store, transferred, fixture["bundle"])
+    finalized = store.finalize_pending(
+        now=int(time.time()),
+        buffer_seconds=0,
+        require_v3_log_proof=True,
+        settlement_reconciler=lambda _candidate: {"decision": "settle"},
+    )
+    assert finalized == [fixture["token_id"]]
+
+    base_bill = protocol_v3.create_bill_from_checkpoint_core(
+        fixture["genesis_ref"],
+        fixture["checkpoint_core"],
+        fixture["bundle"],
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=store.archive_segment_resolver_v3,
+    )
+    sibling = protocol_v3.create_transfer(
+        base_bill,
+        fixture["bob_private"],
+        fixture["bob_public"],
+        fixture["alice_address"],
+        proof_bundle_resolver=store.proof_bundle_resolver_v3,
+        trusted_operator_public_key=fixture["log_public"],
+        archive_segment_resolver=store.archive_segment_resolver_v3,
+        timestamp=BASE_TIMESTAMP + 51,
+    )
+    announcement = protocol_v3.create_transfer_announcement(
+        sibling,
+        proof_bundle=fixture["bundle"],
+        archive_segments=[fixture["archive_segment"]],
+        now=BASE_TIMESTAMP + 52,
+    )
+
+    result = store.ingest_message(announcement)
+    record = store.status_record_for_ref(fixture["token_id"], min_settled_seconds=0)
+
+    assert result["status"] == "ignored_conflict"
+    assert "conflict_proof" not in result
+    assert record["status"] == "strong_local"
+    assert record["owner_address"] == fixture["carol_address"]
+    assert store.conflict_messages() == []
+    with store._connect() as conn:
+        conflict_rows = conn.execute(
+            "SELECT COUNT(*) AS count_value FROM conflicts_v3 WHERE token_id = ?",
+            (fixture["token_id"],),
+        ).fetchone()
+        sibling_rows = conn.execute(
+            """
+            SELECT COUNT(*) AS count_value
+            FROM bills_v3
+            WHERE token_id = ? AND owner_address = ?
+            """,
+            (fixture["token_id"], fixture["alice_address"]),
+        ).fetchone()
+    assert int(conflict_rows["count_value"]) == 0
+    assert int(sibling_rows["count_value"]) == 0
+    assert wallet_services.bill_is_spendable_v3(
+        store,
+        transferred,
+        fixture["carol_address"],
+        trusted_operator_public_key=fixture["log_public"],
+    )
+    assert not wallet_services.bill_is_spendable_v3(
+        store,
+        sibling,
+        fixture["alice_address"],
+        trusted_operator_public_key=fixture["log_public"],
+    )
+
+
+def test_late_conflict_proof_after_settlement_is_not_persisted(tmp_path):
+    fixture, store, transferred = _pending_v3_fixture(tmp_path)
+    _mark_transfer_log_proven(store, transferred, fixture["bundle"])
+    finalized = store.finalize_pending(
+        now=int(time.time()),
+        buffer_seconds=0,
+        require_v3_log_proof=True,
+        settlement_reconciler=lambda _candidate: {"decision": "settle"},
+    )
+    assert finalized == [fixture["token_id"]]
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE bills_v3 SET updated_at = ? WHERE token_id = ? AND status = 'settled'",
+            (1, fixture["token_id"]),
+        )
+
+    proof = _late_conflict_proof_for_transferred(fixture, store, transferred)
+    proof_hash = store.store_conflict_proof_v3(proof)
+
+    assert proof_hash == proof["proof_hash"]
+    assert store.conflict_messages() == []
+    with store._connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM conflicts_v3 WHERE proof_hash = ?",
+            (proof["proof_hash"],),
+        ).fetchone()
+    assert row is None
+    assert (
+        store.status_record_for_ref(fixture["token_id"], min_settled_seconds=0)["status"]
         == "strong_local"
     )
 
@@ -1163,7 +1448,124 @@ def test_strict_v3_finality_zero_threshold_tracks_append_operator_count(tmp_path
         transparency_verifier=object(),
     )
 
+    assert store._operator_finality_required_proofs_v3() == 2
+
+
+def test_strict_v3_finality_majority_threshold_for_even_operator_count(tmp_path, monkeypatch):
+    class Operator:
+        def __init__(self, public_key):
+            self.operator_public_key = public_key
+
+    submitter = log_client.MultiTransparencySubmitter(
+        [
+            Operator("operator-a-key"),
+            Operator("operator-b-key"),
+            Operator("operator-c-key"),
+            Operator("operator-d-key"),
+        ]
+    )
+
+    monkeypatch.setenv("IND_OPERATOR_FINALITY_MIN_PROOFS", "0")
+    store = INDLocalStore(
+        db_path=tmp_path / "wallet-v3.db",
+        require_transparency=True,
+        transparency_submitter=submitter,
+        transparency_verifier=object(),
+    )
+
     assert store._operator_finality_required_proofs_v3() == 3
+
+
+def test_v3_transfer_log_status_does_not_downgrade_proven(tmp_path):
+    fixture, store, transferred = _pending_v3_fixture(tmp_path)
+    transfer = transferred["recent_transfers"][-1]
+    transfer_hash_value = protocol_v3.transfer_hash(transfer)
+    _mark_transfer_log_proven(store, transferred, fixture["bundle"])
+
+    with store._connect() as conn:
+        store._record_v3_transfer_log_status_conn(
+            conn,
+            transfer,
+            proof_bundle=fixture["bundle"],
+            status="log_pending",
+            response={
+                "entry_hash": transfer_hash_value,
+                "leaf_index": 9,
+                "tree_size": 10,
+            },
+        )
+
+    rows = store._v3_transfer_log_statuses(transfer_hash_value)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "log_proven"
+    assert rows[0]["leaf_index"] == 0
+
+
+def test_v3_transfer_log_status_does_not_downgrade_pending_to_unlogged(tmp_path):
+    fixture, store, transferred = _pending_v3_fixture(tmp_path)
+    transfer = transferred["recent_transfers"][-1]
+    transfer_hash_value = protocol_v3.transfer_hash(transfer)
+
+    with store._connect() as conn:
+        store._record_v3_transfer_log_status_conn(
+            conn,
+            transfer,
+            proof_bundle=fixture["bundle"],
+            status="log_pending",
+            response={
+                "entry_hash": transfer_hash_value,
+                "leaf_index": 2,
+                "tree_size": 3,
+            },
+        )
+        store._record_v3_transfer_log_status_conn(
+            conn,
+            transfer,
+            proof_bundle=fixture["bundle"],
+            status="unlogged",
+            response={},
+            error="temporary operator failure",
+        )
+
+    rows = store._v3_transfer_log_statuses(transfer_hash_value)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "log_pending"
+    assert rows[0]["leaf_index"] == 2
+    assert rows[0]["error"] == ""
+
+
+def test_v3_transfer_log_status_upgrades_pending_to_proven(tmp_path):
+    fixture, store, transferred = _pending_v3_fixture(tmp_path)
+    transfer = transferred["recent_transfers"][-1]
+    transfer_hash_value = protocol_v3.transfer_hash(transfer)
+
+    with store._connect() as conn:
+        store._record_v3_transfer_log_status_conn(
+            conn,
+            transfer,
+            proof_bundle=fixture["bundle"],
+            status="log_pending",
+            response={
+                "entry_hash": transfer_hash_value,
+                "leaf_index": 2,
+                "tree_size": 3,
+            },
+        )
+        store._record_v3_transfer_log_status_conn(
+            conn,
+            transfer,
+            proof_bundle=fixture["bundle"],
+            status="log_proven",
+            response={
+                "entry_hash": transfer_hash_value,
+                "leaf_index": 2,
+                "tree_size": 3,
+            },
+        )
+
+    rows = store._v3_transfer_log_statuses(transfer_hash_value)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "log_proven"
 
 
 def test_v3_finality_freezes_divergent_operator_witnesses(tmp_path, monkeypatch):
@@ -2071,6 +2473,7 @@ def test_store_v3_rejects_unconfigured_operator(tmp_path):
 
 
 def test_submitter_from_environment_ignores_verify_only_operator(monkeypatch):
+    monkeypatch.setattr(log_client, "_settings_module", lambda: None)
     monkeypatch.setenv(
         "IND_LOG_OPERATORS",
         json.dumps(
@@ -2318,7 +2721,10 @@ def test_store_v3_persists_conflict_proofs(tmp_path):
     assert conflict_hash == conflict["proof_hash"]
 
 
-def test_wallet_services_v3_spends_stored_bill(tmp_path):
+def test_wallet_services_v3_spends_stored_bill(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IND_NETWORK", "testnet")
+    monkeypatch.setenv("IND_NODE_PORT", "18888")
     fixture = native_v3_archive_fixture(tmp_path)
     store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
     store.store_archive_segment_v3(fixture["archive_segment"])

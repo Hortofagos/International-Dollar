@@ -109,6 +109,7 @@ files/*.sqlite
 files/*.sqlite3
 files/*.log
 files/testnet/
+files/mainnet_freeze/
 
 # Peer discovery cache
 ip_folder/**/*.txt
@@ -123,6 +124,7 @@ transaction_folder/*
 !transaction_folder/.gitkeep
 print_folder/*
 !print_folder/.gitkeep
+print_folder_backup_*/
 
 # Transparency operator generated mirrors / archives
 operator/

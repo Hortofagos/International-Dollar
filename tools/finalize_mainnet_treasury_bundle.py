@@ -23,7 +23,6 @@ os.environ.setdefault("IND_ALLOW_UNTRUSTED_GENESIS", "0")
 from ind import archive_segment_v3
 from ind import genesis_manifest_v3
 from ind import proof_bundle_v3
-from ind import protocol as ind_token
 from ind import protocol_v3
 from ind import spend_map_v3
 from ind import transparency_client as log_client

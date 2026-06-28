@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from . import env as ind_env
+
 SETTINGS_PATH = Path("files/security_settings.json")
 MAINNET_NETWORK = "mainnet"
 TESTNET_NETWORK = "testnet"
@@ -100,12 +102,8 @@ def default_settings_json():
     return json.dumps(DEFAULT_SECURITY_SETTINGS, indent=2, sort_keys=True) + "\n"
 
 
-def _env_true(name):
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_false(name):
-    return os.environ.get(name, "").strip().lower() in {"0", "false", "no", "off"}
+_env_true = ind_env.enabled
+_env_false = ind_env.disabled
 
 
 def _as_bool(value, default=False):
@@ -598,7 +596,8 @@ def operator_finality_min_proofs(settings=None):
     operator_count = append_capable_operator_count(settings)
     if operator_count <= 0:
         return 0
-    return min(operator_count, operator_append_fanout(settings))
+    selected_count = min(operator_count, operator_append_fanout(settings))
+    return selected_count // 2 + 1
 
 
 def operator_append_fanout(settings=None):

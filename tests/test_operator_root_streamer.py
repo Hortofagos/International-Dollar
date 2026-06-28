@@ -3,9 +3,9 @@ import unittest
 from pathlib import Path
 
 from ind import keys_v3
-import ind_token
-import log_client
-import log_server
+from ind import token as ind_token
+from ind import transparency_client as log_client
+from ind import transparency_server as log_server
 from operator_tools import hash_log_exporter, root_streamer
 
 
@@ -21,7 +21,7 @@ def static_root(timestamp, tree_size=1, label="root"):
         "log_id": "log-" + str(label),
         "tree_size": int(tree_size),
         "timestamp": int(timestamp),
-        "root_hash": ind_token.sha3_hex(f"{label}:{timestamp}:{tree_size}".encode("utf-8")),
+        "root_hash": ind_token.sha3_hex(f"{label}:{timestamp}:{tree_size}".encode()),
     }
 
 
@@ -238,6 +238,103 @@ class OperatorRootStreamerTests(unittest.TestCase):
             segment_files = list((archive_dir / "entries").glob("*.jsonl"))
             self.assertEqual(len(segment_files), 1)
             self.assertEqual(len(segment_files[0].read_text(encoding="utf-8").splitlines()), 2)
+
+    def test_hash_log_exporter_backfills_archive_gap_when_state_is_ahead(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            private_key, public_key = keypair()
+            log = log_server.TransparencyLog(
+                str(Path(temp_dir) / "log.db"), private_key, public_key
+            )
+            for label in ("zero", "one", "two", "three"):
+                log.append_entry_hash(ind_token.sha3_hex(label.encode("utf-8")))
+            root = log.publish_root(1_700_000_001)
+
+            class Source:
+                def entries(self, start, end, limit):
+                    return log.entries(start=start, end=end, limit=limit), log.tree_size()
+
+                def latest_root(self):
+                    return root
+
+            archive_dir = Path(temp_dir) / "hash_archive"
+            state_file = Path(temp_dir) / "hash_state.json"
+            archive = hash_log_exporter.StaticHashLogArchive(
+                archive_dir, private_key, public_key
+            )
+            archive.write_segment(log.entries(start=2, end=3, limit=2))
+            hash_log_exporter.save_state(state_file, {"next_leaf_index": 4})
+
+            exported = hash_log_exporter.export_once(
+                Source(),
+                archive,
+                state_file,
+                page_size=2,
+            )
+            self.assertEqual(exported, 2)
+            self.assertFalse((archive_dir / "manifest.json").exists())
+
+            exported = hash_log_exporter.export_once(
+                Source(),
+                archive,
+                state_file,
+                page_size=2,
+            )
+
+            self.assertEqual(exported, 0)
+            manifest = ind_token._load_json(
+                (archive_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["archived_entry_count"], 4)
+            self.assertEqual(
+                [(item["first_leaf_index"], item["last_leaf_index"]) for item in manifest["segments"]],
+                [(0, 1), (2, 3)],
+            )
+            self.assertTrue(hash_log_exporter.verify_manifest_signature(manifest, public_key))
+
+    def test_hash_log_exporter_ignores_superseded_overlapping_segments(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            private_key, public_key = keypair()
+            log = log_server.TransparencyLog(
+                str(Path(temp_dir) / "log.db"), private_key, public_key
+            )
+            for label in ("zero", "one", "two", "three", "four", "five"):
+                log.append_entry_hash(ind_token.sha3_hex(label.encode("utf-8")))
+            root = log.publish_root(1_700_000_002)
+
+            class Source:
+                def entries(self, start, end, limit):
+                    return log.entries(start=start, end=end, limit=limit), log.tree_size()
+
+                def latest_root(self):
+                    return root
+
+            archive_dir = Path(temp_dir) / "hash_archive"
+            state_file = Path(temp_dir) / "hash_state.json"
+            archive = hash_log_exporter.StaticHashLogArchive(
+                archive_dir, private_key, public_key
+            )
+            archive.write_segment(log.entries(start=0, end=3, limit=4))
+            archive.write_segment(log.entries(start=4, end=4, limit=1))
+            archive.write_segment(log.entries(start=4, end=5, limit=2))
+            hash_log_exporter.save_state(state_file, {"next_leaf_index": 5})
+
+            exported = hash_log_exporter.export_once(
+                Source(),
+                archive,
+                state_file,
+                page_size=2,
+            )
+
+            self.assertEqual(exported, 0)
+            manifest = ind_token._load_json(
+                (archive_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["archived_entry_count"], 6)
+            self.assertEqual(
+                [(item["first_leaf_index"], item["last_leaf_index"]) for item in manifest["segments"]],
+                [(0, 3), (4, 5)],
+            )
+            self.assertTrue(hash_log_exporter.verify_manifest_signature(manifest, public_key))
 
 
 if __name__ == "__main__":

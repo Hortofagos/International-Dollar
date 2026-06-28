@@ -1,7 +1,7 @@
 import base64
+import contextlib
 import hashlib
 import json
-import os
 import socket
 import struct
 from pathlib import Path
@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from .io_utils import atomic_write_text
 from . import settings as ind_settings
 from . import token as ind_token
 
@@ -86,12 +87,11 @@ def _write_key_json(path, field, value):
     if path.suffix != ".json":
         path.write_text(value + "\n", encoding="ascii")
         return
-    tmp_path = path.with_name(path.name + ".tmp")
-    tmp_path.write_text(
+    atomic_write_text(
+        path,
         json.dumps({field: value}, sort_keys=True, indent=2, ensure_ascii=True) + "\n",
         encoding="ascii",
     )
-    os.replace(tmp_path, path)
 
 
 def _read_key_json_or_legacy(path, field):
@@ -343,9 +343,7 @@ def send_no_response(addr, indicator, data, peer_ip=None, timeout=4):
             indicator + data,
             ind_token.MAX_WIRE_DECOMPRESSED_BYTES + 1,
         )
-        try:
+        with contextlib.suppress(OSError):
             client.shutdown(socket.SHUT_WR)
-        except OSError:
-            pass
     finally:
         client.close()

@@ -24,7 +24,6 @@ Before launch, generate the intended supply manifest and publish:
 - deterministic nonce seed for each range
 - total bill count
 - total face value
-- deterministic `ind_alignment` metadata carrying the 33/777/8/9 motif
 - SHA3-256 hash of the unsigned manifest
 - issuer public key policy
 - signed `issued_at` launch timestamp

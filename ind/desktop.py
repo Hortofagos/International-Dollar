@@ -1746,13 +1746,6 @@ def make_text_button(
     )
 
 
-def control_image_path(folder, name):
-    scaled_path = BASE_DIR / 'img' / folder / f'{name}{res}.png'
-    if scaled_path.exists():
-        return scaled_path
-    return BASE_DIR / 'img' / folder / f'{name}.png'
-
-
 def source_asset_image_path(folder, name):
     high_res_path = BASE_DIR / 'img' / folder / f'{name}4.png'
     if high_res_path.exists():
@@ -2050,16 +2043,6 @@ def wallet_records_snapshot(force_refresh=False):
     return snapshot
 
 
-def wallet_spendable_records():
-    snapshot = wallet_records_snapshot()
-    return list(
-        wallet_services.filter_locally_sent_records(
-            snapshot["spendable_records"],
-            snapshot["wallet_lines"],
-        )
-    )
-
-
 def print_available_records(force_refresh=False):
     global print_available_cache
     wallet_path = active_wallet_path()
@@ -2109,10 +2092,6 @@ def print_available_records(force_refresh=False):
     return list(records)
 
 
-def wallet_pending_records():
-    return list(wallet_records_snapshot()["pending_records"])
-
-
 def wallet_snapshot_store():
     if wallet_record_cache is not None:
         _cached_key, _cached_at, cached_snapshot = wallet_record_cache
@@ -2126,27 +2105,6 @@ def wallet_snapshot_store():
     if not wallet_address:
         return None
     return wallet_store_for_address(wallet_address)
-
-
-def wallet_record_value(record):
-    try:
-        return int(record.get("value"))
-    except Exception:
-        return wallet_services.wallet_display_value(record.get("display_id", ""))
-
-
-def wallet_line_bill_counts():
-    try:
-        wallet_lines = wallet_records_snapshot()["wallet_lines"]
-    except Exception:
-        log_ignored_exception()
-        return {value: 0 for value in BILL_VALUES}
-    counts = {value: 0 for value in BILL_VALUES}
-    for line in runtime_json.wallet_bill_lines(wallet_lines):
-        value = wallet_services.wallet_owned_line_value(line)
-        if value in counts:
-            counts[value] += 1
-    return counts
 
 
 def wallet_balance_snapshot():
@@ -2586,28 +2544,12 @@ def handle_node_process_exit(return_code):
     update_node_action_button()
 
 
-def local_operator_settings():
-    return node_services.local_operator_settings(BASE_DIR)
-
-
-def apply_operator_environment():
-    return node_services.apply_operator_environment(BASE_DIR)
-
-
-def restore_operator_environment():
-    node_services.restore_operator_environment()
-
-
-def subprocess_kwargs(env=None):
-    return node_services.subprocess_kwargs(BASE_DIR, env=env)
-
-
 def start_transparency_operator_if_enabled():
     global operator_process
     if transparency_operator_var.get() != 'YES':
-        restore_operator_environment()
+        node_services.restore_operator_environment()
         return os.environ.copy()
-    env, mirror_dir = apply_operator_environment()
+    env, mirror_dir = node_services.apply_operator_environment(BASE_DIR)
     Path(mirror_dir).mkdir(parents=True, exist_ok=True)
     if operator_process is None or operator_process.poll() is not None:
         try:
@@ -2616,10 +2558,10 @@ def start_transparency_operator_if_enabled():
                 node_services.local_operator_command(BASE_DIR, mirror_dir),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                **subprocess_kwargs(env),
+                **node_services.subprocess_kwargs(BASE_DIR, env=env),
             )
         except Exception:
-            restore_operator_environment()
+            node_services.restore_operator_environment()
             raise
         time.sleep(1)
         append_node_console(
@@ -2632,7 +2574,7 @@ def stop_transparency_operator():
     global operator_process
     if operator_process is None or operator_process.poll() is not None:
         operator_process = None
-        restore_operator_environment()
+        node_services.restore_operator_environment()
         return
     operator_process.terminate()
     try:
@@ -2640,7 +2582,7 @@ def stop_transparency_operator():
     except subprocess.TimeoutExpired:
         operator_process.kill()
     operator_process = None
-    restore_operator_environment()
+    node_services.restore_operator_environment()
     append_node_console('OPER', 'local transparency log stopped', 'node')
 
 
@@ -2653,14 +2595,6 @@ def stop_node_process():
         except Exception:
             log_ignored_exception()
     node_process = None
-
-
-def startup_bat_contents(node_script):
-    return node_services.startup_bat_contents(
-        BASE_DIR,
-        node_script,
-        include_operator=transparency_operator_var.get() == 'YES',
-    )
 
 
 # Start the local gossip node and optional transparency operator from the GUI.
@@ -2678,7 +2612,13 @@ def start():
         try:
             file_path = str(BASE_DIR / 'node_client.py')
             with open(bat_path + '\\' + 'ind_node.bat', 'w+') as bat_file:
-                bat_file.write(startup_bat_contents(file_path))
+                bat_file.write(
+                    node_services.startup_bat_contents(
+                        BASE_DIR,
+                        file_path,
+                        include_operator=transparency_operator_var.get() == 'YES',
+                    )
+                )
             append_node_console('START', 'startup launcher updated', 'node')
         except Exception:
             log_ignored_exception()
@@ -2703,7 +2643,7 @@ def start():
                 encoding='utf-8',
                 errors='replace',
                 bufsize=1,
-                **subprocess_kwargs(env),
+                **node_services.subprocess_kwargs(BASE_DIR, env=env),
             )
             append_node_console('NODE', f'spawned node_client.py pid {node_process.pid}', 'node')
             threading.Thread(
@@ -3717,16 +3657,6 @@ def wallet_sync_progress_text(progress):
     return "Syncing wallet...", IND_MUTED
 
 
-# Spend one locally stored bill and queue its transfer announcement.
-def write_transfer_announcement(wallet_lines, wallet_bill_line, recipient_address, store=None):
-    return wallet_services.spend_wallet_bill(
-        wallet_lines,
-        wallet_bill_line,
-        recipient_address,
-        store=store or sender_node.wallet_sync_store(),
-    )
-
-
 address_to_charge = []
 printed_charge_running = False
 print_active_denomination = None
@@ -4066,17 +3996,6 @@ def remove_print_bill_from_queue(event):
     return 'break'
 
 
-def on_print_selection_modified(event):
-    if print_selected_text_updating:
-        return
-    try:
-        if event is not None and event.widget is selected_bills_text:
-            selected_bills_text.edit_modified(False)
-    except Exception:
-        log_ignored_exception()
-    refresh_print_view()
-
-
 def add_print_bill_id_to_batch(display_id, source_row=None):
     display_id = str(display_id or "").strip()
     if not display_id:
@@ -4192,6 +4111,35 @@ def preview_display_ids(display_ids, limit=8):
     if len(ids) > limit:
         preview += f', ... {len(ids) - limit} more'
     return preview
+
+
+def mark_wallet_line_spent_from_batch_result(updated, line_index, result, store=None, display_id=""):
+    if result.get("error") is not None:
+        raise result["error"]
+    state = result.get("state")
+    if not state:
+        raise RuntimeError("bill is not spendable or is not settled")
+    display_id = str(display_id or result.get("display_id") or state.display_id)
+    history_timestamp = result.get("history_timestamp")
+    if history_timestamp is None:
+        history_timestamp = wallet_services.latest_bill_transfer_timestamp(
+            bill=wallet_history_bill_for_sequence(
+                display_id,
+                state.sequence,
+                store=store,
+            ),
+            fallback=time.time(),
+        )
+    updated[line_index] = (
+        '-'
+        + display_id
+        + ' '
+        + str(state.sequence)
+        + ' '
+        + str(history_timestamp)
+        + '\n'
+    )
+    return display_id, state
 
 
 # Send selected printed bills to the generated paper-wallet addresses.
@@ -4311,29 +4259,12 @@ def charge_bills():
                 )
                 for display_id, result in zip(list_sm, batch_results, strict=False):
                     try:
-                        if result.get("error") is not None:
-                            raise result["error"]
-                        state = result.get("state")
-                        if not state:
-                            raise RuntimeError("bill is not spendable or is not settled")
-                        history_timestamp = result.get("history_timestamp")
-                        if history_timestamp is None:
-                            history_timestamp = wallet_services.latest_bill_transfer_timestamp(
-                                bill=wallet_history_bill_for_sequence(
-                                    display_id,
-                                    state.sequence,
-                                    store=store,
-                                ),
-                                fallback=time.time(),
-                            )
-                        updated[wallet_index_by_display_id[display_id]] = (
-                            '-'
-                            + display_id
-                            + ' '
-                            + str(state.sequence)
-                            + ' '
-                            + str(history_timestamp)
-                            + '\n'
+                        mark_wallet_line_spent_from_batch_result(
+                            updated,
+                            wallet_index_by_display_id[display_id],
+                            result,
+                            store=store,
+                            display_id=display_id,
                         )
                         sent_count += 1
                     except Exception as exc:
@@ -4955,10 +4886,6 @@ def refresh_print_filter_buttons(records, counts):
     global print_available_filter_denominations, print_available_filter_counts
     print_available_filter_denominations = print_all_denominations(records)
     print_available_filter_counts = dict(counts)
-    render_print_filter_buttons(print_available_filter_denominations, print_available_filter_counts)
-
-
-def refresh_print_filter_buttons_from_cache():
     render_print_filter_buttons(print_available_filter_denominations, print_available_filter_counts)
 
 
@@ -6080,11 +6007,6 @@ def wallet_history_page_entries(page_number, force_metadata=False):
     return entries, len(items)
 
 
-def wallet_history_entries():
-    entries, _total = wallet_history_page_entries(1, force_metadata=True)
-    return entries
-
-
 def refresh_wallet_history_cache(force_metadata=True):
     global wallet_history_cached_entries, wallet_history_cached_total
     if wallet_is_unlocked():
@@ -6380,7 +6302,6 @@ def page(refresh_entries=True, force_history_metadata=True):
         total_pages = max(
             1, (num_of_bills + WALLET_HISTORY_ROWS_PER_PAGE - 1) // WALLET_HISTORY_ROWS_PER_PAGE
         )
-        clamped_page = page_wallet
         if page_wallet > total_pages:
             page_wallet = total_pages
         if page_wallet < 1:
@@ -8670,30 +8591,12 @@ def send_bills(serial_num_start, recipient_address=None):
         ):
             display_id = result.get("display_id") or ""
             try:
-                if result.get("error") is not None:
-                    raise result["error"]
-                state = result.get("state")
-                if not state:
-                    raise RuntimeError("bill is not spendable or is not settled")
-                display_id = display_id or state.display_id
-                history_timestamp = result.get("history_timestamp")
-                if history_timestamp is None:
-                    history_timestamp = wallet_services.latest_bill_transfer_timestamp(
-                        bill=wallet_history_bill_for_sequence(
-                            display_id,
-                            state.sequence,
-                            store=store,
-                        ),
-                        fallback=time.time(),
-                    )
-                updated[line_index] = (
-                    '-'
-                    + display_id
-                    + ' '
-                    + str(state.sequence)
-                    + ' '
-                    + str(history_timestamp)
-                    + '\n'
+                display_id, _state = mark_wallet_line_spent_from_batch_result(
+                    updated,
+                    line_index,
+                    result,
+                    store=store,
+                    display_id=display_id,
                 )
                 sent_count += 1
             except Exception as exc:
@@ -9746,16 +9649,6 @@ def select_qr_image():
         restore_webcam_scanner_prompt()
         show_scanned_serials_list()
         show_error_popup('QR image failed', exc)
-
-
-def fallback_to_qr_image_picker(error):
-    messagebox.showinfo(
-        'Webcam unavailable',
-        'The webcam could not be opened or stopped returning images.\n\n'
-        'Choose a QR image file instead.\n\n'
-        f'Details: {error_detail(error)}',
-    )
-    select_qr_image()
 
 
 # Toggle live webcam scanning; image-file and drag/drop paths share the decoder.

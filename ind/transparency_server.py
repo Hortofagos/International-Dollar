@@ -1,9 +1,9 @@
 import argparse
+import collections
 import copy
 import json
 import logging
 import os
-import sqlite3
 import threading
 import time
 import urllib.request
@@ -11,13 +11,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from pymerkle.concrete.sqlite import SqliteTree
 from pymerkle.core import InvalidChallenge
 
+from . import env as ind_env
 from . import keys_v3
+from . import operator_storage
 from . import protocol_policy
 from . import token as ind_token
 from . import transparency_client as log_client
+from .io_utils import atomic_write_text
 
 DEFAULT_LOG_DB = "files/ind_transparency_log.db"
 logger = logging.getLogger(__name__)
@@ -26,6 +28,12 @@ DEFAULT_LOG_PUBLIC_KEY = "files/log_operator_public_key.json"
 DEFAULT_ROOT_INTERVAL_SECONDS = 60
 DEFAULT_MAX_APPEND_BODY_BYTES = 8 * 1024 * 1024
 DEFAULT_APPEND_BODY_READ_TIMEOUT_SECONDS = 10
+DEFAULT_APPEND_VALIDATION_WORKERS = 4
+DEFAULT_APPEND_VALIDATION_QUEUE_MAX = 128
+DEFAULT_APPEND_VALIDATION_PER_IP_QUEUE_MAX = 16
+DEFAULT_APPEND_VALIDATION_ADMISSION_TIMEOUT_SECONDS = 1
+DEFAULT_APPEND_VALIDATION_RESULT_TIMEOUT_SECONDS = 60
+DEFAULT_APPEND_VALIDATION_RETRY_AFTER_SECONDS = 2
 DEFAULT_OPERATOR_RECOVERY_MIN_FEEDS = 2
 DEFAULT_OPERATOR_RECOVERY_STABLE_SECONDS = 120
 
@@ -38,25 +46,12 @@ OPERATOR_RECOVERY_MANIFEST_TYPE = "ind.operator_recovery_manifest.v3"
 OPERATOR_RECOVERY_MANIFEST_SIGNATURE_DOMAIN = "IND_OPERATOR_RECOVERY_MANIFEST_V3"
 
 
-def _env_int(name, default):
-    try:
-        return int(os.environ.get(name, default))
-    except (TypeError, ValueError):
-        return int(default)
-
-
-def _env_bool(name, default=False):
-    raw = os.environ.get(name)
-    if raw is None:
-        return bool(default)
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+_env_int = ind_env.int_value
+_env_bool = ind_env.bool_value
 
 
 def _env_list(name):
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return []
-    return [item.strip() for item in raw.replace("\n", ",").split(",") if item.strip()]
+    return ind_env.list_value(name)
 
 
 def _env_operator_public_keys():
@@ -87,12 +82,202 @@ APPEND_BODY_READ_TIMEOUT_SECONDS = max(
     1,
     _env_int("IND_LOG_APPEND_BODY_READ_TIMEOUT_SECONDS", DEFAULT_APPEND_BODY_READ_TIMEOUT_SECONDS),
 )
+APPEND_VALIDATION_WORKERS = max(
+    1,
+    _env_int("IND_LOG_APPEND_VALIDATION_WORKERS", DEFAULT_APPEND_VALIDATION_WORKERS),
+)
+APPEND_VALIDATION_QUEUE_MAX = max(
+    1,
+    _env_int("IND_LOG_APPEND_VALIDATION_QUEUE_MAX", DEFAULT_APPEND_VALIDATION_QUEUE_MAX),
+)
+APPEND_VALIDATION_PER_IP_QUEUE_MAX = max(
+    1,
+    _env_int(
+        "IND_LOG_APPEND_VALIDATION_PER_IP_QUEUE_MAX",
+        DEFAULT_APPEND_VALIDATION_PER_IP_QUEUE_MAX,
+    ),
+)
+APPEND_VALIDATION_ADMISSION_TIMEOUT_SECONDS = max(
+    0,
+    _env_int(
+        "IND_LOG_APPEND_VALIDATION_ADMISSION_TIMEOUT_SECONDS",
+        DEFAULT_APPEND_VALIDATION_ADMISSION_TIMEOUT_SECONDS,
+    ),
+)
+APPEND_VALIDATION_RESULT_TIMEOUT_SECONDS = max(
+    1,
+    _env_int(
+        "IND_LOG_APPEND_VALIDATION_RESULT_TIMEOUT_SECONDS",
+        DEFAULT_APPEND_VALIDATION_RESULT_TIMEOUT_SECONDS,
+    ),
+)
+APPEND_VALIDATION_RETRY_AFTER_SECONDS = max(
+    1,
+    _env_int(
+        "IND_LOG_APPEND_VALIDATION_RETRY_AFTER_SECONDS",
+        DEFAULT_APPEND_VALIDATION_RETRY_AFTER_SECONDS,
+    ),
+)
 WRITE_MIRROR_PROOF_ARCHIVES = _env_bool("IND_LOG_WRITE_MIRROR_PROOF_ARCHIVES", False)
 
 
 # Raised when the transparency log operator cannot serve a request.
 class LogServerError(Exception):
     pass
+
+
+class AppendValidationBackpressure(LogServerError):
+    def __init__(self, message="append validation busy", retry_after_seconds=None):
+        super().__init__(message)
+        self.retry_after_seconds = int(
+            retry_after_seconds
+            if retry_after_seconds is not None
+            else APPEND_VALIDATION_RETRY_AFTER_SECONDS
+        )
+
+
+# Represents one append validation request waiting for a worker result.
+class AppendValidationJob:
+    def __init__(self, peer_ip, payload, operation):
+        self.peer_ip = str(peer_ip or "")
+        self.payload = payload
+        self.operation = operation
+        self.event = threading.Event()
+        self.result = None
+        self.error = None
+
+
+# Bounded per-peer validation queue that protects append endpoints from bursts.
+class AppendValidationQueue:
+    # Start worker threads and configure global plus per-IP queue limits.
+    def __init__(self, workers=None, queue_max=None, per_ip_queue_max=None):
+        self.worker_count = max(
+            1,
+            int(workers if workers is not None else APPEND_VALIDATION_WORKERS),
+        )
+        self.queue_max = max(
+            0,
+            int(queue_max if queue_max is not None else APPEND_VALIDATION_QUEUE_MAX),
+        )
+        self.per_ip_queue_max = max(
+            0,
+            int(
+                per_ip_queue_max
+                if per_ip_queue_max is not None
+                else APPEND_VALIDATION_PER_IP_QUEUE_MAX
+            ),
+        )
+        self._condition = threading.Condition()
+        self._queues = {}
+        self._ready_peers = collections.deque()
+        self._queued_count = 0
+        self._closed = False
+        self._workers = [
+            threading.Thread(
+                target=self._worker,
+                name=f"append-validation-{index}",
+                daemon=True,
+            )
+            for index in range(self.worker_count)
+        ]
+        for worker in self._workers:
+            worker.start()
+
+    # Enqueue one validation operation and wait for its result or backpressure error.
+    def submit(
+        self,
+        peer_ip,
+        payload,
+        operation,
+        *,
+        admission_timeout=None,
+        result_timeout=None,
+    ):
+        job = AppendValidationJob(peer_ip, payload, operation)
+        admission_timeout = (
+            APPEND_VALIDATION_ADMISSION_TIMEOUT_SECONDS
+            if admission_timeout is None
+            else max(0, float(admission_timeout))
+        )
+        result_timeout = (
+            APPEND_VALIDATION_RESULT_TIMEOUT_SECONDS
+            if result_timeout is None
+            else max(1, float(result_timeout))
+        )
+        self._admit(job, admission_timeout)
+        if not job.event.wait(result_timeout):
+            raise AppendValidationBackpressure("append validation timed out")
+        if job.error is not None:
+            raise job.error
+        return job.result
+
+    # Admit a job only when both global and per-peer queue capacity are available.
+    def _admit(self, job, admission_timeout):
+        deadline = time.monotonic() + float(admission_timeout)
+        with self._condition:
+            while True:
+                if self._closed:
+                    raise AppendValidationBackpressure("append validation shutting down")
+                peer_queue = self._queues.get(job.peer_ip)
+                peer_depth = len(peer_queue) if peer_queue is not None else 0
+                has_global_room = self._queued_count < self.queue_max
+                has_peer_room = peer_depth < self.per_ip_queue_max
+                if has_global_room and has_peer_room:
+                    if peer_queue is None:
+                        peer_queue = collections.deque()
+                        self._queues[job.peer_ip] = peer_queue
+                    was_empty = not peer_queue
+                    peer_queue.append(job)
+                    self._queued_count += 1
+                    if was_empty:
+                        self._ready_peers.append(job.peer_ip)
+                    self._condition.notify()
+                    return
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AppendValidationBackpressure()
+                self._condition.wait(min(remaining, 0.05))
+
+    # Pull jobs in peer-rotating order so one sender cannot monopolize validation.
+    def _next_job(self):
+        with self._condition:
+            while True:
+                while not self._ready_peers and not self._closed:
+                    self._condition.wait()
+                if not self._ready_peers and self._closed:
+                    return None
+                peer_ip = self._ready_peers.popleft()
+                peer_queue = self._queues.get(peer_ip)
+                if not peer_queue:
+                    self._queues.pop(peer_ip, None)
+                    continue
+                job = peer_queue.popleft()
+                self._queued_count -= 1
+                if peer_queue:
+                    self._ready_peers.append(peer_ip)
+                else:
+                    self._queues.pop(peer_ip, None)
+                self._condition.notify_all()
+                return job
+
+    # Execute admitted validation jobs and attach either result or exception.
+    def _worker(self):
+        while True:
+            job = self._next_job()
+            if job is None:
+                return
+            try:
+                job.result = job.operation()
+            except Exception as exc:
+                job.error = exc
+            finally:
+                job.event.set()
+
+    # Stop workers after all waiting threads have been notified.
+    def close(self):
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
 
 
 def _legacy_text_path(path):
@@ -108,12 +293,11 @@ def _write_key_json(path, field, value):
     if path.suffix != ".json":
         path.write_text(value + "\n", encoding="utf-8")
         return
-    tmp_path = path.with_name(path.name + ".tmp")
-    tmp_path.write_text(
+    atomic_write_text(
+        path,
         json.dumps({field: value}, sort_keys=True, indent=2, ensure_ascii=True) + "\n",
         encoding="utf-8",
     )
-    os.replace(tmp_path, path)
 
 
 def _read_key_json_or_legacy(path, field):
@@ -159,6 +343,7 @@ def load_or_create_operator_keys(
 
 # Persistent CT-style SHA3-256 append-only log of IND transfer hashes.
 class TransparencyLog:
+    # Build an append-only transparency log with configured storage and recovery policy.
     def __init__(
         self,
         db_path,
@@ -173,11 +358,14 @@ class TransparencyLog:
         recovery_proof_archives=None,
         max_root_lag_seconds=log_client.DEFAULT_MAX_ROOT_LAG_SECONDS,
         enforce_late_witnesses=False,
+        storage_backend=None,
     ):
-        self.db_path = str(Path(db_path))
         self.private_key = private_key_base85
         self.public_key = public_key_base85
         self.log_id = log_client.log_id_from_public_key(public_key_base85)
+        self.storage = operator_storage.create_operator_storage(db_path, backend=storage_backend)
+        self.storage_backend = self.storage.backend_name
+        self.db_path = self.storage.display_path
         self.mirror_dirs = [Path(path) for path in (mirror_dirs or [])]
         self.recovery_required = bool(recovery_required)
         self.recovery_feeds = list(recovery_feeds or [])
@@ -188,95 +376,18 @@ class TransparencyLog:
         self.max_root_lag_seconds = int(max_root_lag_seconds)
         self.enforce_late_witnesses = bool(enforce_late_witnesses)
         self._append_lock = threading.RLock()
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
         self._initialize_operator_state()
 
+    # Return a backend connection for log, root, and recovery state operations.
     def _connect(self):
-        conn = sqlite3.connect(self.db_path, factory=ind_token.ClosingConnection)
-        ind_token.configure_sqlite_connection(conn)
-        conn.row_factory = sqlite3.Row
-        return conn
+        return self.storage.connect()
 
+    # Initialize the selected storage backend schema.
     def _init_db(self):
-        with SqliteTree(self.db_path, algorithm=log_client.LOG_HASH_ALGORITHM):
-            pass
-        with self._connect() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS log_entries (
-                    entry_hash TEXT PRIMARY KEY,
-                    leaf_index INTEGER NOT NULL UNIQUE,
-                    submitted_at INTEGER NOT NULL,
-                    entry_kind TEXT NOT NULL DEFAULT 'transfer',
-                    entry_json TEXT,
-                    transfer_json TEXT
-                );
+        self.storage.init_schema()
 
-                CREATE TABLE IF NOT EXISTS signed_roots (
-                    root_id TEXT PRIMARY KEY,
-                    tree_size INTEGER NOT NULL,
-                    root_hash TEXT NOT NULL,
-                    timestamp INTEGER NOT NULL,
-                    root_json TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_signed_roots_timestamp
-                    ON signed_roots(timestamp, tree_size);
-
-                CREATE TABLE IF NOT EXISTS spend_claims (
-                    spend_key TEXT NOT NULL,
-                    token_id TEXT NOT NULL,
-                    previous_hash TEXT NOT NULL,
-                    sequence INTEGER NOT NULL,
-                    sender_address TEXT NOT NULL,
-                    sender_public_key TEXT NOT NULL,
-                    transfer_hash TEXT NOT NULL,
-                    transfer_leaf_index INTEGER,
-                    first_seen INTEGER NOT NULL,
-                    PRIMARY KEY(spend_key, transfer_hash)
-                );
-                CREATE INDEX IF NOT EXISTS idx_spend_claims_token
-                    ON spend_claims(token_id, sequence, previous_hash, sender_address);
-
-                CREATE TABLE IF NOT EXISTS spend_map_nodes_v3 (
-                    depth INTEGER NOT NULL,
-                    position TEXT NOT NULL,
-                    node_hash TEXT NOT NULL,
-                    PRIMARY KEY(depth, position)
-                );
-
-                CREATE TABLE IF NOT EXISTS spend_map_claims_v3 (
-                    spend_key TEXT NOT NULL,
-                    transfer_hash TEXT NOT NULL,
-                    transfer_leaf_index INTEGER NOT NULL,
-                    claim_json TEXT NOT NULL,
-                    PRIMARY KEY(spend_key, transfer_hash)
-                );
-
-                CREATE TABLE IF NOT EXISTS spend_map_meta_v3 (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS invalid_transfer_entries_v3 (
-                    entry_hash TEXT PRIMARY KEY,
-                    leaf_index INTEGER NOT NULL,
-                    reason TEXT NOT NULL,
-                    transfer_type TEXT,
-                    token_id TEXT,
-                    first_seen INTEGER NOT NULL,
-                    observed_at INTEGER NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_invalid_transfer_entries_v3_leaf
-                    ON invalid_transfer_entries_v3(leaf_index);
-
-                CREATE TABLE IF NOT EXISTS operator_recovery_state (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-                """)
-            self._ensure_log_entry_columns(conn)
-            self._ensure_spend_claim_columns(conn)
-
+    # Put a recovery-required operator into recovering state on startup.
     def _initialize_operator_state(self):
         with self._connect() as conn:
             row = conn.execute(
@@ -302,6 +413,7 @@ class TransparencyLog:
                     report=self._empty_recovery_report(phase=OPERATOR_STATE_RECOVERING),
                 )
 
+    # Read one recovery/operator-state value from storage.
     def _state_value(self, conn, key, default=""):
         row = conn.execute(
             "SELECT value FROM operator_recovery_state WHERE key = ?",
@@ -309,6 +421,7 @@ class TransparencyLog:
         ).fetchone()
         return row["value"] if row else default
 
+    # Persist one recovery/operator-state value.
     def _set_state_value(self, conn, key, value):
         conn.execute(
             """
@@ -318,6 +431,7 @@ class TransparencyLog:
             (str(key), str(value)),
         )
 
+    # Build the default recovery report shape used by status and fail-safe paths.
     def _empty_recovery_report(self, phase=None):
         return {
             "phase": phase or self.operator_state(),
@@ -331,6 +445,7 @@ class TransparencyLog:
             "missing_feed_quorum": [],
         }
 
+    # Persist operator active/recovering/fail-safe state and optional recovery report.
     def _set_operator_state(self, state, reason="", report=None, conn=None):
         owns_conn = conn is None
         conn = conn or self._connect()
@@ -346,19 +461,23 @@ class TransparencyLog:
             if owns_conn:
                 conn.close()
 
+    # Return the current operator safety state.
     def operator_state(self):
         with self._connect() as conn:
             return self._state_value(conn, "state", OPERATOR_STATE_ACTIVE)
 
+    # Return whether the operator should accept new append requests.
     def is_active(self):
         return self.operator_state() == OPERATOR_STATE_ACTIVE
 
+    # Enter fail-safe mode after recovery or consistency checks fail.
     def fail_safe(self, reason, report=None):
         current_report = report or self._empty_recovery_report(phase=OPERATOR_STATE_FAILED_SAFE)
         current_report["phase"] = OPERATOR_STATE_FAILED_SAFE
         self._set_operator_state(OPERATOR_STATE_FAILED_SAFE, reason=reason, report=current_report)
         return current_report
 
+    # Mark the operator active after recovery checks establish a safe high-watermark.
     def activate(self, report=None):
         current_report = report or self._empty_recovery_report(phase=OPERATOR_STATE_ACTIVE)
         current_report["phase"] = OPERATOR_STATE_ACTIVE
@@ -386,7 +505,9 @@ class TransparencyLog:
         detail = "; ".join(dict.fromkeys(errors))
         raise LogServerError(f"v3 transfer announcement is invalid: {detail}")
 
+    # Return operator health, latest root, storage status, and recovery state.
     def status(self):
+        storage_health = self.storage.health()
         with self._connect() as conn:
             report_raw = self._state_value(conn, "recovery_report", "")
             try:
@@ -398,6 +519,9 @@ class TransparencyLog:
                 "version": 1,
                 "log_id": self.log_id,
                 "operator_public_key": self.public_key,
+                "storage_backend": self.storage_backend,
+                "storage_healthy": bool(storage_health.get("ok")),
+                "storage": storage_health,
                 "state": self._state_value(conn, "state", OPERATOR_STATE_ACTIVE),
                 "tree_size": self.tree_size(),
                 "latest_signed_root": self.latest_root(),
@@ -460,7 +584,7 @@ class TransparencyLog:
             conn.execute("ALTER TABLE spend_claims ADD COLUMN transfer_leaf_index INTEGER")
 
     def _tree(self):
-        return SqliteTree(self.db_path, algorithm=log_client.LOG_HASH_ALGORITHM)
+        return self.storage.tree()
 
     def tree_size(self):
         with self._tree() as tree:
@@ -489,56 +613,25 @@ class TransparencyLog:
         transfer_json = log_client.canonical_json(transfer) if transfer is not None else None
         entry_json = log_client.canonical_json(entry) if entry is not None else None
         entry_kind = str(entry_kind or "transfer")
+        with self._tree() as tree:
+            leaf_hash = tree.hash_buff(entry_bytes)
         with self._append_lock:
-            with self._connect() as conn:
-                existing = conn.execute(
-                    "SELECT leaf_index FROM log_entries WHERE entry_hash = ?",
-                    (entry_hash,),
-                ).fetchone()
-                if existing:
-                    if transfer_json is not None or entry_json is not None:
-                        conn.execute(
-                            """
-                            UPDATE log_entries
-                            SET transfer_json = COALESCE(transfer_json, ?),
-                                entry_json = COALESCE(entry_json, ?),
-                                entry_kind = COALESCE(entry_kind, ?)
-                            WHERE entry_hash = ?
-                            """,
-                            (transfer_json, entry_json, entry_kind, entry_hash),
-                        )
-                    return {
-                        "accepted": True,
-                        "duplicate": True,
-                        "entry_hash": entry_hash,
-                        "leaf_index": int(existing["leaf_index"]) - 1,
-                        "tree_size": self.tree_size(),
-                    }
-
-            with self._tree() as tree:
-                leaf_index = tree.append_entry(entry_bytes)
-
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO log_entries(entry_hash, leaf_index, submitted_at, entry_kind, entry_json, transfer_json)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        entry_hash,
-                        int(leaf_index),
-                        submitted_at,
-                        entry_kind,
-                        entry_json,
-                        transfer_json,
-                    ),
-                )
+            stored = self.storage.append_log_entry(
+                entry_hash,
+                entry_bytes,
+                leaf_hash,
+                submitted_at,
+                entry_kind,
+                entry_json,
+                transfer_json,
+            )
+            leaf_index = int(stored["leaf_index"])
         return {
             "accepted": True,
-            "duplicate": False,
+            "duplicate": bool(stored["duplicate"]),
             "entry_hash": entry_hash,
             "leaf_index": int(leaf_index) - 1,
-            "tree_size": self.tree_size(),
+            "tree_size": int(stored["tree_size"]),
         }
 
     def _spend_claim_from_transfer(self, transfer):
@@ -1174,6 +1267,7 @@ class TransparencyLog:
             ).fetchone()
         return int(row["leaf_index"]) - 1 if row else None
 
+    # Decode a transfer announcement into append metadata without changing storage.
     def _transfer_details_from_announcement(self, announcement):
         if isinstance(announcement, bytes):
             announcement = announcement.decode("utf-8")
@@ -1203,6 +1297,7 @@ class TransparencyLog:
             "announced_at": int(announcement.get("announced_at", transfer["timestamp"])),
         }
 
+    # Require recovery witnesses when a transfer is appended after the root-lag window.
     def _verify_late_recovery_witnesses(
         self,
         message_hash,
@@ -1218,11 +1313,13 @@ class TransparencyLog:
         )
         return True
 
+    # Normalize recovery root sources from URLs, paths, or already-built mirror clients.
     def _coerce_recovery_root_source(self, source):
         if isinstance(source, str):
             return log_client._coerce_mirror(source)
         return source
 
+    # Persist a signed root discovered during recovery so future checks see it locally.
     def _store_signed_root(self, root):
         root_id = ind_token.sha3_hex(log_client.canonical_bytes(root))
         with self._connect() as conn:
@@ -1240,6 +1337,7 @@ class TransparencyLog:
                 ),
             )
 
+    # Rebuild local log entries from a complete proof archive for a signed prefix.
     def _restore_prefix_from_proof_archive(self, source, root):
         proof_archive = getattr(source, "proof_archive", None)
         if not callable(proof_archive):
@@ -1298,6 +1396,7 @@ class TransparencyLog:
         self._store_signed_root(root)
         return target_tree_size
 
+    # Check recovery mirrors and proof archives before accepting feed catch-up data.
     def verify_recovery_sources(self):
         local_tree_size = self.tree_size()
         checked = 0
@@ -1349,6 +1448,7 @@ class TransparencyLog:
                     )
         return checked
 
+    # Read recovery manifests or segments from HTTP(S), files, or directories.
     def _read_recovery_text(self, base, relative=None):
         if isinstance(base, dict):
             base = base.get("url") or base.get("path") or base.get("base_url")
@@ -1370,6 +1470,7 @@ class TransparencyLog:
             path = path.parent / str(relative)
         return path.read_text(encoding="utf-8")
 
+    # Verify the signed manifest that describes one recovery feed.
     def _verify_recovery_manifest(self, manifest, pinned_public_key=None):
         if not isinstance(manifest, dict):
             raise LogServerError("recovery manifest must be a JSON object")
@@ -1397,6 +1498,7 @@ class TransparencyLog:
                 raise LogServerError("invalid recovery manifest signature")
         return manifest
 
+    # Load a recovery feed from an in-memory object, inline dict, or manifest location.
     def _load_recovery_feed(self, feed):
         if hasattr(feed, "recovery_entries") and callable(feed.recovery_entries):
             return feed.recovery_entries()
@@ -1438,6 +1540,7 @@ class TransparencyLog:
             "entries": entries,
         }
 
+    # Normalize one recovery entry to the same append metadata used by live requests.
     def _normalize_recovery_feed_entry(self, feed_record, entry):
         if isinstance(entry, dict) and "message" in entry:
             message = entry["message"]
@@ -1462,6 +1565,7 @@ class TransparencyLog:
             "witnesses": witnesses,
         }
 
+    # Append quorum-backed recovery feed entries up to the stable high-watermark.
     def catch_up_from_recovery_feeds(self):
         report = self._empty_recovery_report(phase=OPERATOR_STATE_CATCHING_UP)
         now = int(time.time())
@@ -1570,6 +1674,7 @@ class TransparencyLog:
                 report[bucket].append({"message_hash": message_hash, "error": str(exc)})
         return report
 
+    # Run source verification and feed catch-up, then activate or fail safe.
     def run_recovery(self):
         if self.operator_state() == OPERATOR_STATE_FAILED_SAFE:
             raise LogServerError("operator is failed safe")
@@ -1642,11 +1747,28 @@ class TransparencyLog:
             )
         with self._append_lock:
             with self._connect() as conn:
+                self.storage.lock_writer(conn)
                 self._reject_conflicting_spend_claim(conn, claim, entry_hash)
-            result = self.append_entry_hash(
-                entry_hash, submitted_at=submitted_at, transfer=transfer
-            )
-            with self._connect() as conn:
+                entry_bytes = bytes.fromhex(entry_hash)
+                with self._tree() as tree:
+                    leaf_hash = tree.hash_buff(entry_bytes)
+                stored = self.storage.append_log_entry_conn(
+                    conn,
+                    entry_hash,
+                    entry_bytes,
+                    leaf_hash,
+                    submitted_at,
+                    "transfer",
+                    None,
+                    log_client.canonical_json(transfer),
+                )
+                result = {
+                    "accepted": True,
+                    "duplicate": bool(stored["duplicate"]),
+                    "entry_hash": entry_hash,
+                    "leaf_index": int(stored["leaf_index"]) - 1,
+                    "tree_size": int(stored["tree_size"]),
+                }
                 self._record_spend_claim(
                     conn,
                     claim,
@@ -1657,6 +1779,7 @@ class TransparencyLog:
             result["spend_key"] = claim["spend_key"]
             return result
 
+    # Look up a previously logged checkpoint core by its canonical hash.
     def _checkpoint_core_by_hash(self, checkpoint_hash):
         checkpoint_hash = str(checkpoint_hash).lower()
         with self._connect() as conn:
@@ -1785,6 +1908,7 @@ class TransparencyLog:
         self._mirror_root(root)
         return root
 
+    # Publish a fresh signed root only when the configured interval has elapsed.
     def maybe_publish_root(self, interval_seconds=DEFAULT_ROOT_INTERVAL_SECONDS):
         if not self.is_active():
             latest = self.latest_root()
@@ -1797,6 +1921,7 @@ class TransparencyLog:
             return self.publish_root(now)
         return latest
 
+    # Return the most recent signed root the operator has published.
     def latest_root(self):
         with self._connect() as conn:
             row = conn.execute("""
@@ -1806,6 +1931,7 @@ class TransparencyLog:
                 """).fetchone()
         return json.loads(row["root_json"]) if row else None
 
+    # Return the signed root for an exact tree size.
     def root_for_tree_size(self, tree_size):
         with self._connect() as conn:
             row = conn.execute(
@@ -1837,6 +1963,7 @@ class TransparencyLog:
             raise LogServerError("no signed root at or after timestamp")
         return json.loads(row["root_json"])
 
+    # Return recent signed roots in chronological order for mirror/audit clients.
     def roots(self, limit=1000):
         with self._connect() as conn:
             rows = conn.execute(
@@ -1877,6 +2004,7 @@ class TransparencyLog:
             for row in rows
         ]
 
+    # Return the Merkle inclusion proof for a leaf under a requested tree size.
     def inclusion_proof(self, entry_hash, tree_size):
         entry_hash = str(entry_hash).lower()
         tree_size = int(tree_size)
@@ -1906,6 +2034,7 @@ class TransparencyLog:
             "proof": proof.serialize(),
         }
 
+    # Return the Merkle consistency proof between two tree sizes.
     def consistency_proof(self, first_tree_size, second_tree_size):
         first_tree_size = int(first_tree_size)
         second_tree_size = int(second_tree_size)
@@ -1932,6 +2061,7 @@ class TransparencyLog:
             "proof": proof.serialize(),
         }
 
+    # Write signed roots and optional proof archives to configured static mirror dirs.
     def _mirror_root(self, root):
         for mirror_dir in self.mirror_dirs:
             mirror_dir.mkdir(parents=True, exist_ok=True)
@@ -1995,6 +2125,19 @@ class TransparencyLogHandler(BaseHTTPRequestHandler):
 
     def _query(self):
         return parse_qs(urlparse(self.path).query)
+
+    def _append_validation_queue(self):
+        lane = getattr(self.server, "append_validation_queue", None)
+        if lane is None:
+            lane = AppendValidationQueue()
+            self.server.append_validation_queue = lane
+        return lane
+
+    def _client_ip(self):
+        try:
+            return str(self.client_address[0])
+        except Exception:
+            return ""
 
     def do_GET(self):
         try:
@@ -2094,14 +2237,47 @@ class TransparencyLogHandler(BaseHTTPRequestHandler):
             self.connection.settimeout(APPEND_BODY_READ_TIMEOUT_SECONDS)
             raw = self.rfile.read(length).decode("utf-8")
             payload = json.loads(raw)
-            if (
-                isinstance(payload, dict)
-                and payload.get("type") == ind_token.CHECKPOINT_ANNOUNCEMENT_TYPE
-            ):
-                result = log.append_checkpoint_announcement(payload)
-            else:
-                result = log.append_transfer_announcement(payload)
+            from . import protocol_v3
+
+            if not isinstance(payload, dict):
+                self._send_error_json(400, "append request must be a JSON object")
+                return
+            payload_type = payload.get("type")
+            valid_append_types = {
+                protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE,
+                protocol_v3.CHECKPOINT_ANNOUNCEMENT_TYPE,
+            }
+            if payload_type not in valid_append_types:
+                self._send_error_json(400, "expected an IND V3 transfer or checkpoint announcement")
+                return
+            if "payload_encoding" not in payload:
+                self._send_error_json(
+                    400,
+                    protocol_policy.non_v3_disabled_message("non-V3 append"),
+                )
+                return
+
+            def append_operation():
+                if payload_type == protocol_v3.CHECKPOINT_ANNOUNCEMENT_TYPE:
+                    return log.append_checkpoint_announcement(payload)
+                return log.append_transfer_announcement(payload)
+
+            result = self._append_validation_queue().submit(
+                self._client_ip(),
+                payload,
+                append_operation,
+            )
             self._send_json(200, result)
+        except AppendValidationBackpressure as exc:
+            retry_after = str(exc.retry_after_seconds)
+            self._send_json(
+                503,
+                {
+                    "error": str(exc),
+                    "retry_after_seconds": int(exc.retry_after_seconds),
+                },
+                headers={"Retry-After": retry_after},
+            )
         except Exception as exc:
             self._send_error_json(400, str(exc))
 
@@ -2151,11 +2327,13 @@ def serve(log, host="127.0.0.1", port=8890, root_interval_seconds=DEFAULT_ROOT_I
     server = ThreadingHTTPServer((host, int(port)), TransparencyLogHandler)
     server.transparency_log = log
     server.root_interval_seconds = int(root_interval_seconds)
+    server.append_validation_queue = AppendValidationQueue()
     try:
         server.serve_forever()
     finally:
         stop_event.set()
         recovery_stop.set()
+        server.append_validation_queue.close()
         server.server_close()
 
 

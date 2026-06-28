@@ -17,11 +17,11 @@ An attacker can sign two transfers from the same bill state to different recipie
 
 ## Network Partitions And Eclipse Attacks
 
-An isolated node may settle a bill before hearing about a conflicting branch. The 60-second buffer reduces ordinary propagation risk, but it is not global consensus. Merchants should run well-connected nodes and treat high-value transfers more conservatively.
+An isolated node may settle a bill before hearing about a conflicting branch if it is running in local-only mode. With operator quorum enabled, settlement requires a majority of configured append-capable transparency operators to prove the same spend-map claim for the exact spend key and transfer hash. The 60-second buffer still reduces ordinary propagation risk before that finality decision. Merchants should run well-connected nodes and treat high-value transfers more conservatively.
 
 ## Delayed Gossip
 
-Peers can withhold messages. A late conflict proof remains valid evidence, but receiving it does not invalidate an already settled local branch.
+Peers can withhold messages. A conflict proof received before settlement vetoes local finality. Once a branch is locally settled, later conflict proofs are ignored: they do not invalidate the settled branch, move ownership, enter local conflict storage, or get relayed as active evidence.
 
 ## Retroactive History Forgery
 

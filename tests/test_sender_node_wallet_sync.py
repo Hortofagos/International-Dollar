@@ -410,6 +410,123 @@ def test_receive_bills_pages_backfill_without_known_token_payload():
     assert store.requests[1]["cursor"]["token_id"] == "token-99"
 
 
+def test_receive_bills_sends_wallet_file_known_display_ranges():
+    class FakeStore:
+        def spendable_bill_v3_display_ids(self, _address, display_ids):
+            return set(display_ids)
+
+        def wallet_delta_sync_request(
+            self,
+            address,
+            token_limit=0,
+            response_limit=100,
+            direction="backfill",
+            page_cursor=None,
+        ):
+            request = {
+                "type": "ind.wallet_bill_sync_request.v3",
+                "version": 3,
+                "address": address,
+                "direction": direction,
+                "limit": response_limit,
+            }
+            if page_cursor:
+                request["cursor"] = dict(page_cursor)
+            return request
+
+        def finalize_pending(self, buffer_seconds=0):
+            return []
+
+        def bill_v3_records_for_owner(self, _address, statuses=None, limit=None):
+            return []
+
+        def token_records_for_owner(self, _address, settled_only=True):
+            return []
+
+    address, _private_key, _public_key = keys_v3.generate_keypair(b"\x70" * 32)
+    wallet_lines = [
+        f"{address}\n",
+        "private\n",
+        "public\n",
+        *[f"20x{index} 1 1700000{index:03d}\n" for index in range(1, 301)],
+    ]
+    captured_requests = []
+
+    def iter_reports(_address, sync_request=None, peers=None):
+        captured_requests.append(sync_request)
+        return [
+            {
+                "peer": "peer-a",
+                "status": sender_node.REQUEST_OK,
+                "records": [],
+                "messages": [],
+                "delta": True,
+            }
+        ]
+
+    wallet_path = SimpleNamespace(name="wallet_decrypted_test")
+
+    with (
+        mock.patch.object(sender_node, "ensure_runtime_files"),
+        mock.patch.object(sender_node, "wallet_sync_store", return_value=FakeStore()),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "iter_decrypted_wallet_files",
+            return_value=[wallet_path],
+        ),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "read_decrypted_wallet_lines",
+            return_value=wallet_lines,
+        ),
+        mock.patch.object(sender_node, "iter_wallet_message_reports", side_effect=iter_reports),
+        mock.patch.object(sender_node.ind_settings, "finality_buffer_seconds", return_value=0),
+    ):
+        summary = sender_node.receive_bills()
+
+    assert summary["status"] == "complete"
+    assert summary["fetched_records"] == 0
+    assert summary["checked_records"] == 0
+    assert captured_requests[0]["known_display_ranges"] == [[20, 1, 300, 1]]
+
+
+def test_wallet_sync_request_keeps_wallet_lines_recoverable_without_local_store_record():
+    class FakeStore:
+        def spendable_bill_v3_display_ids(self, _address, _display_ids):
+            return set()
+
+        def wallet_delta_sync_request(
+            self,
+            address,
+            token_limit=0,
+            response_limit=100,
+            direction="backfill",
+            page_cursor=None,
+        ):
+            return {
+                "type": "ind.wallet_bill_sync_request.v3",
+                "version": 3,
+                "address": address,
+                "direction": direction,
+                "limit": response_limit,
+            }
+
+    address, _private_key, _public_key = keys_v3.generate_keypair(b"\x71" * 32)
+    request = sender_node._wallet_sync_request_for_address(
+        FakeStore(),
+        address,
+        direction="reconcile",
+        wallet_lines=[
+            f"{address}\n",
+            "private\n",
+            "public\n",
+            "20x1 1 1700000001\n",
+        ],
+    )
+
+    assert "known_display_ranges" not in request
+
+
 def test_receive_bills_stops_between_records_when_cancelled():
     class FakeStore:
         def __init__(self):

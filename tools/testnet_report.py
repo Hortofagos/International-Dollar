@@ -12,7 +12,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-import ind_token
+from ind import token as ind_token
 from ind import sender_node
 
 DEFAULT_REFS = ("1x1", "1x2", "1x3")

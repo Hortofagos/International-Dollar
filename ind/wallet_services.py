@@ -28,6 +28,7 @@ def _display_id_from_wallet_line(wallet_bill_line):
     return wallet_line_display_id(wallet_bill_line)
 
 
+# Extract and validate the display id from one wallet bill line.
 def wallet_line_display_id(wallet_bill_line):
     parts = str(wallet_bill_line).split()
     if not parts:
@@ -40,6 +41,7 @@ def wallet_line_display_id(wallet_bill_line):
     return display_id
 
 
+# Return whether a wallet line marks a local bill as already sent.
 def wallet_line_is_sent(wallet_bill_line):
     parts = str(wallet_bill_line).split()
     return bool(parts and parts[0].startswith("-") and wallet_line_display_id(wallet_bill_line))
@@ -49,6 +51,7 @@ def wallet_sent_display_ids(wallet_lines):
     return set(wallet_sent_sequences(wallet_lines))
 
 
+# Track the latest locally sent sequence per display id so stale rows stay hidden.
 def wallet_sent_sequences(wallet_lines):
     sent_sequences = {}
     for line in runtime_json.wallet_bill_lines(wallet_lines):
@@ -66,6 +69,7 @@ def wallet_sent_sequences(wallet_lines):
     return sent_sequences
 
 
+# Filter store rows so wallet history does not show locally superseded bill tips.
 def filter_locally_sent_records(records, wallet_lines):
     sent_sequences = wallet_sent_sequences(wallet_lines)
     if not sent_sequences:
@@ -88,6 +92,7 @@ def filter_locally_sent_records(records, wallet_lines):
     return visible
 
 
+# Return the display label the UI should show for a wallet bill id.
 def wallet_display_label(display_id):
     text = str(display_id).strip()
     sign = ""
@@ -101,6 +106,7 @@ def wallet_display_label(display_id):
         return sign + text
 
 
+# Parse the denomination value from a wallet display id.
 def wallet_display_value(display_id):
     text = str(display_id).strip()
     if text.startswith("-"):
@@ -111,6 +117,7 @@ def wallet_display_value(display_id):
         return 0
 
 
+# Return the best timestamp available for the latest transfer in a bill record.
 def latest_bill_transfer_timestamp(record=None, bill=None, fallback=None):
     if not isinstance(bill, dict):
         blob = dict(record or {}).get("bill_blob")
@@ -159,20 +166,28 @@ def bill_is_spendable(store, bill, wallet_address, min_settled_seconds=0):
 token_is_spendable = bill_is_spendable
 
 
+def _spendable_v3_statuses(store):
+    statuses = getattr(store, "spendable_bill_v3_statuses", None)
+    if callable(statuses):
+        return tuple(statuses())
+    return ("settled", "verified")
+
+
 # List locally settled spendable bill records for one wallet address.
 def spendable_wallet_records(wallet_address, store=None, limit=None, offset=0):
     store = store or ind_token.INDLocalStore()
     if keys_v3.is_address(wallet_address):
+        statuses = _spendable_v3_statuses(store)
         if offset:
             return store.bill_v3_records_for_owner(
                 wallet_address,
-                statuses=("settled", "verified"),
+                statuses=statuses,
                 limit=limit,
                 offset=offset,
             )
         return store.bill_v3_records_for_owner(
             wallet_address,
-            statuses=("settled", "verified"),
+            statuses=statuses,
             limit=limit,
         )
     return []
@@ -253,20 +268,24 @@ def spendable_wallet_metadata_records(
     limit=None,
     offset=0,
 ):
+    store = store or ind_token.INDLocalStore()
     records = wallet_metadata_records(
         wallet_address,
         store=store,
-        statuses=("settled", "verified"),
+        statuses=_spendable_v3_statuses(store),
         limit=limit,
         offset=offset,
     )
     return filter_locally_sent_records(records, wallet_lines or [])
 
 
+# Count spendable and pending bills by denomination without loading full bill blobs.
 def wallet_balance_counts(wallet_address, store=None, wallet_lines=None, bill_values=None):
+    store = store or ind_token.INDLocalStore()
     bill_values = tuple(bill_values or ())
     spendable_counts = {value: 0 for value in bill_values}
     pending_counts = {value: 0 for value in bill_values}
+    spendable_statuses = set(_spendable_v3_statuses(store))
     records = wallet_count_records(
         wallet_address,
         store=store,
@@ -281,7 +300,9 @@ def wallet_balance_counts(wallet_address, store=None, wallet_lines=None, bill_va
         if status == "pending":
             pending_counts[value] += 1
             continue
-        if status not in {"settled", "verified"}:
+        if status not in spendable_statuses:
+            if status == "verified":
+                pending_counts[value] += 1
             continue
         display_id = str(record.get("display_id") or "").strip()
         sent_sequence = sent_sequences.get(display_id)
@@ -315,6 +336,7 @@ def validate_recipient_address(recipient_address):
     return validate_wallet_address(recipient_address, "recipient address")
 
 
+# Choose a bounded signing worker count for batch sends.
 def wallet_sign_worker_count(batch_size, workers=None):
     try:
         batch_size = max(0, int(batch_size or 0))
@@ -371,6 +393,7 @@ def _batch_recipient_address(recipient_address, index, display_id):
     return recipient_address
 
 
+# Resolve the operator key that should be trusted for a bill or its proof bundle.
 def _trusted_operator_key_for_bill(
     store,
     bill,
@@ -393,6 +416,7 @@ def _trusted_operator_key_for_bill(
     return None
 
 
+# Load archive segments referenced by a proof bundle when the store can provide them.
 def _archive_segments_for_proof_bundle(store, proof_bundle):
     hash_getter = getattr(store, "_archive_segment_hashes_for_proof_bundle_v3", None)
     segment_getter = getattr(store, "get_archive_segment_v3", None)
@@ -551,6 +575,7 @@ def prepare_spend_wallet_bill_v3(
     }
 
 
+# Persist a prepared spend and queue its transfer announcement for gossip.
 def commit_prepared_wallet_spend_v3(prepared, store=None):
     if not prepared:
         return None
@@ -566,6 +591,7 @@ def commit_prepared_wallet_spend_v3(prepared, store=None):
     return prepared["state"]
 
 
+# Recheck the source bill tip so a prepared spend cannot commit stale state.
 def ensure_prepared_wallet_spend_is_current(prepared, store=None):
     store = store or ind_token.INDLocalStore()
     bill = prepared.get("bill") if isinstance(prepared, dict) else None
@@ -635,6 +661,7 @@ def spend_wallet_bill_v3(
     return commit_prepared_wallet_spend_v3(prepared, store=store)
 
 
+# Sign several wallet bills concurrently but commit results in the original order.
 def spend_wallet_bills_batch(
     wallet_lines,
     wallet_bill_lines,
@@ -784,6 +811,7 @@ def compact_wallet_bill(wallet_lines, wallet_bill_line, store=None):
     return compact_bill
 
 
+# Return the store used for QR and paper-wallet claim operations.
 def claim_store():
     from . import sender_node
 
@@ -833,6 +861,7 @@ def _claim_wire_message(message, wallet_lines):
 PAPER_WALLET_KEY_CHECK_MESSAGE = b"IND paper wallet key check v1"
 
 
+# Parse and prove key ownership for the private-key payload printed on paper bills.
 def _paper_wallet_payload_parts(bill_payload):
     lines = [line.strip() for line in str(bill_payload).splitlines()]
     if len(lines) < 3:
@@ -850,6 +879,7 @@ def _paper_wallet_payload_parts(bill_payload):
     return display_id, private_key, public_key, sequence
 
 
+# Spend a scanned paper wallet bill into the active wallet address.
 def _claim_paper_wallet_payload(bill_payload, wallet_address):
     try:
         recipient_address = validate_recipient_address(wallet_address)

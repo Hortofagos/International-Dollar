@@ -1,0 +1,2 @@
+# Optional dependencies for serious append-capable transparency operators.
+mariadb>=1.1,<2

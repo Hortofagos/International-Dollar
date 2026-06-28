@@ -220,6 +220,7 @@ def _validate_display_id_value(display_id, value, label):
     return parsed
 
 
+# Parse a human bill id like "100x42" into canonical value and serial parts.
 def parse_display_id(display_id, label="display id"):
     _display_id_hash(display_id, label)
     prefix, separator, suffix = display_id.partition("x")
@@ -236,6 +237,7 @@ def parse_display_id(display_id, label="display id"):
     return {"value": value, "serial": serial}
 
 
+# Format a denomination and issue index into the canonical BillV3 display id.
 def canonical_display_id(value, issue_index):
     value = _require_bill_value(value, "display id value")
     issue_index = _require_display_serial(value, issue_index, "display id issue index")
@@ -316,6 +318,7 @@ def _read_envelope(reader, magic, label):
     return reader.read_uvarint(f"{label} network id")
 
 
+# Decode a complete typed envelope and fail closed on trailing or malformed bytes.
 def _decode_envelope(data, magic, label, body_decoder):
     try:
         reader = binary_v3.Reader(data)
@@ -352,6 +355,7 @@ def _decode_public_key(reader, label):
     return keys_v3.encode_public_key(reader.read_fixed_bytes(32, label))
 
 
+# Encode the manifest-derived genesis reference embedded in every BillV3.
 def encode_genesis_ref_body(genesis_ref):
     _validate_genesis_ref(genesis_ref, int(genesis_ref.get("network_id")))
     return b"".join(
@@ -365,6 +369,7 @@ def encode_genesis_ref_body(genesis_ref):
     )
 
 
+# Decode the binary genesis reference body after the envelope has supplied network id.
 def decode_genesis_ref_body(reader, network_id):
     return {
         "type": GENESIS_REF_TYPE,
@@ -378,15 +383,18 @@ def decode_genesis_ref_body(reader, network_id):
     }
 
 
+# Encode a GenesisRefV3 dict in its canonical binary envelope.
 def encode_genesis_ref(genesis_ref):
     network_id = _require_int(genesis_ref.get("network_id"), "GenesisRefV3 network id", minimum=0)
     return _encode_envelope(GENESIS_REF_MAGIC, network_id, encode_genesis_ref_body(genesis_ref))
 
 
+# Decode a GenesisRefV3 canonical binary envelope.
 def decode_genesis_ref(data):
     return _decode_envelope(data, GENESIS_REF_MAGIC, "GenesisRefV3", decode_genesis_ref_body)
 
 
+# Encode the sequence-zero state that later transfers build on.
 def encode_base_state_body(state):
     _validate_base_state(state)
     return b"".join(
@@ -403,6 +411,7 @@ def encode_base_state_body(state):
     )
 
 
+# Decode a sequence-zero state body from a BillV3 or checkpoint context.
 def decode_base_state_body(reader):
     return {
         "sequence": reader.read_uvarint("V3 base sequence"),
@@ -416,6 +425,7 @@ def decode_base_state_body(reader):
     }
 
 
+# Encode the compact checkpoint state proven by a transparency proof bundle.
 def encode_checkpoint_core_body(core, include_hash=True):
     core_for_validation = copy.deepcopy(core)
     if not include_hash:
@@ -441,6 +451,7 @@ def encode_checkpoint_core_body(core, include_hash=True):
     )
 
 
+# Decode a CheckpointCoreV3 body after the envelope has supplied network id.
 def decode_checkpoint_core_body(reader, network_id):
     return {
         "type": CHECKPOINT_CORE_TYPE,
@@ -479,6 +490,7 @@ def decode_checkpoint_core(data):
     )
 
 
+# Encode the signed transfer body, optionally replacing the signature with a placeholder.
 def encode_transfer_body(transfer, include_signature=True):
     network_id = _require_int(transfer.get("network_id"), "TransferV3 network id", minimum=0)
     _validate_transfer_shape(transfer, network_id, require_signature=include_signature)
@@ -501,6 +513,7 @@ def encode_transfer_body(transfer, include_signature=True):
     return b"".join(parts)
 
 
+# Decode one TransferV3 body after the envelope has supplied network id.
 def decode_transfer_body(reader, network_id, require_signature=True):
     transfer = {
         "type": TRANSFER_TYPE,
@@ -903,6 +916,7 @@ def _transfer_signing_preimage(transfer):
     )
 
 
+# Validate transfer shape, timing, addresses, metadata, and chain-link fields.
 def _validate_transfer_shape(transfer, network_id, require_signature=True, now=None):
     _require_exact_fields(transfer, TRANSFER_FIELDS, "TransferV3")
     if transfer["type"] != TRANSFER_TYPE:
@@ -1173,6 +1187,7 @@ def _trusted_genesis_manifest_hashes():
     return {str(item).strip().lower() for item in values if str(item).strip()}
 
 
+# Return whether this node is allowed to accept genesis refs without trust pins.
 def _allow_untrusted_genesis():
     try:
         from . import settings as ind_settings
@@ -1187,6 +1202,7 @@ def _allow_untrusted_genesis():
         }
 
 
+# Enforce local trust policy for the manifest hash carried by a GenesisRefV3.
 def _validate_genesis_ref_trust(genesis_ref):
     if _allow_untrusted_genesis():
         return
@@ -1200,6 +1216,7 @@ def _validate_genesis_ref_trust(genesis_ref):
         raise ProtocolV3Error("GenesisRefV3 manifest hash is not trusted by this node")
 
 
+# Validate a genesis reference before it is accepted into a BillV3 state path.
 def _validate_genesis_ref(genesis_ref, network_id):
     _require_exact_fields(genesis_ref, GENESIS_REF_FIELDS, "GenesisRefV3")
     if genesis_ref["type"] != GENESIS_REF_TYPE:
@@ -1218,6 +1235,7 @@ def _validate_genesis_ref(genesis_ref, network_id):
     _validate_genesis_ref_trust(genesis_ref)
 
 
+# Validate the checkpoint core that anchors a thin BillV3.
 def _validate_checkpoint_core(core, network_id):
     _require_exact_fields(core, CHECKPOINT_CORE_FIELDS, "CheckpointCoreV3")
     if core["type"] != CHECKPOINT_CORE_TYPE:
@@ -1246,6 +1264,7 @@ def _validate_checkpoint_core(core, network_id):
     _hex32(core["checkpoint_hash"], "CheckpointCoreV3 checkpoint hash")
 
 
+# Validate that a BillV3 display id matches its value and genesis issue index.
 def validate_bill_display_id(bill):
     if isinstance(bill, bytes):
         bill = decode_bill(bill)
@@ -1273,6 +1292,7 @@ def _checkpoint_matches_core(checkpoint, core):
             raise ProtocolV3Error(f"CheckpointCoreV3 does not match proof bundle: {field}")
 
 
+# Verify proof-bundle anchoring and replay recent transfers to get current state.
 def _verify_bill_state(
     bill,
     proof_bundle=None,
@@ -1363,6 +1383,7 @@ def verify_bill(
     return _token_state_from_v3_state(bill_obj["token_id"], state)
 
 
+# Convert the native V3 state dict into the shared wallet/store TokenState object.
 def _token_state_from_v3_state(token_id, state):
     return ind_token.TokenState(
         token_id=token_id,
@@ -1424,6 +1445,7 @@ def create_transfer(
     return new_bill
 
 
+# Build an embedded resolver for archive segments bundled beside a gossip message.
 def _embedded_archive_resolver(archive_segments, fallback=None):
     segments = {}
     if archive_segments:
@@ -1821,6 +1843,7 @@ def _conflict_proof_unsigned(proof):
     return unsigned
 
 
+# Encode a ConflictProofV3 body, optionally zeroing its self-hash field.
 def encode_conflict_proof_body(proof, include_hash=True):
     _require_exact_fields(proof, CONFLICT_PROOF_FIELDS, "ConflictProofV3")
     _require_int(proof["network_id"], "ConflictProofV3 network id", minimum=0)
@@ -1843,6 +1866,7 @@ def encode_conflict_proof_body(proof, include_hash=True):
     )
 
 
+# Decode a ConflictProofV3 body after the envelope has supplied network id.
 def decode_conflict_proof_body(reader, network_id):
     return {
         "type": CONFLICT_PROOF_TYPE,
@@ -1862,6 +1886,7 @@ def decode_conflict_proof_body(reader, network_id):
     }
 
 
+# Encode a ConflictProofV3 dict in its canonical binary envelope.
 def encode_conflict_proof(proof, include_hash=True):
     network_id = _require_int(proof.get("network_id"), "ConflictProofV3 network id", minimum=0)
     return _encode_envelope(
@@ -1871,6 +1896,7 @@ def encode_conflict_proof(proof, include_hash=True):
     )
 
 
+# Decode a ConflictProofV3 canonical binary envelope.
 def decode_conflict_proof(data):
     return _decode_envelope(
         data, CONFLICT_PROOF_MAGIC, "ConflictProofV3", decode_conflict_proof_body

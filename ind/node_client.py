@@ -1,5 +1,7 @@
 # TCP gossip node service for IND peer discovery, message relay, and settlement.
 
+import concurrent.futures
+import contextlib
 import ipaddress
 import json
 import logging
@@ -13,6 +15,7 @@ from collections import deque
 from dataclasses import dataclass
 from multiprocessing import Manager, Process
 
+from . import env as ind_env
 from . import runtime as runtime_json
 from . import sender_node
 from . import settings as ind_settings
@@ -21,33 +24,9 @@ from . import transport as ind_transport
 
 PORT = 8888
 
-
-def _env_int(name, default, minimum=None, maximum=None):
-    try:
-        result = int(os.environ.get(name, default))
-    except (TypeError, ValueError):
-        result = int(default)
-    if minimum is not None:
-        result = max(int(minimum), result)
-    if maximum is not None:
-        result = min(int(maximum), result)
-    return result
-
-
-def _env_float(name, default, minimum=None, maximum=None):
-    try:
-        result = float(os.environ.get(name, default))
-    except (TypeError, ValueError):
-        result = float(default)
-    if minimum is not None:
-        result = max(float(minimum), result)
-    if maximum is not None:
-        result = min(float(maximum), result)
-    return result
-
-
-def _env_enabled(name):
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+_env_int = ind_env.int_value
+_env_float = ind_env.float_value
+_env_enabled = ind_env.enabled
 
 
 def _runtime_kill_requested():
@@ -719,6 +698,108 @@ class BoundedSeenSet:
             self.items.discard(value)
 
 
+class GossipPool:
+    """Bounded gossip queue with hash-based dedupe.
+
+    Iteration returns raw wire payloads for compatibility with older list-based
+    callers. Internally, entries keep metadata used by rebroadcast scheduling.
+    """
+
+    def __init__(self, items=None, seen=None, lock=None, limit=MAX_GOSSIP_POOL_MESSAGES):
+        self.items = items if items is not None else []
+        self.seen = seen if seen is not None else {}
+        self.lock = lock if lock is not None else threading.RLock()
+        self.limit = int(limit)
+
+    def _raw_from_entry(self, entry):
+        if isinstance(entry, dict) and "raw" in entry:
+            return entry["raw"]
+        return entry
+
+    def _meta_for_raw(self, raw):
+        raw = str(raw)
+        try:
+            message = ind_token.unpack_wire_message(raw)
+            if isinstance(message, dict):
+                message_type = str(message.get("type") or "")
+                message_hash = ind_token.message_hash(message)
+                return message_hash, message_type
+        except Exception:
+            pass
+        return ind_token.sha3_hex(raw), ""
+
+    def _key_for_entry(self, entry):
+        if isinstance(entry, dict):
+            key = str(entry.get("hash") or entry.get("message_hash") or "")
+            if key:
+                return key
+        key, _message_type = self._meta_for_raw(self._raw_from_entry(entry))
+        return key
+
+    def _entry_for_raw(self, raw, high_priority=False):
+        message_hash, message_type = self._meta_for_raw(raw)
+        return {
+            "raw": str(raw),
+            "hash": message_hash,
+            "type": message_type,
+            "priority": 1 if high_priority else 0,
+            "last_broadcast": 0,
+        }
+
+    def _drop_entry_key(self, entry):
+        key = self._key_for_entry(entry)
+        with contextlib.suppress(Exception):
+            self.seen.pop(key, None)
+
+    def _trim_locked(self, high_priority=False, limit=None):
+        limit = int(limit or self.limit)
+        while len(self.items) > limit:
+            removed = self.items.pop() if high_priority else self.items.pop(0)
+            self._drop_entry_key(removed)
+
+    def add(self, raw, high_priority=False, limit=None):
+        entry = self._entry_for_raw(raw, high_priority=high_priority)
+        key = entry["hash"]
+        with self.lock:
+            if key in self.seen:
+                return False
+            self.seen[key] = 1
+            if high_priority:
+                self.items.insert(0, entry)
+            else:
+                self.items.append(entry)
+            self._trim_locked(high_priority=high_priority, limit=limit)
+            return True
+
+    def trim(self, limit=None):
+        with self.lock:
+            self._trim_locked(limit=limit)
+
+    def snapshot(self):
+        with self.lock:
+            return [self._raw_from_entry(entry) for entry in list(self.items)]
+
+    def entry_snapshot(self):
+        with self.lock:
+            return list(self.items)
+
+    def __iter__(self):
+        return iter(self.snapshot())
+
+    def __len__(self):
+        return len(self.items)
+
+    def __bool__(self):
+        return len(self) > 0
+
+    def __contains__(self, raw):
+        key, _message_type = self._meta_for_raw(raw)
+        return key in self.seen
+
+    def __eq__(self, other):
+        return self.snapshot() == other
+
+
 _ASYNC_GOSSIP_INGEST_SLOTS = threading.BoundedSemaphore(ASYNC_GOSSIP_INGEST_WORKERS)
 
 
@@ -729,6 +810,12 @@ def append_unique_gossip(gossip_pool, raw, limit=MAX_GOSSIP_POOL_MESSAGES):
 
 # Add a gossip payload, optionally putting urgent evidence at the front.
 def append_gossip(gossip_pool, raw, limit=MAX_GOSSIP_POOL_MESSAGES, high_priority=False):
+    add_method = getattr(gossip_pool, "add", None)
+    if callable(add_method):
+        try:
+            return add_method(raw, high_priority=high_priority, limit=limit)
+        except TypeError:
+            pass
     try:
         if raw in gossip_pool:
             return False
@@ -981,12 +1068,18 @@ def prepare_incoming_gossip(peer_ip, raw, seen, rate_limiter):
             message,
             expected_network_id=message["network_id"],
         )
+        from . import store as store_module
+
         return {
             "accepted": True,
             "message_hash": mh,
             "message": message,
             "lane": "critical",
             "evidence_key": evidence_key,
+            "preverified": store_module.preverified_conflict_proof_v3(
+                message,
+                message_hash=mh,
+            ),
         }
     lane, _limit = gossip_rate_bucket(message.get("type"))
     decision = rate_limiter.allow_lane(peer_ip, lane)
@@ -1049,7 +1142,20 @@ def _ingest_prepared_gossip(
     message_hash = prepared["message_hash"]
     seen_keys = _prepared_seen_keys(prepared)
     try:
-        result = store.ingest_message(message, peer_id=peer_ip)
+        preverified = prepared.get("preverified")
+        if preverified:
+            try:
+                result = store.ingest_message(
+                    message,
+                    peer_id=peer_ip,
+                    preverified=preverified,
+                )
+            except TypeError as exc:
+                if "preverified" not in str(exc):
+                    raise
+                result = store.ingest_message(message, peer_id=peer_ip)
+        else:
+            result = store.ingest_message(message, peer_id=peer_ip)
     except Exception as exc:
         if _transient_ingest_error(exc):
             if keep_seen_on_retry:
@@ -1611,11 +1717,32 @@ def _reconcile_v3_settlement_candidate(store, candidate, gossip_pool=None):
     confirmations = 0
     failures = []
     divergent = []
-    for peer in peers:
-        peer_result = _query_settlement_peer(peer, query)
+    if peers:
+        peer_results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(peers)) as executor:
+            future_to_peer = {
+                executor.submit(_query_settlement_peer, peer, query): peer for peer in peers
+            }
+            for future in concurrent.futures.as_completed(future_to_peer):
+                peer = future_to_peer[future]
+                try:
+                    peer_results.append(future.result())
+                except Exception as exc:
+                    peer_results.append(
+                        {
+                            "ok": False,
+                            "peer": peer,
+                            "status": "query_error",
+                            "error": str(exc),
+                        }
+                    )
+    else:
+        peer_results = []
+    for peer_result in peer_results:
         if not peer_result.get("ok"):
             failures.append(peer_result)
             continue
+        peer = peer_result.get("peer", "")
         response = peer_result["response"]
         if str(response.get("token_id") or "") != token_id:
             failures.append(
@@ -1627,8 +1754,17 @@ def _reconcile_v3_settlement_candidate(store, candidate, gossip_pool=None):
             )
             continue
         _ingest_settlement_response_messages(store, gossip_pool, response, peer)
-        if response.get("conflict") or _local_conflict_status(store, token_id):
-            return {"decision": "conflict", "reason": "peer reported or proved conflict"}
+        if _local_conflict_status(store, token_id):
+            return {"decision": "conflict", "reason": "peer proved conflict"}
+        if response.get("conflict"):
+            failures.append(
+                {
+                    "peer": peer,
+                    "status": "unproved_conflict",
+                    "error": "peer reported conflict without accepted proof",
+                }
+            )
+            continue
         if response.get("matches_query"):
             confirmations += 1
             continue
@@ -1653,18 +1789,18 @@ def _reconcile_v3_settlement_candidate(store, candidate, gossip_pool=None):
         return {"decision": "conflict", "reason": "local conflict proof stored"}
     if divergent:
         return {"decision": "await", "reason": "peer has divergent spend", "peers": divergent}
+    if confirmations >= min_confirmations:
+        return {
+            "decision": "settle",
+            "reason": "peer settlement quorum reached",
+            "confirmations": confirmations,
+        }
     if require_all and confirmations < len(peers):
         return {
             "decision": "await",
             "reason": "awaiting all configured settlement peers",
             "confirmations": confirmations,
             "failures": failures,
-        }
-    if confirmations >= min_confirmations:
-        return {
-            "decision": "settle",
-            "reason": "peer settlement quorum reached",
-            "confirmations": confirmations,
         }
     return {
         "decision": "await",
@@ -1985,7 +2121,8 @@ def database(_rfb, _rfb_response, gossip_pool):
             _finalize_pending_for_node(store, gossip_pool=gossip_pool)
         except Exception as exc:
             logger.warning("local settlement finalization failed: %s", exc)
-        for raw in list(gossip_pool):
+        queued = gossip_pool.snapshot() if hasattr(gossip_pool, "snapshot") else list(gossip_pool)
+        for raw in queued:
             if not seen.add(raw):
                 continue
             try:
@@ -1993,7 +2130,9 @@ def database(_rfb, _rfb_response, gossip_pool):
                 queue_store_result_gossip(gossip_pool, result)
             except Exception as exc:
                 logger.debug("queued gossip was rejected locally: %s", exc)
-        if len(gossip_pool) > MAX_GOSSIP_POOL_MESSAGES:
+        if hasattr(gossip_pool, "trim"):
+            gossip_pool.trim(MAX_GOSSIP_POOL_MESSAGES)
+        elif len(gossip_pool) > MAX_GOSSIP_POOL_MESSAGES:
             del gossip_pool[: len(gossip_pool) - MAX_GOSSIP_POOL_MESSAGES]
 
 
@@ -2057,7 +2196,7 @@ def maintain_connections(gossip_pool):
             peers = _peer_files()
             if not peers:
                 continue
-            queued = list(gossip_pool)
+            queued = gossip_pool.snapshot() if hasattr(gossip_pool, "snapshot") else list(gossip_pool)
             now = int(time.time())
             due_evidence = []
             normal_candidates = []
@@ -2098,7 +2237,7 @@ def main():
     with Manager() as manager:
         rf1 = manager.list()
         rf2 = manager.dict()
-        gossip = manager.list()
+        gossip = GossipPool(manager.list(), manager.dict(), manager.RLock())
         processes = [
             Process(target=database, args=(rf1, rf2, gossip)),
             Process(target=maintain_connections, args=(gossip,)),

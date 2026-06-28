@@ -499,27 +499,12 @@ def full_supply_ranges_by_denomination(owner_addresses, seed_prefix="IND-MAINNET
     return ranges
 
 
-def numerology_signature():
-    material = f"IND:{TOTAL_SUPPLY}:33:777:8:09.10.2003".encode("ascii")
-    return {
-        "master_number": 33,
-        "angel_number": 777,
-        "money_number": 8,
-        "birthday_number": 9,
-        "birthday_code": "09.10.2003",
-        "address_length": 33,
-        "fixed_supply": TOTAL_SUPPLY,
-        "seal": sha3_256(material).hexdigest()[:33],
-    }
-
-
 def make_manifest(ranges, issuer_private_key, issued_at, network="mainnet", network_id=1, metadata=None):
     issuer_public_key = public_key_text_from_private(issuer_private_key)
     normalized, total_count, total_value = validate_ranges(ranges)
     metadata = dict(metadata or {})
     metadata.setdefault("project", "IND")
     metadata.setdefault("purpose", f"{normalize_network(network)} V3 genesis supply manifest")
-    metadata.setdefault("ind_alignment", numerology_signature())
     unsigned = {
         "type": GENESIS_MANIFEST_TYPE,
         "version": GENESIS_MANIFEST_VERSION,
