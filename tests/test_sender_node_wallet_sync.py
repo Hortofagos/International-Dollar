@@ -3,6 +3,8 @@ import json
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
+
 from ind import keys_v3
 from ind import sender_node
 from ind import token as ind_token
@@ -62,6 +64,108 @@ def test_wallet_sync_store_passes_explicit_db_path_to_fallback_store():
         require_transparency=False,
         db_path="ind_gossip_testnet.db",
     )]
+
+
+def test_receive_bills_refreshes_transparency_consistency_before_sync():
+    class FakeVerifier:
+        def __init__(self):
+            self.calls = 0
+
+        def check_latest_consistency(self):
+            self.calls += 1
+
+    class FakeStore:
+        def __init__(self, verifier):
+            self.transparency_verifier = verifier
+
+    verifier = FakeVerifier()
+    store = FakeStore(verifier)
+
+    with (
+        mock.patch.object(sender_node, "ensure_runtime_files"),
+        mock.patch.object(sender_node, "wallet_sync_store", return_value=store),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "iter_decrypted_wallet_files",
+            return_value=[],
+        ),
+    ):
+        summary = sender_node.receive_bills()
+
+    assert verifier.calls == 1
+    assert summary["status"] == "complete"
+
+
+def test_receive_bills_treats_stale_current_root_as_temporary_wait():
+    class FakeVerifier:
+        def check_latest_consistency(self):
+            raise RuntimeError(
+                "not enough usable current transparency root mirrors for consistency check: "
+                "transparency root replayed an older timestamp for current verification: "
+                "timestamp 1782819852 is below previously observed timestamp 1782819912"
+            )
+
+    store = SimpleNamespace(transparency_verifier=FakeVerifier())
+    events = []
+
+    with (
+        mock.patch.object(sender_node, "ensure_runtime_files"),
+        mock.patch.object(sender_node, "wallet_sync_store", return_value=store),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "iter_decrypted_wallet_files",
+            return_value=[],
+        ),
+    ):
+        summary = sender_node.receive_bills(progress_callback=events.append)
+
+    assert summary["status"] == "complete"
+    assert summary["transparency_waits"] == 1
+    assert not any("1782819852" in error for error in summary["errors"])
+    assert [event["event"] for event in events if event["event"] == "transparency_wait"]
+
+
+def test_receive_bills_keeps_dangerous_transparency_refresh_failure_hard():
+    class FakeVerifier:
+        def check_latest_consistency(self):
+            raise RuntimeError("invalid transparency root signature")
+
+    store = SimpleNamespace(transparency_verifier=FakeVerifier())
+
+    with (
+        mock.patch.object(sender_node, "ensure_runtime_files"),
+        mock.patch.object(sender_node, "wallet_sync_store", return_value=store),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "iter_decrypted_wallet_files",
+            return_value=[],
+        ),
+        pytest.raises(RuntimeError, match="invalid transparency root signature"),
+    ):
+        sender_node.receive_bills()
+
+
+def test_wallet_sync_transparency_refresh_skips_missing_verifier():
+    assert sender_node._refresh_wallet_sync_transparency_consistency(object()) is False
+
+
+def test_wallet_sync_transparency_refresh_checks_all_operator_verifiers():
+    class FakeVerifier:
+        def __init__(self):
+            self.calls = 0
+
+        def check_latest_consistency(self):
+            self.calls += 1
+
+    verifier_a = FakeVerifier()
+    verifier_b = FakeVerifier()
+    store = SimpleNamespace(
+        transparency_verifier=SimpleNamespace(verifiers=[verifier_a, None, verifier_b])
+    )
+
+    assert sender_node._refresh_wallet_sync_transparency_consistency(store) is True
+    assert verifier_a.calls == 1
+    assert verifier_b.calls == 1
 
 
 def test_receive_bills_reports_incremental_progress():
@@ -206,6 +310,108 @@ def test_receive_bills_counts_duplicate_peer_records_separately():
     assert checked_events
     assert checked_events[-1]["summary"]["checked_records"] == 2
     assert checked_events[-1]["summary"]["skipped_known_records"] == 1
+
+
+def test_receive_bills_counts_synced_pending_records():
+    address, _private_key, _public_key = keys_v3.generate_keypair(b"\x72" * 32)
+
+    class FakeStore:
+        def __init__(self):
+            self.records = []
+
+        def wallet_delta_sync_request(
+            self,
+            address,
+            token_limit=0,
+            response_limit=100,
+            direction="reconcile",
+            page_cursor=None,
+        ):
+            return {
+                "type": "ind.wallet_bill_sync_request.v3",
+                "version": 3,
+                "address": address,
+                "direction": direction,
+                "limit": response_limit,
+            }
+
+        def ingest_wallet_bill_sync_record(self, record):
+            self.records.append(record)
+            return {
+                "accepted": True,
+                "status": "pending",
+                "state": SimpleNamespace(
+                    display_id=record["display_id"],
+                    sequence=record["sequence"],
+                ),
+            }
+
+        def finalize_pending(self, buffer_seconds=0):
+            return []
+
+        def bill_v3_metadata_records_for_owner(self, owner_address, statuses=None, limit=None):
+            assert owner_address == address
+            if statuses == ("pending",):
+                return [
+                    {
+                        "display_id": record["display_id"],
+                        "sequence": record["sequence"],
+                        "status": "pending",
+                    }
+                    for record in self.records
+                ]
+            if statuses == ("settled", "verified"):
+                return []
+            return []
+
+        def token_records_for_owner(self, _address, settled_only=True):
+            raise AssertionError("V3 pending wallet sync should use BillV3 metadata")
+
+    record = {
+        "type": "ind.wallet_bill_sync_record.v3",
+        "token_id": "token-pending",
+        "display_id": "1x1",
+        "sequence": 1,
+        "status": "pending",
+    }
+    store = FakeStore()
+    wallet_path = SimpleNamespace(name="wallet_decrypted_test")
+
+    with (
+        mock.patch.object(sender_node, "ensure_runtime_files"),
+        mock.patch.object(sender_node, "wallet_sync_store", return_value=store),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "iter_decrypted_wallet_files",
+            return_value=[wallet_path],
+        ),
+        mock.patch.object(
+            sender_node.runtime_json,
+            "read_decrypted_wallet_lines",
+            return_value=[address + "\n", "private\n", "public\n"],
+        ),
+        mock.patch.object(sender_node.runtime_json, "wallet_bill_lines", return_value=[]),
+        mock.patch.object(
+            sender_node,
+            "iter_wallet_message_reports",
+            return_value=[
+                {
+                    "peer": "peer-a",
+                    "status": sender_node.REQUEST_OK,
+                    "records": [record],
+                    "messages": [],
+                    "delta": True,
+                }
+            ],
+        ),
+        mock.patch.object(sender_node.ind_settings, "finality_buffer_seconds", return_value=60),
+    ):
+        summary = sender_node.receive_bills()
+
+    assert summary["accepted_records"] == 1
+    assert summary["processed_records"] == 1
+    assert summary["pending"] == 1
+    assert summary["wallet_bills_added"] == 0
 
 
 def test_receive_bills_repeats_delta_batches_until_short_response():

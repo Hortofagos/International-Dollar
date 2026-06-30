@@ -163,5 +163,9 @@ def sign(private_key_text, message):
     return crypto_ed25519.sign(decode_private_key(private_key_text), message)
 
 
+def sign_unverified(private_key_text, message):
+    return crypto_ed25519.sign_unverified(decode_private_key(private_key_text), message)
+
+
 def verify(public_key_text, signature, message):
     return crypto_ed25519.verify(decode_public_key(public_key_text), signature, message)

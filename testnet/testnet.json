@@ -6,6 +6,12 @@
   "genesis_manifest": "genesis_manifest.json",
   "network": "testnet",
   "node_port": 18888,
+  "peer_ping_servers": [
+    "testnet-seed.international-dollar.com",
+    "testnet-seed.internetofthebots.com",
+    "51.83.199.25",
+    "108.61.23.82"
+  ],
   "status": "native-v3-gossip-testnet",
   "trusted_genesis_issuer_keys": [
     "indpk3:x=P|+kInO1oQ<Y4Y;fNA`{q$dJ&!CRUxU^C!RkaH"

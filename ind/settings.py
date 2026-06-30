@@ -29,7 +29,13 @@ DEFAULT_PEER_REQUEST_TIMEOUT_SECONDS = 10
 MAX_PEER_REQUEST_TIMEOUT_SECONDS = 30
 DEFAULT_UPDATE_SOURCE = "international-dollar.com/update"
 DEFAULT_UPDATE_CHANNEL = "stable"
+DEFAULT_GUI_SCALE = "auto"
+GUI_SCALE_PRESETS = ("1.0", "1.25", "1.5", "2.0")
 DEFAULT_DNS_SEED_HOSTS = [
+    "seed.international-dollar.com",
+    "seed.internetofthebots.com",
+]
+LEGACY_MAINNET_DNS_SEED_HOSTS = [
     "seed.international-dollar.com",
     "seed.linkifier.me",
     "seed.internetofthebots.com",
@@ -44,20 +50,144 @@ DEFAULT_OPERATOR_CORE_DOMAINS = [
     "international-dollar.com",
     "internetofthebots.com",
 ]
+DEFAULT_MAINNET_ROOT_DOMAINS = [
+    *DEFAULT_OPERATOR_CORE_DOMAINS,
+    "91.99.175.174",
+    "108.61.23.82",
+]
+DEFAULT_TESTNET_ROOT_DOMAINS = [
+    *DEFAULT_OPERATOR_CORE_DOMAINS,
+    "167.233.115.216",
+    "91.99.175.174",
+]
+DEFAULT_MAINNET_PEER_PING_SERVERS = [
+    "seed.international-dollar.com",
+    "seed.internetofthebots.com",
+    "51.83.199.25",
+]
+LEGACY_MAINNET_PEER_PING_SERVERS = [
+    "91.99.175.174",
+    "51.83.199.25",
+    "108.61.23.82",
+]
+DEFAULT_TESTNET_PEER_PING_SERVERS = [
+    "testnet-seed.international-dollar.com",
+    "testnet-seed.internetofthebots.com",
+    "51.83.199.25",
+    "108.61.23.82",
+]
+DEFAULT_MAINNET_TRANSPARENCY_OPERATOR_URL = "http://167.233.115.216/mainnet-operator-api"
+DEFAULT_MAINNET_TRANSPARENCY_OPERATOR_PUBLIC_KEY = (
+    "indpk3:Qu)F<E@Jz(MQ6iS8NLT+N-tt-O3|`^z6CsWx{Br7"
+)
+DEFAULT_MAINNET_ROOT_MIRRORS = [
+    "http://91.99.175.174/mainnet-transparency",
+    "http://108.61.23.82/mainnet-transparency",
+]
+DEFAULT_MAINNET_PROOF_ARCHIVES = [
+    "http://91.99.175.174/mainnet-transparency",
+    "http://108.61.23.82/mainnet-transparency",
+]
+DEFAULT_MAINNET_IOTB_OPERATOR_URL = (
+    "https://testnet-seed.internetofthebots.com/mainnet-iotb-operator-api"
+)
+DEFAULT_MAINNET_IOTB_OPERATOR_PUBLIC_KEY = (
+    "indpk3:i8x(A2B9u``X1Ny>r2)2`evenV>4H=Pz~{&*%j`u"
+)
+DEFAULT_MAINNET_IOTB_ROOT_MIRRORS = [
+    "https://international-dollar.com/mainnet-iotb-operator/transparency",
+    "http://108.61.23.82/mainnet-iotb-operator/transparency",
+]
+DEFAULT_MAINNET_IOTB_PROOF_ARCHIVES = [
+    "https://international-dollar.com/mainnet-iotb-operator/transparency",
+    "http://108.61.23.82/mainnet-iotb-operator/transparency",
+]
+DEFAULT_TESTNET_TRANSPARENCY_OPERATOR_URL = (
+    "https://testnet-seed.international-dollar.com/operator-api"
+)
+DEFAULT_TESTNET_TRANSPARENCY_OPERATOR_PUBLIC_KEY = (
+    "indpk3:=B-fA7q0hRg#HKK4CBl87c!T;r&B&#5G^3#wd<@)"
+)
+DEFAULT_TESTNET_ROOT_MIRRORS = [
+    "https://international-dollar.com/transparency",
+    "https://testnet-seed.internetofthebots.com/transparency",
+]
+DEFAULT_TESTNET_PROOF_ARCHIVES = [
+    "https://international-dollar.com/transparency/archive",
+    "https://testnet-seed.internetofthebots.com/transparency/archive",
+]
+DEFAULT_MAINNET_TRANSPARENCY_OPERATORS = [
+    {
+        "url": DEFAULT_MAINNET_TRANSPARENCY_OPERATOR_URL,
+        "public_key": DEFAULT_MAINNET_TRANSPARENCY_OPERATOR_PUBLIC_KEY,
+        "mirrors": DEFAULT_MAINNET_ROOT_MIRRORS,
+        "proof_archives": DEFAULT_MAINNET_PROOF_ARCHIVES,
+    },
+    {
+        "url": DEFAULT_MAINNET_IOTB_OPERATOR_URL,
+        "public_key": DEFAULT_MAINNET_IOTB_OPERATOR_PUBLIC_KEY,
+        "mirrors": DEFAULT_MAINNET_IOTB_ROOT_MIRRORS,
+        "proof_archives": DEFAULT_MAINNET_IOTB_PROOF_ARCHIVES,
+    }
+]
+DEFAULT_TESTNET_TRANSPARENCY_OPERATORS = [
+    {
+        "url": DEFAULT_TESTNET_TRANSPARENCY_OPERATOR_URL,
+        "public_key": DEFAULT_TESTNET_TRANSPARENCY_OPERATOR_PUBLIC_KEY,
+        "mirrors": DEFAULT_TESTNET_ROOT_MIRRORS,
+        "proof_archives": DEFAULT_TESTNET_PROOF_ARCHIVES,
+    },
+    {
+        "url": "https://testnet-seed.internetofthebots.com/operator-api",
+        "public_key": "indpk3:*EGNObOb5(62ZHerk?UG&Rr&^IkI%cUyS$uZ5Qno",
+        "mirrors": [
+            "https://international-dollar.com/iotb-operator/transparency",
+            "https://testnet-seed.international-dollar.com/iotb-operator/transparency",
+        ],
+        "proof_archives": [
+            "https://international-dollar.com/iotb-operator/transparency/archive",
+            "https://testnet-seed.international-dollar.com/iotb-operator/transparency/archive",
+        ],
+    },
+    {
+        "url": "http://108.61.23.82/operator-api",
+        "public_key": "indpk3:KY$x=dWlnoIr>|D%-_QKr2#KPNuxNT(NV73KD~{}",
+        "mirrors": [
+            "http://167.233.115.216/operator3/transparency",
+            "http://91.99.175.174/operator3/transparency",
+        ],
+        "proof_archives": [
+            "http://167.233.115.216/operator3/transparency/archive",
+            "http://91.99.175.174/operator3/transparency/archive",
+        ],
+    },
+]
+DEFAULT_MAINNET_GENESIS_ISSUER_KEYS = [
+    "indpk3:s%?Mj7Z|(BIPB>&JkAAP!$&u9<uZnl4AxcNv*`s9",
+]
+DEFAULT_MAINNET_GENESIS_MANIFEST_HASHES = [
+    "81a79b2567f5eaf83a92d5f60c0b754106329d3f3cc17f895a575ecf21a39e36",
+]
+DEFAULT_TESTNET_GENESIS_ISSUER_KEYS = [
+    "indpk3:x=P|+kInO1oQ<Y4Y;fNA`{q$dJ&!CRUxU^C!RkaH",
+]
+DEFAULT_TESTNET_GENESIS_MANIFEST_HASHES = [
+    "9d1a9cfeb6ceefa4aa39b702af1f5c6be204ddd5fb2e8dd1df0041a47dd31aa6",
+]
 
 DEFAULT_SECURITY_SETTINGS = {
     "network": MAINNET_NETWORK,
     "security_profile": "development",
     "security_role": "client",
-    "node_port": 0,
-    "peer_ping_servers": [],
+    "node_port": DEFAULT_MAINNET_NODE_PORT,
+    "peer_ping_servers": DEFAULT_MAINNET_PEER_PING_SERVERS,
     "dns_seed_hosts": DEFAULT_DNS_SEED_HOSTS,
-    "trusted_root_domains": [],
-    "trusted_root_mirrors": [],
-    "transparency_proof_archives": [],
-    "transparency_operator_url": "",
-    "transparency_operator_public_key": "",
-    "transparency_operators": [],
+    "trusted_root_domains": DEFAULT_MAINNET_ROOT_DOMAINS,
+    "trusted_root_mirrors": DEFAULT_MAINNET_ROOT_MIRRORS,
+    "transparency_proof_archives": DEFAULT_MAINNET_PROOF_ARCHIVES,
+    "transparency_operator_url": DEFAULT_MAINNET_TRANSPARENCY_OPERATOR_URL,
+    "transparency_operator_public_key": DEFAULT_MAINNET_TRANSPARENCY_OPERATOR_PUBLIC_KEY,
+    "transparency_operators": DEFAULT_MAINNET_TRANSPARENCY_OPERATORS,
     "require_transparency_log": True,
     "submit_to_transparency_log": True,
     "min_root_mirrors": 2,
@@ -83,14 +213,15 @@ DEFAULT_SECURITY_SETTINGS = {
     "transparency_submit_async": False,
     "peer_request_timeout_seconds": DEFAULT_PEER_REQUEST_TIMEOUT_SECONDS,
     "reject_peer_key_changes": False,
-    "trusted_genesis_issuer_keys": [],
-    "trusted_genesis_manifest_hashes": [],
+    "trusted_genesis_issuer_keys": DEFAULT_MAINNET_GENESIS_ISSUER_KEYS,
+    "trusted_genesis_manifest_hashes": DEFAULT_MAINNET_GENESIS_MANIFEST_HASHES,
     "allow_untrusted_genesis": False,
     "update_source": DEFAULT_UPDATE_SOURCE,
     "update_channel": DEFAULT_UPDATE_CHANNEL,
     "trusted_update_signing_keys": [],
     "update_check_on_startup": False,
     "auto_sync_on_wallet_sign_in": True,
+    "gui_scale": DEFAULT_GUI_SCALE,
 }
 
 
@@ -181,6 +312,70 @@ def _normalize_network(value):
     return aliases.get(value, MAINNET_NETWORK)
 
 
+def _settings_defaults_for_network(network):
+    network = _normalize_network(network)
+    defaults = default_settings()
+    if network != TESTNET_NETWORK:
+        return defaults
+    defaults.update(
+        {
+            "network": TESTNET_NETWORK,
+            "node_port": DEFAULT_TESTNET_NODE_PORT,
+            "peer_ping_servers": DEFAULT_TESTNET_PEER_PING_SERVERS,
+            "dns_seed_hosts": DEFAULT_TESTNET_DNS_SEED_HOSTS,
+            "trusted_root_domains": DEFAULT_TESTNET_ROOT_DOMAINS,
+            "trusted_root_mirrors": DEFAULT_TESTNET_ROOT_MIRRORS,
+            "transparency_proof_archives": DEFAULT_TESTNET_PROOF_ARCHIVES,
+            "transparency_operator_url": DEFAULT_TESTNET_TRANSPARENCY_OPERATOR_URL,
+            "transparency_operator_public_key": DEFAULT_TESTNET_TRANSPARENCY_OPERATOR_PUBLIC_KEY,
+            "transparency_operators": DEFAULT_TESTNET_TRANSPARENCY_OPERATORS,
+            "trusted_genesis_issuer_keys": DEFAULT_TESTNET_GENESIS_ISSUER_KEYS,
+            "trusted_genesis_manifest_hashes": DEFAULT_TESTNET_GENESIS_MANIFEST_HASHES,
+        }
+    )
+    return defaults
+
+
+def _list_matches(value, expected):
+    return [str(item).strip() for item in _as_lines(value)] == [
+        str(item).strip() for item in _as_lines(expected)
+    ]
+
+
+def _list_matches_any(value, candidates):
+    return any(_list_matches(value, candidate) for candidate in candidates)
+
+
+def _operators_match(value, expected):
+    try:
+        left = json.dumps(value or [], sort_keys=True, separators=(",", ":"))
+        right = json.dumps(expected or [], sort_keys=True, separators=(",", ":"))
+    except TypeError:
+        return False
+    return left == right
+
+
+def _list_for_network_default(value, key, network, *, legacy_mainnet_defaults=()):
+    if network == TESTNET_NETWORK and _list_matches_any(
+        value, (DEFAULT_SECURITY_SETTINGS.get(key, []), *legacy_mainnet_defaults)
+    ):
+        return list(_settings_defaults_for_network(network).get(key, []))
+    if network == MAINNET_NETWORK and _list_matches_any(value, legacy_mainnet_defaults):
+        return list(_settings_defaults_for_network(network).get(key, []))
+    return value
+
+
+def _scalar_for_network_default(value, key, network, *, legacy_mainnet_defaults=()):
+    text = str(value or "").strip()
+    mainnet_default = str(DEFAULT_SECURITY_SETTINGS.get(key, "") or "").strip()
+    legacy = {str(item or "").strip() for item in legacy_mainnet_defaults}
+    if network == TESTNET_NETWORK and text in ({mainnet_default} | legacy):
+        return _settings_defaults_for_network(network).get(key)
+    if network == MAINNET_NETWORK and text in legacy:
+        return _settings_defaults_for_network(network).get(key)
+    return value
+
+
 def _normalize_domain(value):
     value = str(value).strip().lower()
     if not value:
@@ -254,6 +449,22 @@ def _normalize_update_channel(value):
     return value if all(char in allowed for char in value) else DEFAULT_UPDATE_CHANNEL
 
 
+def _normalize_gui_scale(value):
+    raw = str(value or "").strip().lower()
+    if raw in {"", "auto", "automatic", "system"}:
+        return DEFAULT_GUI_SCALE
+    while raw.endswith("x"):
+        raw = raw[:-1].strip()
+    try:
+        requested = float(raw)
+    except Exception:
+        return DEFAULT_GUI_SCALE
+    for scale in GUI_SCALE_PRESETS:
+        if abs(requested - float(scale)) < 0.001:
+            return scale
+    return DEFAULT_GUI_SCALE
+
+
 def normalize_security_settings(settings):
     """Merge user settings with defaults and coerce them into safe ranges.
 
@@ -262,13 +473,15 @@ def normalize_security_settings(settings):
     numeric values are clamped, and list-like values are normalized/deduped.
     """
 
-    merged = default_settings()
-    if isinstance(settings, dict):
-        merged.update(settings)
+    raw_settings = settings if isinstance(settings, dict) else {}
+    requested_network = _normalize_network(raw_settings.get("network", MAINNET_NETWORK))
+    merged = _settings_defaults_for_network(requested_network)
+    merged.update(raw_settings)
 
-    normalized = default_settings()
+    normalized_network = _normalize_network(merged.get("network", requested_network))
+    normalized = _settings_defaults_for_network(normalized_network)
     # Core network identity and runtime role.
-    normalized["network"] = _normalize_network(merged.get("network", MAINNET_NETWORK))
+    normalized["network"] = normalized_network
     security_profile = (
         str(merged.get("security_profile", "development")).strip().lower() or "development"
     )
@@ -279,32 +492,92 @@ def normalize_security_settings(settings):
     if security_role not in {"client", "operator"}:
         security_role = "client"
     normalized["security_role"] = security_role
-    normalized["node_port"] = _as_int(merged.get("node_port"), 0, minimum=0, maximum=65535)
+    configured_node_port = _as_int(merged.get("node_port"), 0, minimum=0, maximum=65535)
+    if normalized_network == TESTNET_NETWORK and configured_node_port in {
+        0,
+        DEFAULT_MAINNET_NODE_PORT,
+    }:
+        configured_node_port = DEFAULT_TESTNET_NODE_PORT
+    elif normalized_network == MAINNET_NETWORK and configured_node_port == 0:
+        configured_node_port = DEFAULT_MAINNET_NODE_PORT
+    normalized["node_port"] = configured_node_port
 
     # Peer and mirror lists accept multiline text from the GUI.
+    merged_peer_ping_servers = _list_for_network_default(
+        merged.get("peer_ping_servers"),
+        "peer_ping_servers",
+        normalized_network,
+        legacy_mainnet_defaults=(LEGACY_MAINNET_PEER_PING_SERVERS, []),
+    )
+    merged_dns_seed_hosts = _list_for_network_default(
+        merged.get("dns_seed_hosts"),
+        "dns_seed_hosts",
+        normalized_network,
+        legacy_mainnet_defaults=(LEGACY_MAINNET_DNS_SEED_HOSTS, []),
+    )
+    merged_root_mirrors = _list_for_network_default(
+        merged.get("trusted_root_mirrors"),
+        "trusted_root_mirrors",
+        normalized_network,
+        legacy_mainnet_defaults=([],),
+    )
+    merged_proof_archives = _list_for_network_default(
+        merged.get("transparency_proof_archives"),
+        "transparency_proof_archives",
+        normalized_network,
+        legacy_mainnet_defaults=([DEFAULT_MAINNET_TRANSPARENCY_OPERATOR_URL], []),
+    )
+    merged_root_domains = merged.get("trusted_root_domains")
+    if not _as_lines(merged_root_domains) and _list_matches(
+        merged_root_mirrors,
+        _settings_defaults_for_network(normalized_network).get("trusted_root_mirrors", []),
+    ):
+        merged_root_domains = _settings_defaults_for_network(normalized_network).get(
+            "trusted_root_domains", []
+        )
     normalized["peer_ping_servers"] = _dedupe(
-        _normalize_server(item) for item in _as_lines(merged.get("peer_ping_servers"))
+        _normalize_server(item) for item in _as_lines(merged_peer_ping_servers)
     )
     normalized["dns_seed_hosts"] = _dedupe(
-        _normalize_server(item) for item in _as_lines(merged.get("dns_seed_hosts"))
+        _normalize_server(item) for item in _as_lines(merged_dns_seed_hosts)
     )
     normalized["trusted_root_domains"] = _dedupe(
-        _normalize_domain(item) for item in _as_lines(merged.get("trusted_root_domains"))
+        _normalize_domain(item) for item in _as_lines(merged_root_domains)
     )
     normalized["trusted_root_mirrors"] = _dedupe(
-        _normalize_mirror(item) for item in _as_lines(merged.get("trusted_root_mirrors"))
+        _normalize_mirror(item) for item in _as_lines(merged_root_mirrors)
     )
     normalized["transparency_proof_archives"] = _dedupe(
-        _normalize_mirror(item) for item in _as_lines(merged.get("transparency_proof_archives"))
+        _normalize_mirror(item) for item in _as_lines(merged_proof_archives)
     )
     normalized["transparency_operator_url"] = _normalize_mirror(
-        merged.get("transparency_operator_url")
+        _scalar_for_network_default(
+            merged.get("transparency_operator_url"),
+            "transparency_operator_url",
+            normalized_network,
+            legacy_mainnet_defaults=("",),
+        )
     )
     normalized["transparency_operator_public_key"] = str(
-        merged.get("transparency_operator_public_key", "")
+        _scalar_for_network_default(
+            merged.get("transparency_operator_public_key", ""),
+            "transparency_operator_public_key",
+            normalized_network,
+            legacy_mainnet_defaults=("",),
+        )
     ).strip()
     operators = []
     raw_operators = merged.get("transparency_operators")
+    if (
+        not raw_operators
+        or _operators_match(raw_operators, DEFAULT_SECURITY_SETTINGS["transparency_operators"])
+    ):
+        default_url = str(DEFAULT_SECURITY_SETTINGS["transparency_operator_url"]).strip()
+        merged_url = str(merged.get("transparency_operator_url") or "").strip()
+        if normalized_network == TESTNET_NETWORK and merged_url in {"", default_url}:
+            raw_operators = DEFAULT_TESTNET_TRANSPARENCY_OPERATORS
+        elif normalized_network == MAINNET_NETWORK and merged_url in {"", default_url}:
+            raw_operators = DEFAULT_MAINNET_TRANSPARENCY_OPERATORS
     if isinstance(raw_operators, str):
         try:
             raw_operators = json.loads(raw_operators)
@@ -407,12 +680,23 @@ def normalize_security_settings(settings):
     normalized["reject_peer_key_changes"] = _as_bool(merged.get("reject_peer_key_changes"), False)
 
     # Genesis trust pins are intentionally exact strings/hashes after whitespace cleanup.
+    merged_genesis_issuer_keys = _list_for_network_default(
+        merged.get("trusted_genesis_issuer_keys"),
+        "trusted_genesis_issuer_keys",
+        normalized_network,
+        legacy_mainnet_defaults=([],),
+    )
+    merged_genesis_manifest_hashes = _list_for_network_default(
+        merged.get("trusted_genesis_manifest_hashes"),
+        "trusted_genesis_manifest_hashes",
+        normalized_network,
+        legacy_mainnet_defaults=([],),
+    )
     normalized["trusted_genesis_issuer_keys"] = _dedupe(
-        str(item).strip() for item in _as_lines(merged.get("trusted_genesis_issuer_keys"))
+        str(item).strip() for item in _as_lines(merged_genesis_issuer_keys)
     )
     normalized["trusted_genesis_manifest_hashes"] = _dedupe(
-        str(item).strip().lower()
-        for item in _as_lines(merged.get("trusted_genesis_manifest_hashes"))
+        str(item).strip().lower() for item in _as_lines(merged_genesis_manifest_hashes)
     )
     normalized["allow_untrusted_genesis"] = _as_bool(merged.get("allow_untrusted_genesis"))
     normalized["update_source"] = _normalize_update_source(
@@ -428,6 +712,7 @@ def normalize_security_settings(settings):
     normalized["auto_sync_on_wallet_sign_in"] = _as_bool(
         merged.get("auto_sync_on_wallet_sign_in"), True
     )
+    normalized["gui_scale"] = _normalize_gui_scale(merged.get("gui_scale", DEFAULT_GUI_SCALE))
     return normalized
 
 
@@ -504,6 +789,10 @@ def load_security_settings(path=SETTINGS_PATH, validate_production=True):
         raise ValueError(f"invalid IND security settings JSON in {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"IND security settings in {path} must be a JSON object")
+    env_network = os.environ.get("IND_NETWORK", "").strip()
+    if env_network:
+        data = dict(data)
+        data["network"] = env_network
     normalized = normalize_security_settings(data)
     if validate_production and production_mode(normalized):
         assert_production_security(normalized)
@@ -1011,3 +1300,11 @@ def auto_sync_on_wallet_sign_in(settings=None):
     if env_value:
         return _as_bool(env_value, True)
     return bool(settings.get("auto_sync_on_wallet_sign_in", True))
+
+
+def gui_scale(settings=None):
+    settings = settings or load_security_settings()
+    env_value = os.environ.get("IND_GUI_SCALE", "").strip()
+    if env_value:
+        return _normalize_gui_scale(env_value)
+    return _normalize_gui_scale(settings.get("gui_scale", DEFAULT_GUI_SCALE))

@@ -126,6 +126,11 @@ REQUEST_RETRYABLE_STATUSES = {
 }
 REQUEST_FAILURE_STATUSES = REQUEST_RETRYABLE_STATUSES | {REQUEST_PEER_KEY_MISMATCH, REQUEST_INVALID}
 MISSING_TRANSPARENCY_VERIFIER = "transparency log verification is required but not configured"
+WALLET_SYNC_RETRYABLE_TRANSPARENCY_MARKERS = (
+    "not enough usable current transparency root mirrors",
+    "transparency root replayed an older timestamp",
+    "mirror is lagging current verification",
+)
 
 RUNTIME_DIRS = runtime_json.RUNTIME_DIRS
 _last_dns_seed_refresh = 0
@@ -189,6 +194,20 @@ def wallet_sync_store(db_path=None):
             )
             return ind_token.INDLocalStore(require_transparency=False, **kwargs)
         raise
+
+
+def _exception_chain(error):
+    seen = set()
+    current = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+
+
+def wallet_sync_transparency_error_is_retryable(error):
+    text = " ".join(str(exc).lower() for exc in _exception_chain(error))
+    return any(marker in text for marker in WALLET_SYNC_RETRYABLE_TRANSPARENCY_MARKERS)
 
 
 def _runtime_path(path):
@@ -1011,18 +1030,10 @@ def _is_v3_transfer_announcement(message):
 def _validate_v3_transfer_announcement_for_broadcast(store, message):
     from . import protocol_v3
 
-    _bill, embedded_bundle, _archive_segments = protocol_v3.decode_transfer_announcement(message)
-    trusted_operator_public_key = None
-    trusted_key_getter = getattr(store, "_trusted_operator_key_from_proof_bundle_v3", None)
-    if callable(trusted_key_getter) and embedded_bundle is not None:
-        trusted_operator_public_key = trusted_key_getter(embedded_bundle)
-    protocol_v3.verify_transfer_announcement(
-        message,
-        proof_bundle_resolver=getattr(store, "proof_bundle_resolver_v3", None),
-        transparency_verifier=getattr(store, "transparency_verifier", None),
-        trusted_operator_public_key=trusted_operator_public_key,
-        archive_segment_resolver=getattr(store, "archive_segment_resolver_v3", None),
-    )
+    bill, _embedded_bundle, _archive_segments = protocol_v3.decode_transfer_announcement(message)
+    if not bill["recent_transfers"]:
+        raise ind_token.ValidationError("TransferAnnouncementV3 requires a recent TransferV3")
+    protocol_v3.cached_bill_state(bill)
 
 
 def _prepare_queued_gossip_for_broadcast(transaction_path, store):
@@ -2341,6 +2352,25 @@ def _emit_wallet_sync_progress(progress_callback, event, summary, **details):
         logger.debug("wallet sync progress callback failed", exc_info=True)
 
 
+def _refresh_wallet_sync_transparency_consistency(store):
+    verifier = getattr(store, "transparency_verifier", None)
+    if verifier is None:
+        return False
+    verifiers = getattr(verifier, "verifiers", None)
+    if isinstance(verifiers, (list, tuple)):
+        candidates = [candidate for candidate in verifiers if candidate is not None]
+    else:
+        candidates = [verifier]
+    refreshed = False
+    for candidate in candidates:
+        check_latest_consistency = getattr(candidate, "check_latest_consistency", None)
+        if not callable(check_latest_consistency):
+            continue
+        check_latest_consistency()
+        refreshed = True
+    return refreshed
+
+
 # Pull owner-addressed bill records and import spendable bills.
 def receive_bills(
     progress_callback=None,
@@ -2375,11 +2405,32 @@ def receive_bills(
         "pending": 0,
         "peer_failures": 0,
         "peer_timeouts": 0,
+        "transparency_waits": 0,
         "wallet_bills_added": 0,
         "skipped_known_messages": 0,
         "errors": [],
     }
     cancelled = False
+
+    def record_transparency_wait(error, address="", source="", peer=""):
+        summary["transparency_waits"] += 1
+        logger.info("wallet sync waiting for transparency mirrors: %s", error)
+        _emit_wallet_sync_progress(
+            progress_callback,
+            "transparency_wait",
+            summary,
+            address=address,
+            source=source,
+            peer=peer,
+            error=str(error),
+        )
+
+    try:
+        _refresh_wallet_sync_transparency_consistency(store)
+    except Exception as exc:
+        if not wallet_sync_transparency_error_is_retryable(exc):
+            raise
+        record_transparency_wait(exc, source="startup")
 
     def sync_stop_requested():
         if not callable(stop_requested):
@@ -2503,6 +2554,19 @@ def receive_bills(
                     runtime_json.write_decrypted_wallet_lines(context["wallet_path"], updated_wallet)
                     context["wallet"] = updated_wallet
                     summary["wallet_bills_added"] += len(added_records)
+                    progress_records = []
+                    for record in added_records:
+                        try:
+                            progress_sequence = int(record["sequence"])
+                        except (TypeError, ValueError):
+                            progress_sequence = 0
+                        progress_records.append(
+                            {
+                                "display_id": record["display_id"],
+                                "sequence": progress_sequence,
+                                "status": str(record.get("status") or "settled"),
+                            }
+                        )
                     _emit_wallet_sync_progress(
                         progress_callback,
                         "bills_added",
@@ -2512,13 +2576,20 @@ def receive_bills(
                         display_id=added_records[-1]["display_id"],
                         sequence=int(added_records[-1]["sequence"]),
                         reason=reason,
+                        records=progress_records,
                     )
                 return settled_records
 
             def finalize_ready_bills(reason, context=wallet_context):
-                finalized = store.finalize_pending(
-                    buffer_seconds=ind_settings.finality_buffer_seconds()
-                )
+                try:
+                    finalized = store.finalize_pending(
+                        buffer_seconds=ind_settings.finality_buffer_seconds()
+                    )
+                except Exception as exc:
+                    if not wallet_sync_transparency_error_is_retryable(exc):
+                        raise
+                    record_transparency_wait(exc, address=context["address"], source=reason)
+                    return []
                 if finalized:
                     summary["finalized"] += len(finalized)
                     _emit_wallet_sync_progress(
@@ -2592,6 +2663,19 @@ def receive_bills(
                             known_message_hashes.add(current_message_hash)
                         finalize_ready_bills("message")
                     except Exception as exc:
+                        if wallet_sync_transparency_error_is_retryable(exc):
+                            logger.debug(
+                                "wallet sync message is awaiting transparency mirrors for %s: %s",
+                                current_address,
+                                exc,
+                            )
+                            record_transparency_wait(
+                                exc,
+                                address=current_address,
+                                source=source,
+                                peer=peer,
+                            )
+                            continue
                         logger.debug(
                             "could not process wallet sync message for %s: %s",
                             current_address,
@@ -2696,6 +2780,21 @@ def receive_bills(
                         else:
                             emit_record_check_progress(display_id=display_id, sequence=sequence)
                     except Exception as exc:
+                        if wallet_sync_transparency_error_is_retryable(exc):
+                            logger.debug(
+                                "wallet sync record is awaiting transparency mirrors for %s: %s",
+                                current_address,
+                                exc,
+                            )
+                            record_transparency_wait(
+                                exc,
+                                address=current_address,
+                                source=source,
+                                peer=peer,
+                            )
+                            progress_since_emit = 0
+                            progress_last_emit = time.monotonic()
+                            continue
                         logger.debug(
                             "could not process wallet sync record for %s: %s",
                             current_address,

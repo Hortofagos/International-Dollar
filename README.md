@@ -74,12 +74,12 @@ interoperate with IND roots. The intended production shape is the same family
 of operated, audited systems as CT and Sigstore Rekor, not a custom consensus
 ledger.
 
-Phase 1 is honest about trust: there is a single operator, clients verify
-signatures and consistency proofs, and signed roots must be mirrored to
-independent locations such as the project website, a git repo, IPFS, and
-archive.org. This prevents retroactive hidden history against those mirrors,
-but it does not fully prevent split-view equivocation until clients gossip
-roots and multiple independent operators exist.
+Phase 1 is honest about trust: append-capable operators are explicitly listed
+in the operator set, clients verify signatures and consistency proofs, and
+signed roots must be mirrored to independent locations such as the project
+website, a git repo, IPFS, and archive.org. Mainnet now has two append-capable
+operators, but mirror and gossip diversity remain load-bearing because a small
+operator set is still not blockchain-style consensus.
 
 The reference transparency operator currently stores its append log in a local
 SQLite database. That is appropriate for development, desktop experiments, and
@@ -227,7 +227,7 @@ Merchants can apply stricter local policy before releasing real-world value. The
 
 IND nodes are volunteer-operated desktop nodes. Nodes communicate through the TCP gossip service on port `8888` on mainnet and `18888` on public testnet; UDP rendezvous/NAT traversal has been removed. To run a reachable node, open/forward the active TCP port on your router and allow it through the host firewall. IP addresses are discovery hints only. They do not grant voting power.
 
-Nodes bootstrap from three hint sources: local cached peers in `ip_folder`, configured peer servers, and DNS seed hostnames from `dns_seed_hosts` or `IND_DNS_SEED_HOSTS`. Mainnet defaults are `seed.international-dollar.com`, `seed.linkifier.me`, and `seed.internetofthebots.com`; testnet defaults are `testnet-seed.international-dollar.com` and `testnet-seed.internetofthebots.com`. Publish node A and AAAA records there when those seeds are ready. DNS results are filtered to globally routable IPv4 or IPv6 addresses and cached as ordinary peer hints, not trusted identities.
+Nodes bootstrap from three hint sources: local cached peers in `ip_folder`, configured peer servers, and DNS seed hostnames from `dns_seed_hosts` or `IND_DNS_SEED_HOSTS`. Mainnet defaults to DNS seeds `seed.international-dollar.com` and `seed.internetofthebots.com` plus the explicit OVH peer `51.83.199.25`; public testnet defaults to DNS seeds `testnet-seed.international-dollar.com` and `testnet-seed.internetofthebots.com` plus explicit peers `51.83.199.25` and `108.61.23.82`. Publish node A and AAAA records only for hosts that run the active TCP gossip port. DNS results are filtered to globally routable IPv4 or IPv6 addresses and cached as ordinary peer hints, not trusted identities.
 
 Node connections use the `INDN1` encrypted transport: X25519 key agreement with ChaCha20-Poly1305 authenticated encryption. Peer transport keys are pinned on first contact by IP address; development/client nodes refresh the pin on key rotation unless `reject_peer_key_changes` or `IND_REJECT_PEER_KEY_CHANGES=1` enables strict rejection. Bill validity never depends on transport encryption; every bill remains verified from its own signatures.
 
@@ -244,12 +244,13 @@ Public testnet parameters are recorded in `testnet/testnet.json`:
 - Network: `testnet`
 - TCP node port: `18888`
 - Testnet DNS seeds: `testnet-seed.international-dollar.com`, `testnet-seed.internetofthebots.com`
+- Testnet explicit peers: `testnet-seed.international-dollar.com`, `testnet-seed.internetofthebots.com`, `51.83.199.25`, `108.61.23.82`
 
 Run a public testnet node:
 
 ```powershell
 $env:IND_NETWORK="testnet"
-$env:IND_TRUSTED_GENESIS_MANIFEST_HASHES="20581461c25568d36446b0c0cbd87f04c35d5d0930965c58058841ce95a04eb8"
+$env:IND_TRUSTED_GENESIS_MANIFEST_HASHES="9d1a9cfeb6ceefa4aa39b702af1f5c6be204ddd5fb2e8dd1df0041a47dd31aa6"
 python node_client.py
 ```
 

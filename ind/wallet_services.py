@@ -220,16 +220,20 @@ def spendable_wallet_display_ids(wallet_address, display_ids, store=None):
 def pending_wallet_records(wallet_address, store=None, limit=None, offset=0):
     store = store or ind_token.INDLocalStore()
     if keys_v3.is_address(wallet_address):
+        statuses = ["pending"]
+        if "verified" not in _spendable_v3_statuses(store):
+            statuses.append("verified")
+        statuses = tuple(statuses)
         if offset:
             return store.bill_v3_records_for_owner(
                 wallet_address,
-                statuses=("pending",),
+                statuses=statuses,
                 limit=limit,
                 offset=offset,
             )
         return store.bill_v3_records_for_owner(
             wallet_address,
-            statuses=("pending",),
+            statuses=statuses,
             limit=limit,
         )
     return []
@@ -279,6 +283,34 @@ def spendable_wallet_metadata_records(
     return filter_locally_sent_records(records, wallet_lines or [])
 
 
+def bill_finality_progress(store=None, bill=None, record=None, status=None):
+    store = store or ind_token.INDLocalStore()
+    status = str(status if status is not None else dict(record or {}).get("status") or "").lower()
+    if bill is None:
+        blob = dict(record or {}).get("bill_blob")
+        if blob is not None:
+            try:
+                bill = protocol_v3.decode_bill(bytes(blob))
+            except Exception:
+                bill = None
+    progress_reader = getattr(store, "bill_v3_finality_progress", None)
+    if callable(progress_reader) and isinstance(bill, dict):
+        progress = progress_reader(bill, status=status)
+        if isinstance(progress, dict):
+            return progress
+    spendable = bool(status and status in _spendable_v3_statuses(store))
+    return {
+        "status": status,
+        "required_proofs": 0,
+        "proven_proofs": 0,
+        "pending_proofs": 0,
+        "failed_proofs": 0,
+        "awaiting_transparency": False,
+        "divergent_witness": False,
+        "spendable": spendable,
+    }
+
+
 # Count spendable and pending bills by denomination without loading full bill blobs.
 def wallet_balance_counts(wallet_address, store=None, wallet_lines=None, bill_values=None):
     store = store or ind_token.INDLocalStore()
@@ -297,6 +329,7 @@ def wallet_balance_counts(wallet_address, store=None, wallet_lines=None, bill_va
         if value not in spendable_counts:
             continue
         status = str(record.get("status") or "").lower()
+        display_id = str(record.get("display_id") or "").strip()
         if status == "pending":
             pending_counts[value] += 1
             continue
@@ -304,7 +337,6 @@ def wallet_balance_counts(wallet_address, store=None, wallet_lines=None, bill_va
             if status == "verified":
                 pending_counts[value] += 1
             continue
-        display_id = str(record.get("display_id") or "").strip()
         sent_sequence = sent_sequences.get(display_id)
         if sent_sequence is not None:
             try:
@@ -313,13 +345,6 @@ def wallet_balance_counts(wallet_address, store=None, wallet_lines=None, bill_va
             except (TypeError, ValueError):
                 continue
         spendable_counts[value] += 1
-    line_counts = {value: 0 for value in bill_values}
-    for line in runtime_json.wallet_bill_lines(wallet_lines or []):
-        value = wallet_owned_line_value(line)
-        if value in line_counts:
-            line_counts[value] += 1
-    for value, count in line_counts.items():
-        spendable_counts[value] = max(spendable_counts[value], count)
     total = sum(value * count for value, count in spendable_counts.items())
     return {
         "bill_counts": spendable_counts,
@@ -513,19 +538,8 @@ def prepare_spend_wallet_bill_v3(
     bill = _resolve_wallet_bill_v3(store, wallet_address, wallet_bill_line)
     if not bill:
         return None
-    trusted_operator_public_key = _trusted_operator_key_for_bill(
-        store,
-        bill,
-        proof_bundle=proof_bundle,
-        trusted_operator_public_key=trusted_operator_public_key,
-    )
-    if not bill_is_spendable_v3(
-        store,
-        bill,
-        wallet_address,
-        proof_bundle=proof_bundle,
-        trusted_operator_public_key=trusted_operator_public_key,
-    ):
+    cached_state = protocol_v3.cached_bill_state(bill)
+    if wallet_address and cached_state["owner_address"] != wallet_address:
         return None
     private_key, public_key = _wallet_keys(wallet_lines)
     proof_bundle_for_transfer = proof_bundle
@@ -534,17 +548,13 @@ def prepare_spend_wallet_bill_v3(
         proof_hash = (proof_ref or {}).get("proof_bundle_hash")
         if proof_hash:
             proof_bundle_for_transfer = store.get_proof_bundle_v3(proof_hash)
-    transferred_bill = protocol_v3.create_transfer(
+    transferred_bill, state = protocol_v3.create_transfer_from_cached_bill(
         bill,
         private_key,
         public_key,
         recipient_address,
-        proof_bundle=proof_bundle_for_transfer,
-        proof_bundle_resolver=store.proof_bundle_resolver_v3,
-        transparency_verifier=getattr(store, "transparency_verifier", None),
-        trusted_operator_public_key=trusted_operator_public_key,
-        archive_segment_resolver=store.archive_segment_resolver_v3,
         timestamp=timestamp,
+        cached_state=cached_state,
     )
     if proof_bundle_for_transfer is None:
         proof_bundle_for_transfer = store.get_proof_bundle_v3(
@@ -555,14 +565,6 @@ def prepare_spend_wallet_bill_v3(
         transferred_bill,
         proof_bundle=proof_bundle_for_transfer,
         archive_segments=archive_segments,
-    )
-    state = protocol_v3.verify_bill(
-        transferred_bill,
-        proof_bundle=proof_bundle_for_transfer,
-        proof_bundle_resolver=store.proof_bundle_resolver_v3,
-        transparency_verifier=getattr(store, "transparency_verifier", None),
-        trusted_operator_public_key=trusted_operator_public_key,
-        archive_segment_resolver=store.archive_segment_resolver_v3,
     )
     return {
         "bill": transferred_bill,
@@ -581,12 +583,16 @@ def commit_prepared_wallet_spend_v3(prepared, store=None):
         return None
     store = store or ind_token.INDLocalStore()
     ensure_prepared_wallet_spend_is_current(prepared, store=store)
-    store.store_bill_v3(
-        prepared["bill"],
-        proof_bundle=prepared.get("proof_bundle"),
-        status="verified",
-        trusted_operator_public_key=prepared.get("trusted_operator_public_key"),
-    )
+    cached_store = getattr(store, "store_cached_bill_v3", None)
+    if callable(cached_store):
+        cached_store(prepared["bill"], prepared["state"], status="verified")
+    else:
+        store.store_bill_v3(
+            prepared["bill"],
+            proof_bundle=prepared.get("proof_bundle"),
+            status="verified",
+            trusted_operator_public_key=prepared.get("trusted_operator_public_key"),
+        )
     runtime_json.write_transaction_message(prepared["announcement"])
     return prepared["state"]
 
@@ -609,31 +615,10 @@ def ensure_prepared_wallet_spend_is_current(prepared, store=None):
     source_bill = source_lookup(display_id, sender_address)
     if not source_bill:
         raise ind_token.ValidationError("bill tip changed while signing; sync and retry")
-    proof_bundle = prepared.get("proof_bundle")
-    source_ref = source_bill.get("proof_bundle_ref") if isinstance(source_bill, dict) else None
-    source_proof_hash = (source_ref or {}).get("proof_bundle_hash")
-    prepared_proof_hash = (
-        proof_bundle.get("proof_bundle_hash") if isinstance(proof_bundle, dict) else None
-    )
-    if source_proof_hash and source_proof_hash != prepared_proof_hash:
-        proof_bundle = store.get_proof_bundle_v3(source_proof_hash)
-    trusted_operator_public_key = _trusted_operator_key_for_bill(
-        store,
-        source_bill,
-        proof_bundle=proof_bundle,
-        trusted_operator_public_key=prepared.get("trusted_operator_public_key"),
-    )
-    source_state = protocol_v3.verify_bill(
-        source_bill,
-        proof_bundle=proof_bundle,
-        proof_bundle_resolver=store.proof_bundle_resolver_v3,
-        transparency_verifier=getattr(store, "transparency_verifier", None),
-        trusted_operator_public_key=trusted_operator_public_key,
-        archive_segment_resolver=store.archive_segment_resolver_v3,
-    )
-    if int(source_state.sequence) + 1 != int(transfer["sequence"]):
+    source_state = protocol_v3.cached_bill_state(source_bill)
+    if int(source_state["sequence"]) + 1 != int(transfer["sequence"]):
         raise ind_token.ValidationError("bill sequence changed while signing; sync and retry")
-    if source_state.last_transfer_hash != transfer["previous_hash"]:
+    if source_state["last_transfer_hash"] != transfer["previous_hash"]:
         raise ind_token.ValidationError("bill tip changed while signing; sync and retry")
     return True
 

@@ -23,6 +23,28 @@ def test_testnet_operator_set_loads():
     assert env["IND_SETTLEMENT_MIN_REMOTE_CONFIRMATIONS"] == "0"
 
 
+def test_mainnet_operator_set_loads():
+    operator_set = render_operator_env.load_operator_set(
+        render_operator_env.DEFAULT_MAINNET_OPERATOR_SET
+    )
+
+    assert operator_set["network"] == "mainnet"
+    assert operator_set["node_port"] == 8888
+    assert len(operator_set["operators"]) == 2
+    assert operator_set["operators"][0]["url"] == "http://167.233.115.216/mainnet-operator-api"
+    assert (
+        operator_set["operators"][1]["url"]
+        == "https://testnet-seed.internetofthebots.com/mainnet-iotb-operator-api"
+    )
+    env = render_operator_env.env_from_operator_set(operator_set)
+    assert env["IND_NETWORK"] == "mainnet"
+    assert env["IND_OPERATOR_APPEND_FANOUT"] == "2"
+    assert env["IND_OPERATOR_FINALITY_MIN_PROOFS"] == "2"
+    assert env["IND_SETTLEMENT_PEERS"] == (
+        "167.233.115.216:8888,testnet-seed.internetofthebots.com:8888"
+    )
+
+
 def test_powershell_rendering_quotes_operator_json_safely():
     rendered = render_operator_env.render_env(
         {

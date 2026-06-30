@@ -143,7 +143,7 @@ def main(argv=None):
     primary_node = nodes["primary"]
     peers = testnet_peers.parse_peer_args(args.peer, default_to_config=False)
     if not peers:
-        peers = ["167.233.115.216", "91.99.175.174", "51.83.199.25", "108.61.23.82"]
+        peers = testnet_peers.parse_peer_args(None)
     store_path = report_path.with_suffix(".sqlite3")
     os.environ["IND_STORE_PATH"] = str(store_path)
     runtime_json.ensure_runtime_files()

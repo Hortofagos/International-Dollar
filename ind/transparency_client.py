@@ -3670,6 +3670,7 @@ class TransparencyVerifier:
         self.consistency_check_interval_seconds = self.policy.consistency_check_interval_seconds
         self.consistency_max_stale_seconds = self.policy.consistency_max_stale_seconds
         self._consistency_pairs_checked = set()
+        self._consistency_freshness_refreshing = set()
         self._pending_gossip_messages = []
         self._queued_root_ids = set()
         self._queued_evidence_ids = set()
@@ -4113,16 +4114,44 @@ class TransparencyVerifier:
         last_success = status.get("last_successful_consistency_at") if status else None
         if self.strict_mode:
             if not last_success:
+                if self.observed_root_store.latest_root(log_id) is None:
+                    return
                 raise ConsistencyUnavailableError(
                     f"strict transparency mode has no successful consistency baseline for operator {log_id}"
                 )
             age = int(time.time()) - int(last_success)
             if age > self.consistency_max_stale_seconds:
+                if self._refresh_stale_consistency_baseline(log_id):
+                    return
+                status = self.observed_root_store.status(log_id)
+                last_success = status.get("last_successful_consistency_at") if status else None
+                age = int(time.time()) - int(last_success or 0)
                 raise ConsistencyUnavailableError(
                     f"strict transparency mode requires a successful consistency check within "
                     f"{self.consistency_max_stale_seconds} seconds for operator {log_id}; last success was "
                     f"{age} seconds ago"
                 )
+
+    def _refresh_stale_consistency_baseline(self, log_id):
+        if log_id in self._consistency_freshness_refreshing:
+            return False
+        self._consistency_freshness_refreshing.add(log_id)
+        try:
+            self._current_roots_from_mirrors(error_context="consistency freshness refresh")
+        except Exception as exc:
+            warnings.warn(
+                f"strict transparency consistency freshness refresh failed for operator {log_id}: {exc}",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            return False
+        finally:
+            self._consistency_freshness_refreshing.discard(log_id)
+        status = self.observed_root_store.status(log_id)
+        last_success = status.get("last_successful_consistency_at") if status else None
+        if not last_success:
+            return False
+        return int(time.time()) - int(last_success) <= self.consistency_max_stale_seconds
 
     def _handle_consistency_failure(self, old_root, new_root, error):
         evidence_id = self.observed_root_store.save_consistency_failure(old_root, new_root, error)

@@ -206,7 +206,11 @@ class INDLocalStore:
                 if self.require_transparency:
                     raise
                 self.transparency_verifier = None
-        if self.transparency_root_gossip and self.transparency_verifier is None:
+        if (
+            self.require_transparency
+            and self.transparency_root_gossip
+            and self.transparency_verifier is None
+        ):
             try:
                 self.transparency_verifier = _environment_transparency_verifier()
             except Exception:
@@ -1507,6 +1511,17 @@ class INDLocalStore:
             )
         return bill_hash_value
 
+    # Persist one locally-created BillV3 tip from an already-cached wallet state.
+    def store_cached_bill_v3(self, bill, state, status="verified"):
+        from . import protocol_v3
+
+        if isinstance(bill, bytes):
+            bill = protocol_v3.decode_bill(bill)
+        if isinstance(state, dict):
+            state = protocol_v3._token_state_from_v3_state(bill["token_id"], state)
+        with self._connect() as conn:
+            return self._store_bill_v3_conn(conn, bill, state, status)
+
     # Return a stored BillV3 by bill hash.
     def get_bill_v3(self, bill_hash):
         from . import protocol_v3
@@ -2562,6 +2577,65 @@ class INDLocalStore:
         )
         proven_log_ids = {row["log_id"] for row in statuses}
         return len(proven_log_ids) >= self._operator_finality_required_proofs_v3()
+
+    # Return read-only proof/finality progress for wallet display. This does not
+    # retry proof recovery or promote bill state.
+    def bill_v3_finality_progress(self, bill, status=None):
+        from . import protocol_v3
+
+        status_value = str(status or "").strip().lower()
+        spendable_statuses = set(self.spendable_bill_v3_statuses())
+        progress = {
+            "status": status_value,
+            "required_proofs": 0,
+            "proven_proofs": 0,
+            "pending_proofs": 0,
+            "failed_proofs": 0,
+            "awaiting_transparency": False,
+            "divergent_witness": False,
+            "spendable": bool(status_value and status_value in spendable_statuses),
+        }
+        transfers = bill.get("recent_transfers") if isinstance(bill, dict) else None
+        if not transfers:
+            return progress
+
+        transfer = transfers[-1]
+        transfer_hash_value = protocol_v3.transfer_hash(transfer)
+        rows = self._v3_transfer_log_statuses(transfer_hash_value)
+
+        def row_identity(row):
+            return str(row.get("log_id") or row.get("operator_public_key") or "").strip()
+
+        proven = {
+            row_identity(row)
+            for row in rows
+            if row.get("status") == V3_LOG_PROVEN_STATUS and row_identity(row)
+        }
+        pending = {
+            row_identity(row)
+            for row in rows
+            if row.get("status") == V3_LOG_PENDING_STATUS and row_identity(row)
+        }
+        failed = {
+            row_identity(row)
+            for row in rows
+            if row.get("status") == V3_LOG_UNLOGGED_STATUS and row_identity(row)
+        }
+        required = self._operator_finality_required_proofs_v3()
+        divergent = self._v3_spend_key_has_witness_divergence(transfer)
+        progress.update(
+            {
+                "transfer_hash": transfer_hash_value,
+                "required_proofs": required,
+                "proven_proofs": len(proven),
+                "pending_proofs": len(pending - proven),
+                "failed_proofs": len(failed - proven - pending),
+                "awaiting_transparency": bool(required and len(proven) < required and not divergent),
+                "divergent_witness": divergent,
+                "spendable": bool(progress["spendable"] and not divergent),
+            }
+        )
+        return progress
 
     # Submit a native V3 transfer to append-capable operators and record each result.
     def _submit_v3_transfer_to_transparency_log(self, message, decoded):
@@ -4651,7 +4725,7 @@ class INDLocalStore:
                     SELECT bill_hash, token_id, display_id, owner_address, sequence, status,
                            first_seen, updated_at
                     FROM bills_v3
-                    WHERE owner_address = ? AND status IN ('settled', 'verified')
+                    WHERE owner_address = ? AND status IN ('settled', 'verified', 'pending')
                     {cursor_clause}
                     ORDER BY updated_at {order}, sequence {order}, token_id {order}
                     LIMIT ? OFFSET ?

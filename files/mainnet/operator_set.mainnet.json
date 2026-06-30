@@ -1,0 +1,38 @@
+{
+  "min_root_mirrors": 2,
+  "network": "mainnet",
+  "node_port": 8888,
+  "operator_append_fanout": 2,
+  "operator_core_domains": [
+    "international-dollar.com",
+    "internetofthebots.com"
+  ],
+  "operators": [
+    {
+      "mirrors": [
+        "http://91.99.175.174/mainnet-transparency",
+        "http://108.61.23.82/mainnet-transparency"
+      ],
+      "name": "primary-mainnet",
+      "proof_archives": [
+        "http://91.99.175.174/mainnet-transparency",
+        "http://108.61.23.82/mainnet-transparency"
+      ],
+      "public_key": "indpk3:Qu)F<E@Jz(MQ6iS8NLT+N-tt-O3|`^z6CsWx{Br7",
+      "url": "http://167.233.115.216/mainnet-operator-api"
+    },
+    {
+      "mirrors": [
+        "https://international-dollar.com/mainnet-iotb-operator/transparency",
+        "http://108.61.23.82/mainnet-iotb-operator/transparency"
+      ],
+      "name": "iotb-mainnet",
+      "proof_archives": [
+        "https://international-dollar.com/mainnet-iotb-operator/transparency",
+        "http://108.61.23.82/mainnet-iotb-operator/transparency"
+      ],
+      "public_key": "indpk3:i8x(A2B9u``X1Ny>r2)2`evenV>4H=Pz~{&*%j`u",
+      "url": "https://testnet-seed.internetofthebots.com/mainnet-iotb-operator-api"
+    }
+  ]
+}

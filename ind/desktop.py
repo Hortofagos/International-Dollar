@@ -49,6 +49,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 from . import node_services
 from . import runtime as runtime_json
 from . import settings as ind_settings
+from . import wallet_display
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 os.chdir(BASE_DIR)
@@ -203,7 +204,7 @@ def schedule_custom_font_load():
             return
     except Exception:
         log_ignored_exception()
-    root.after_idle(lambda: load_custom_font(FONT_PATH, APP_FONT_FAMILY))
+    load_custom_font(FONT_PATH, APP_FONT_FAMILY)
 
 
 def hide_root_window():
@@ -242,6 +243,10 @@ APP_MIN_UPSCALE_HEIGHT = 1100
 HEADER_BUTTON_X_NUDGE = -1
 HEADER_BUTTON_Y_NUDGE = -2
 SIGN_IN_PAGE_Y_NUDGE = -2
+SIGN_IN_FIELD_CENTER_X = 612.5
+TEXT_FIT_HORIZONTAL_PADDING = 12
+TEXT_BUTTON_MIN_FONT_SIZE = 14
+TITLE_MIN_FONT_SIZE = 36
 
 
 def enable_high_dpi_awareness():
@@ -290,17 +295,43 @@ def monitor_work_area_size(tk_root):
     return windows_work_area_size() or (tk_root.winfo_screenwidth(), tk_root.winfo_screenheight())
 
 
-def choose_app_scale(work_area_width, work_area_height):
+def app_scale_fits(work_area_width, work_area_height, scale):
+    return (
+        scaled_px(APP_BASE_WIDTH, scale) <= work_area_width
+        and scaled_px(APP_BASE_HEIGHT, scale) <= work_area_height
+    )
+
+
+def choose_app_scale(work_area_width, work_area_height, requested_scale=None):
+    if requested_scale not in {None, 'auto'}:
+        try:
+            selected_scale = float(requested_scale)
+        except Exception:
+            selected_scale = None
+        if selected_scale is not None:
+            if app_scale_fits(work_area_width, work_area_height, selected_scale):
+                return selected_scale
+            for scale in APP_SCALE_PRESETS:
+                if scale <= selected_scale and app_scale_fits(work_area_width, work_area_height, scale):
+                    return scale
+            return 1.0
+
     if work_area_width < APP_MIN_UPSCALE_WIDTH or work_area_height < APP_MIN_UPSCALE_HEIGHT:
         return 1.0
 
     for scale in APP_SCALE_PRESETS:
-        if (
-            scaled_px(APP_BASE_WIDTH, scale) <= work_area_width
-            and scaled_px(APP_BASE_HEIGHT, scale) <= work_area_height
-        ):
+        if app_scale_fits(work_area_width, work_area_height, scale):
             return scale
     return APP_SCALE_PRESETS[-1]
+
+
+def configured_gui_scale():
+    try:
+        settings = ind_settings.load_security_settings(validate_production=False)
+        return ind_settings.gui_scale(settings)
+    except Exception:
+        log_ignored_exception()
+    return ind_settings.DEFAULT_GUI_SCALE
 
 
 enable_high_dpi_awareness()
@@ -311,7 +342,7 @@ root.title('International Dollar')
 root.tk.call('tk', 'scaling', 1.36)
 
 work_area_width, work_area_height = monitor_work_area_size(root)
-reso = choose_app_scale(work_area_width, work_area_height)
+reso = choose_app_scale(work_area_width, work_area_height, configured_gui_scale())
 res = '4' if reso >= APP_HIDPI_ASSET_SCALE else ''
 root.geometry(f'{scaled_px(APP_BASE_WIDTH, reso)}x{scaled_px(APP_BASE_HEIGHT, reso)}')
 try:
@@ -610,6 +641,10 @@ GUI_TEXT = {
     'settings_genesis_hashes': 'Trusted genesis manifest hashes',
     'settings_root_domains': 'Trusted root domains',
     'settings_root_mirrors': 'Merkle root mirrors',
+    'settings_operator_set': 'Transparency operators (JSON)',
+    'settings_operator_summary': 'Effective runtime',
+    'settings_append_fanout': 'Append fanout',
+    'settings_finality_proofs': 'Finality proofs',
     'settings_operator_url': 'Operator URL',
     'settings_operator_key': 'Operator public key',
     'settings_root_lag': 'Max root lag (s)',
@@ -621,6 +656,7 @@ GUI_TEXT = {
     'settings_update_startup': 'Check on startup',
     'settings_update_status': 'Status',
     'settings_auto_sync_signin': 'Auto sync on wallet sign in',
+    'settings_gui_scale': 'Window scale',
     'claim_title': 'Claim bills',
     'claim_serial': 'Serial number',
     'claim_public': 'Public key',
@@ -682,6 +718,15 @@ SETTINGS_TWO_COL_LEFT = 88
 SETTINGS_TWO_COL_RIGHT = 624
 SETTINGS_TWO_COL_WIDTH = 508
 SETTINGS_FOOTER_Y = 724
+SETTINGS_GUI_SCALE_OPTIONS = ('AUTO', '1x', '1.25x', '1.5x', '2x')
+SETTINGS_GUI_SCALE_VALUES = {
+    'AUTO': 'auto',
+    '1x': '1.0',
+    '1.25x': '1.25',
+    '1.5x': '1.5',
+    '2x': '2.0',
+}
+SETTINGS_GUI_SCALE_LABELS = {value: label for label, value in SETTINGS_GUI_SCALE_VALUES.items()}
 
 
 def px(value):
@@ -723,6 +768,7 @@ wallet_count_load_generation = 0
 wallet_balance_loading_after_id = None
 wallet_balance_loading_dot_count = 0
 WALLET_BALANCE_LOADING_INTERVAL_MS = 450
+wallet_transparency_display_error = None
 
 
 def wallet_tab_is_visible():
@@ -796,13 +842,50 @@ def stop_wallet_balance_loading():
             log_ignored_exception()
 
 
+def clear_wallet_transparency_display_warning():
+    global wallet_transparency_display_error
+    wallet_transparency_display_error = None
+
+
+def note_wallet_transparency_display_warning(error):
+    global wallet_transparency_display_error
+    wallet_transparency_display_error = error
+
+
+def current_wallet_transparency_display_warning():
+    if wallet_transparency_display_error is None:
+        return ""
+    return wallet_display.offline_wallet_status_message(wallet_transparency_display_error)
+
+
+def show_wallet_transparency_display_status(error):
+    note_wallet_transparency_display_warning(error)
+    set_wallet_sync_status(wallet_display.offline_wallet_status_message(error), IND_ORANGE)
+
+
+def apply_wallet_transparency_display_status(result_warning=None):
+    warning = result_warning or current_wallet_transparency_display_warning()
+    if warning:
+        set_wallet_sync_status(warning, IND_ORANGE)
+        return
+    try:
+        if str(wallet_sync_status_label.cget("text") or "").startswith("Offline:"):
+            set_wallet_sync_status("")
+    except Exception:
+        log_ignored_exception()
+
+
 def finish_wallet_count_refresh(generation, snapshot=None, error=None, preserve_selection=True):
     if generation != wallet_count_load_generation or not wallet_tab_is_visible():
         return
     if error is not None:
+        if wallet_display.is_transparency_temporarily_unavailable(error):
+            show_wallet_transparency_display_status(error)
+            return
         log_ignored_exception("wallet count refresh failed")
         return
     apply_wallet_balance_snapshot(snapshot, preserve_selection=preserve_selection)
+    apply_wallet_transparency_display_status()
 
 
 def start_wallet_count_refresh_worker(preserve_selection=True):
@@ -810,6 +893,7 @@ def start_wallet_count_refresh_worker(preserve_selection=True):
 
     def worker():
         try:
+            clear_wallet_transparency_display_warning()
             snapshot = wallet_balance_snapshot()
             error = None
         except Exception as exc:
@@ -835,6 +919,9 @@ def finish_wallet_view_refresh(generation, result=None, error=None, preserve_sel
     if generation != wallet_view_load_generation or not wallet_tab_is_visible():
         return
     if error is not None:
+        if wallet_display.is_transparency_temporarily_unavailable(error):
+            show_wallet_transparency_display_status(error)
+            return
         show_error_popup('Wallet refresh failed', error)
         return
     result = result or {}
@@ -845,6 +932,7 @@ def finish_wallet_view_refresh(generation, result=None, error=None, preserve_sel
     wallet_history_cached_entries = list(result.get("history_entries") or [])
     wallet_history_cached_total = int(result.get("history_total") or 0)
     page(refresh_entries=False)
+    apply_wallet_transparency_display_status(result.get("transparency_warning"))
 
 
 def start_wallet_view_refresh_worker(preserve_selection=False, force_history_metadata=True):
@@ -856,6 +944,7 @@ def start_wallet_view_refresh_worker(preserve_selection=False, force_history_met
 
     def worker():
         try:
+            clear_wallet_transparency_display_warning()
             clear_wallet_record_cache()
             balance_snapshot = wallet_balance_snapshot()
             history_entries, history_total = wallet_history_page_entries(
@@ -866,6 +955,7 @@ def start_wallet_view_refresh_worker(preserve_selection=False, force_history_met
                 "balance_snapshot": balance_snapshot,
                 "history_entries": history_entries,
                 "history_total": history_total,
+                "transparency_warning": current_wallet_transparency_display_warning(),
             }
             error = None
         except Exception as exc:
@@ -971,6 +1061,8 @@ def place_scaled(widget, x, y, width=None, height=None, x_nudge=0, y_nudge=0):
     if height is not None:
         options['height'] = px(height)
     widget.place(**options)
+    if width is not None:
+        fit_placed_button_text(widget, options['width'])
 
 
 # Raise a Tk widget window, avoiding Canvas item-raise method collisions.
@@ -1001,6 +1093,131 @@ def app_font(size, weight=None):
     return font
 
 
+def _widget_text(widget):
+    try:
+        return str(widget.cget('text') or '')
+    except Exception:
+        return ''
+
+
+def _text_width(font, text):
+    lines = str(text).splitlines() or ['']
+    return max(font.measure(line) for line in lines)
+
+
+def _ensure_text_fit_state(widget, min_font_size=None):
+    try:
+        current_font = tkfont.Font(root=root, font=widget.cget('font'))
+        actual = current_font.actual()
+        current_size = int(actual.get('size') or 0)
+    except Exception:
+        log_ignored_exception()
+        return None
+    if current_size == 0:
+        return None
+
+    max_size = abs(current_size)
+    if not hasattr(widget, '_ind_text_fit_max_size'):
+        widget._ind_text_fit_family = actual.get('family') or APP_FONT_FAMILY
+        widget._ind_text_fit_weight = actual.get('weight') or 'normal'
+        widget._ind_text_fit_slant = actual.get('slant') or 'roman'
+        widget._ind_text_fit_negative_size = current_size < 0
+        widget._ind_text_fit_max_size = max_size
+        widget._ind_text_fit_min_size = min(max_size, px(TEXT_BUTTON_MIN_FONT_SIZE))
+    max_size = widget._ind_text_fit_max_size
+    if min_font_size is not None:
+        widget._ind_text_fit_min_size = min(max_size, abs(int(min_font_size)))
+    return max_size
+
+
+def _text_fit_font(widget, size):
+    signed_size = -size if getattr(widget, '_ind_text_fit_negative_size', False) else size
+    return tkfont.Font(
+        root=root,
+        family=getattr(widget, '_ind_text_fit_family', APP_FONT_FAMILY),
+        size=signed_size,
+        weight=getattr(widget, '_ind_text_fit_weight', 'normal'),
+        slant=getattr(widget, '_ind_text_fit_slant', 'roman'),
+    )
+
+
+def _text_fit_font_spec(widget, size):
+    signed_size = -size if getattr(widget, '_ind_text_fit_negative_size', False) else size
+    styles = []
+    weight = getattr(widget, '_ind_text_fit_weight', 'normal')
+    slant = getattr(widget, '_ind_text_fit_slant', 'roman')
+    if weight != 'normal':
+        styles.append(weight)
+    if slant != 'roman':
+        styles.append(slant)
+    return (getattr(widget, '_ind_text_fit_family', APP_FONT_FAMILY), signed_size, *styles)
+
+
+def fit_text_widget_to_pixel_width(
+    widget, pixel_width, padding=TEXT_FIT_HORIZONTAL_PADDING, min_font_size=None
+):
+    text = _widget_text(widget)
+    if not text or pixel_width <= 1 or getattr(widget, '_ind_text_fit_active', False):
+        return
+    max_size = _ensure_text_fit_state(widget, min_font_size=min_font_size)
+    if not max_size:
+        return
+
+    target_width = max(1, int(pixel_width) - px(padding))
+    min_size = min(max_size, getattr(widget, '_ind_text_fit_min_size', max_size))
+    chosen_size = min_size
+    for size in range(max_size, min_size - 1, -1):
+        if _text_width(_text_fit_font(widget, size), text) <= target_width:
+            chosen_size = size
+            break
+
+    try:
+        current_size = abs(int(tkfont.Font(root=root, font=widget.cget('font')).actual('size')))
+        if current_size == chosen_size:
+            return
+        widget._ind_text_fit_active = True
+        widget.config(font=_text_fit_font_spec(widget, chosen_size))
+    except Exception:
+        log_ignored_exception()
+    finally:
+        widget._ind_text_fit_active = False
+
+
+def configure_button_text_defaults(button):
+    try:
+        button.config(anchor='center', justify='center', padx=0, pady=0)
+    except Exception:
+        log_ignored_exception()
+
+
+def fit_placed_button_text(widget, pixel_width):
+    if not isinstance(widget, Button) or not _widget_text(widget):
+        return
+    configure_button_text_defaults(widget)
+    fit_text_widget_to_pixel_width(widget, pixel_width)
+
+
+def enable_text_button_fit(button, min_font_size=TEXT_BUTTON_MIN_FONT_SIZE):
+    configure_button_text_defaults(button)
+    _ensure_text_fit_state(button, min_font_size=px(min_font_size))
+    button.bind(
+        '<Configure>',
+        lambda event, widget=button: fit_text_widget_to_pixel_width(widget, event.width),
+        add='+',
+    )
+
+
+def center_canvas_text_item(canvas, item, target_x):
+    try:
+        bbox = canvas.bbox(item)
+        if not bbox:
+            return
+        current_center = (bbox[0] + bbox[2]) / 2
+        canvas.move(item, px(target_x) - current_center, 0)
+    except Exception:
+        log_ignored_exception()
+
+
 def canvas_text(
     canvas, x, y, text, size, fill=IND_WHITE, anchor='nw', justify='left', weight=None, width=None
 ):
@@ -1013,7 +1230,10 @@ def canvas_text(
     }
     if width is not None:
         kwargs['width'] = px(width)
-    return canvas.create_text(px(x), px(y), **kwargs)
+    item = canvas.create_text(px(x), px(y), **kwargs)
+    if anchor in {'center', 'n', 's'} and justify == 'center':
+        center_canvas_text_item(canvas, item, x)
+    return item
 
 
 class GuiScreen(Canvas):
@@ -1465,19 +1685,29 @@ class GuiScreen(Canvas):
             field_label(SETTINGS_TWO_COL_RIGHT, SETTINGS_BOTTOM_LABEL_Y, 'Trusted manifest hashes')
         elif settings_active_tab == SETTINGS_TAB_TRANSPARENCY:
             field_label(
-                SETTINGS_TWO_COL_LEFT, SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_operator_url']
+                SETTINGS_CONTENT_X,
+                SETTINGS_TOP_LABEL_Y,
+                GUI_TEXT['settings_operator_set'],
             )
             field_label(
-                SETTINGS_TWO_COL_RIGHT, SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_operator_key']
+                782,
+                SETTINGS_TOP_LABEL_Y,
+                GUI_TEXT['settings_append_fanout'],
             )
-            separator(SETTINGS_DIVIDER_Y)
-            field_label(SETTINGS_CONTENT_X, SETTINGS_BOTTOM_LABEL_Y, 'Root domains', 18)
-            field_label(354, SETTINGS_BOTTOM_LABEL_Y, 'Root mirrors', 18)
-            field_label(620, SETTINGS_BOTTOM_LABEL_Y, 'Min', 18)
-            field_label(706, SETTINGS_BOTTOM_LABEL_Y, 'Lag (s)', 18)
-            field_label(804, SETTINGS_BOTTOM_LABEL_Y, 'Age (s)', 18)
-            field_label(902, SETTINGS_BOTTOM_LABEL_Y, 'Gossip', 18)
-            field_label(1010, SETTINGS_BOTTOM_LABEL_Y, 'Skew (s)', 18)
+            field_label(
+                916,
+                SETTINGS_TOP_LABEL_Y,
+                GUI_TEXT['settings_finality_proofs'],
+            )
+            field_label(782, 374, GUI_TEXT['settings_operator_summary'])
+            separator(542)
+            field_label(SETTINGS_CONTENT_X, 558, 'Root domains', 18)
+            field_label(354, 558, 'Root mirrors', 18)
+            field_label(620, 558, 'Min', 18)
+            field_label(706, 558, 'Lag (s)', 18)
+            field_label(804, 558, 'Age (s)', 18)
+            field_label(902, 558, 'Gossip', 18)
+            field_label(1010, 558, 'Skew (s)', 18)
         elif settings_active_tab == SETTINGS_TAB_UPDATES:
             field_label(SETTINGS_CONTENT_X, SETTINGS_TOP_LABEL_Y, 'Domain')
             field_label(988, SETTINGS_TOP_LABEL_Y, GUI_TEXT['settings_update_startup'])
@@ -1490,6 +1720,11 @@ class GuiScreen(Canvas):
                 SETTINGS_CONTENT_X,
                 SETTINGS_TOP_LABEL_Y,
                 GUI_TEXT['settings_auto_sync_signin'],
+            )
+            field_label(
+                SETTINGS_ROW_COLS[1],
+                SETTINGS_TOP_LABEL_Y,
+                GUI_TEXT['settings_gui_scale'],
             )
 
     def draw_sign_in_panel(self, generate=False):
@@ -1506,10 +1741,22 @@ class GuiScreen(Canvas):
                 canvas_text(self, GENERATE_WALLET_FIELD_X, y - 36, label, 19, fill=IND_MUTED)
         else:
             canvas_text(
-                self, 607, 297, GUI_TEXT['signin_wallet_label'], 28, anchor='n', justify='center'
+                self,
+                SIGN_IN_FIELD_CENTER_X,
+                297,
+                GUI_TEXT['signin_wallet_label'],
+                28,
+                anchor='n',
+                justify='center',
             )
             canvas_text(
-                self, 607, 442, GUI_TEXT['signin_password_label'], 28, anchor='n', justify='center'
+                self,
+                SIGN_IN_FIELD_CENTER_X,
+                442,
+                GUI_TEXT['signin_password_label'],
+                28,
+                anchor='n',
+                justify='center',
             )
 
     def draw_sign_in(self):
@@ -1727,7 +1974,7 @@ def make_text_button(
 ):
     font = app_font(font_size, font_weight)
     button_master = master or root
-    return Button(
+    button = Button(
         button_master,
         text=text,
         command=command,
@@ -1743,7 +1990,11 @@ def make_text_button(
         overrelief=relief,
         padx=0,
         pady=0,
+        anchor='center',
+        justify='center',
     )
+    enable_text_button_fit(button)
+    return button
 
 
 def source_asset_image_path(folder, name):
@@ -1860,8 +2111,12 @@ def reset_wallet_view_state():
         wallet_history_metadata_cache = None
     if 'wallet_balance_has_cached_snapshot' in globals():
         wallet_balance_has_cached_snapshot = False
+    if 'clear_wallet_transparency_display_warning' in globals():
+        clear_wallet_transparency_display_warning()
     if 'wallet_sync_optimistic_import_keys' in globals():
         wallet_sync_optimistic_import_keys.clear()
+    if 'clear_wallet_sync_visual_updates' in globals():
+        clear_wallet_sync_visual_updates()
     if 'page_wallet' in globals():
         page_wallet = 1
 
@@ -1925,8 +2180,30 @@ def wallet_store_paths():
     return unique
 
 
-def wallet_store_for_address(wallet_address):
+def wallet_display_local_store(db_path=None):
+    placeholder = object()
+    kwargs = {
+        "require_transparency": False,
+        "transparency_verifier": placeholder,
+        "transparency_submitter": placeholder,
+    }
+    if db_path is not None:
+        kwargs["db_path"] = db_path
+    store = ind_token.INDLocalStore(**kwargs)
+    store.transparency_verifier = None
+    store.transparency_submitter = None
+    return store
+
+
+def wallet_offline_action_error(action="continue"):
+    return RuntimeError(
+        f"Wallet is offline. Connect to the transparency mirrors before you {action}."
+    )
+
+
+def wallet_store_for_address(wallet_address, allow_offline=False):
     fallback = None
+    offline_error = None
     for store_path in wallet_store_paths():
         try:
             store = sender_node.wallet_sync_store(db_path=store_path)
@@ -1942,9 +2219,37 @@ def wallet_store_for_address(wallet_address):
             pending = wallet_services.pending_wallet_records(wallet_address, store=store, limit=1)
             if spendable or pending:
                 return store
-        except Exception:
-            log_ignored_exception()
-    return fallback or sender_node.wallet_sync_store()
+        except Exception as exc:
+            if allow_offline and wallet_display.is_transparency_temporarily_unavailable(exc):
+                offline_error = exc
+                try:
+                    store = wallet_display_local_store(db_path=store_path)
+                    if fallback is None:
+                        fallback = store
+                    spendable = wallet_services.spendable_wallet_records(
+                        wallet_address, store=store, limit=1
+                    )
+                    pending = wallet_services.pending_wallet_records(
+                        wallet_address, store=store, limit=1
+                    )
+                    if spendable or pending:
+                        note_wallet_transparency_display_warning(exc)
+                        return store
+                except Exception:
+                    log_ignored_exception()
+            else:
+                log_ignored_exception()
+    if fallback is not None:
+        if offline_error is not None:
+            note_wallet_transparency_display_warning(offline_error)
+        return fallback
+    try:
+        return sender_node.wallet_sync_store()
+    except Exception as exc:
+        if allow_offline and wallet_display.is_transparency_temporarily_unavailable(exc):
+            note_wallet_transparency_display_warning(exc)
+            return wallet_display_local_store()
+        raise
 
 
 WALLET_RECORD_CACHE_TTL_SECONDS = 2.0
@@ -2017,7 +2322,7 @@ def wallet_records_snapshot(force_refresh=False):
         "pending_records": [],
     }
     if wallet_address:
-        store = wallet_store_for_address(wallet_address)
+        store = wallet_store_for_address(wallet_address, allow_offline=True)
         snapshot["store"] = store
         try:
             store.finalize_pending(buffer_seconds=ind_settings.finality_buffer_seconds())
@@ -2092,7 +2397,7 @@ def print_available_records(force_refresh=False):
     return list(records)
 
 
-def wallet_snapshot_store():
+def wallet_snapshot_store(allow_offline=False):
     if wallet_record_cache is not None:
         _cached_key, _cached_at, cached_snapshot = wallet_record_cache
         store = cached_snapshot.get("store")
@@ -2104,7 +2409,7 @@ def wallet_snapshot_store():
         wallet_address = wallet_lines[0].strip() if wallet_lines else ""
     if not wallet_address:
         return None
-    return wallet_store_for_address(wallet_address)
+    return wallet_store_for_address(wallet_address, allow_offline=allow_offline)
 
 
 def wallet_balance_snapshot():
@@ -2113,16 +2418,27 @@ def wallet_balance_snapshot():
     store = None
     if wallet_address:
         try:
-            store = wallet_snapshot_store()
+            store = wallet_snapshot_store(allow_offline=True)
         except Exception:
             log_ignored_exception()
             store = None
-    return wallet_services.wallet_balance_counts(
-        wallet_address,
-        store=store,
-        wallet_lines=wallet_lines,
-        bill_values=BILL_VALUES,
-    )
+    try:
+        return wallet_services.wallet_balance_counts(
+            wallet_address,
+            store=store,
+            wallet_lines=wallet_lines,
+            bill_values=BILL_VALUES,
+        )
+    except Exception as exc:
+        if wallet_display.is_transparency_temporarily_unavailable(exc):
+            note_wallet_transparency_display_warning(exc)
+            return wallet_services.wallet_balance_counts(
+                wallet_address,
+                store=wallet_display_local_store(),
+                wallet_lines=wallet_lines,
+                bill_values=BILL_VALUES,
+            )
+        raise
 
 
 try:
@@ -2130,12 +2446,21 @@ try:
 except Exception:
     log_ignored_exception()
 
-international_dollar = Text(
-    root, font=app_font(45), bg='black', fg='white', bd=0, highlightthickness=0
+international_dollar = Label(
+    root,
+    text=GUI_TEXT['app_title'],
+    font=app_font(45),
+    bg='black',
+    fg='white',
+    bd=0,
+    highlightthickness=0,
+    anchor='w',
+    cursor='arrow',
 )
-international_dollar.insert(1.0, GUI_TEXT['app_title'])
 international_dollar.place(x=150 * reso, y=45 * reso, height=90 * reso, width=410 * reso)
-international_dollar.config(state='disabled', cursor='arrow')
+fit_text_widget_to_pixel_width(
+    international_dollar, px(410), padding=0, min_font_size=px(TITLE_MIN_FONT_SIZE)
+)
 
 
 wa_sliced = None
@@ -2976,9 +3301,13 @@ def _text_lines(widget):
 
 
 def _set_text_lines(widget, lines):
+    _set_text_value(widget, '\n'.join(lines))
+
+
+def _set_text_value(widget, value):
     widget.config(state='normal')
     widget.delete('1.0', END)
-    widget.insert('1.0', '\n'.join(lines))
+    widget.insert('1.0', value)
 
 
 def _set_entry_value(widget, value):
@@ -2994,12 +3323,96 @@ def _set_node_port_value(widget, settings):
         _set_entry_value(widget, configured_port)
 
 
+def _set_operator_finality_min_proofs_value(widget, settings):
+    configured_proofs = int(settings.get('operator_finality_min_proofs') or 0)
+    if configured_proofs == 0:
+        _set_entry_value(widget, '0 (auto)')
+    else:
+        _set_entry_value(widget, configured_proofs)
+
+
+def _operator_finality_min_proofs_input_value():
+    raw = settings_operator_finality_min_proofs_entry.get().strip()
+    if raw.upper().startswith('AUTO') or raw.lower() in {'0 (auto)', '0 auto'}:
+        return '0'
+    return raw
+
+
 def _bool_label(value):
     return 'YES' if value else 'NO'
 
 
 def _option_bool(variable):
     return variable.get().strip().upper() == 'YES'
+
+
+def _gui_scale_label(value):
+    normalized = ind_settings.gui_scale({'gui_scale': value})
+    return SETTINGS_GUI_SCALE_LABELS.get(normalized, 'AUTO')
+
+
+def _gui_scale_value():
+    return SETTINGS_GUI_SCALE_VALUES.get(settings_gui_scale_var.get().strip(), 'auto')
+
+
+def _format_operator_set_text(settings):
+    return json.dumps(settings.get('transparency_operators', []), indent=2, sort_keys=True)
+
+
+def _parse_operator_set_text():
+    raw = settings_operator_set.get('1.0', END).strip()
+    if not raw:
+        return []
+    try:
+        operators = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"transparency operators JSON is invalid at line {exc.lineno}: {exc.msg}"
+        ) from exc
+    if not isinstance(operators, list):
+        raise ValueError('transparency operators must be a JSON list')
+    return operators
+
+
+def _first_operator_identity(operators):
+    for operator in operators:
+        if not isinstance(operator, dict):
+            continue
+        if operator.get('url') or operator.get('public_key'):
+            return {
+                'url': str(operator.get('url', '') or '').strip(),
+                'public_key': str(operator.get('public_key', '') or '').strip(),
+            }
+    return {'url': '', 'public_key': ''}
+
+
+def _set_operator_summary(settings):
+    operators = settings.get('transparency_operators', []) or []
+    append_count = sum(1 for operator in operators if operator.get('url'))
+    selected_count = min(append_count, ind_settings.operator_append_fanout(settings))
+    configured_finality = int(settings.get('operator_finality_min_proofs') or 0)
+    effective_finality = ind_settings.operator_finality_min_proofs(settings)
+    mirror_count = sum(len(operator.get('mirrors') or []) for operator in operators)
+    archive_count = sum(len(operator.get('proof_archives') or []) for operator in operators)
+    if append_count == 0:
+        posture = 'No append operator configured'
+    elif append_count == 1:
+        posture = 'Single append operator + mirrors'
+    else:
+        posture = 'Multi-operator runtime'
+    finality_mode = 'majority' if configured_finality == 0 else 'explicit'
+    lines = [
+        f"Network: {settings.get('network', 'mainnet')}",
+        f"Append operators: {append_count} of {len(operators)}",
+        f"Selected append ops: {selected_count}",
+        f"Effective quorum: {effective_finality} ({finality_mode})",
+        f"Mirrors: {mirror_count} roots / {archive_count} archives",
+        f"Posture: {posture}",
+    ]
+    settings_operator_summary.config(state='normal')
+    settings_operator_summary.delete('1.0', END)
+    settings_operator_summary.insert('1.0', '\n'.join(lines))
+    settings_operator_summary.config(state='disabled')
 
 
 def _set_settings_status(message, color=IND_WHITE):
@@ -3029,11 +3442,16 @@ settings_root_domains = make_settings_text(15)
 settings_root_mirrors = make_settings_text(15)
 settings_genesis_issuer_keys = make_settings_text(14)
 settings_genesis_manifest_hashes = make_settings_text(14)
+settings_operator_set = make_settings_text(12)
+settings_operator_summary = make_settings_text(14)
+settings_operator_summary.config(state='disabled')
 settings_operator_key = make_settings_text(14)
 settings_node_port_entry = make_settings_entry(17)
 settings_finality_entry = make_settings_entry(17)
 settings_timeout_entry = make_settings_entry(17)
 settings_operator_url_entry = make_settings_entry(17)
+settings_operator_append_fanout_entry = make_settings_entry(17)
+settings_operator_finality_min_proofs_entry = make_settings_entry(17)
 settings_root_lag_entry = make_settings_entry(17)
 settings_min_mirrors_entry = make_settings_entry(17)
 settings_max_current_root_age_entry = make_settings_entry(17)
@@ -3063,6 +3481,8 @@ settings_update_check_var = StringVar(root)
 settings_update_check = make_settings_option(settings_update_check_var, 'YES', 'NO')
 settings_auto_sync_signin_var = StringVar(root)
 settings_auto_sync_signin = make_settings_option(settings_auto_sync_signin_var, 'YES', 'NO')
+settings_gui_scale_var = StringVar(root)
+settings_gui_scale = make_settings_option(settings_gui_scale_var, *SETTINGS_GUI_SCALE_OPTIONS)
 
 
 def load_security_settings_form():
@@ -3073,11 +3493,16 @@ def load_security_settings_form():
     _set_text_lines(settings_root_mirrors, settings['trusted_root_mirrors'])
     _set_text_lines(settings_genesis_issuer_keys, settings['trusted_genesis_issuer_keys'])
     _set_text_lines(settings_genesis_manifest_hashes, settings['trusted_genesis_manifest_hashes'])
+    _set_text_value(settings_operator_set, _format_operator_set_text(settings))
     _set_text_lines(settings_operator_key, [settings['transparency_operator_public_key']])
     _set_node_port_value(settings_node_port_entry, settings)
     _set_entry_value(settings_finality_entry, settings['finality_buffer_seconds'])
     _set_entry_value(settings_timeout_entry, settings['peer_request_timeout_seconds'])
     _set_entry_value(settings_operator_url_entry, settings['transparency_operator_url'])
+    _set_entry_value(settings_operator_append_fanout_entry, settings['operator_append_fanout'])
+    _set_operator_finality_min_proofs_value(
+        settings_operator_finality_min_proofs_entry, settings
+    )
     _set_entry_value(settings_root_lag_entry, settings['max_root_lag_seconds'])
     _set_entry_value(settings_min_mirrors_entry, settings['min_root_mirrors'])
     _set_entry_value(settings_max_current_root_age_entry, settings['max_current_root_age_seconds'])
@@ -3092,6 +3517,8 @@ def load_security_settings_form():
     settings_root_gossip_var.set(_bool_label(settings['transparency_root_gossip']))
     settings_update_check_var.set(_bool_label(settings['update_check_on_startup']))
     settings_auto_sync_signin_var.set(_bool_label(settings['auto_sync_on_wallet_sign_in']))
+    settings_gui_scale_var.set(_gui_scale_label(settings.get('gui_scale', 'auto')))
+    _set_operator_summary(settings)
     _set_settings_status('No unsaved changes.', IND_MUTED)
     _set_ping_status('Ready', IND_MUTED)
     _set_update_status('Ready to check for updates.')
@@ -3105,6 +3532,8 @@ def collect_security_settings_form():
     node_port_value = settings_node_port_entry.get().strip()
     if node_port_value.upper().startswith('AUTO'):
         node_port_value = '0'
+    operators = _parse_operator_set_text()
+    primary_operator = _first_operator_identity(operators)
     settings.update(
         {
             'network': settings_network_var.get().strip().lower(),
@@ -3115,10 +3544,11 @@ def collect_security_settings_form():
             'trusted_root_mirrors': _text_lines(settings_root_mirrors),
             'trusted_genesis_issuer_keys': _text_lines(settings_genesis_issuer_keys),
             'trusted_genesis_manifest_hashes': _text_lines(settings_genesis_manifest_hashes),
-            'transparency_operator_url': settings_operator_url_entry.get().strip(),
-            'transparency_operator_public_key': '\n'.join(
-                _text_lines(settings_operator_key)
-            ).strip(),
+            'transparency_operator_url': primary_operator['url'],
+            'transparency_operator_public_key': primary_operator['public_key'],
+            'transparency_operators': operators,
+            'operator_append_fanout': settings_operator_append_fanout_entry.get().strip(),
+            'operator_finality_min_proofs': _operator_finality_min_proofs_input_value(),
             'require_transparency_log': _option_bool(settings_require_log_var),
             'security_profile': settings_security_profile_var.get().strip().lower(),
             'allow_untrusted_genesis': _option_bool(settings_allow_untrusted_genesis_var),
@@ -3132,6 +3562,7 @@ def collect_security_settings_form():
             'update_source': settings_update_source_entry.get().strip(),
             'update_check_on_startup': _option_bool(settings_update_check_var),
             'auto_sync_on_wallet_sign_in': _option_bool(settings_auto_sync_signin_var),
+            'gui_scale': _gui_scale_value(),
         }
     )
     return settings
@@ -3142,11 +3573,43 @@ def save_security_settings_form(show_message=True):
         settings = ind_settings.save_security_settings(collect_security_settings_form())
         load_security_settings_form()
         if show_message:
-            _set_settings_status(
-                f"Saved. Bills settle after {settings['finality_buffer_seconds']} seconds; "
-                f"{settings['min_root_mirrors']} Merkle mirror(s) required.",
-                IND_GREEN,
+            requested_scale = ind_settings.gui_scale(settings)
+            applied_scale = choose_app_scale(
+                work_area_width,
+                work_area_height,
+                requested_scale,
             )
+            requested_scale_fits = (
+                requested_scale == 'auto'
+                or abs(applied_scale - float(requested_scale)) <= 0.001
+            )
+            scale_changes_on_restart = abs(applied_scale - reso) > 0.001
+            if scale_changes_on_restart:
+                if requested_scale_fits:
+                    status = 'Saved. Restart to apply the new window scale.'
+                else:
+                    status = (
+                        f"Saved. {_gui_scale_label(requested_scale)} does not fit this screen; "
+                        f"restart to use {_gui_scale_label(str(applied_scale))}."
+                    )
+                _set_settings_status(status, IND_ORANGE)
+                if messagebox.askyesno(
+                    'Restart International Dollar?',
+                    'Window scale changes take effect after restart.\n\nRestart now?',
+                ):
+                    relaunch_application()
+            elif not requested_scale_fits:
+                _set_settings_status(
+                    f"Saved. {_gui_scale_label(requested_scale)} does not fit this screen; "
+                    f"{_gui_scale_label(str(applied_scale))} will be used.",
+                    IND_ORANGE,
+                )
+            else:
+                _set_settings_status(
+                    f"Saved. Bills settle after {settings['finality_buffer_seconds']} seconds; "
+                    f"{settings['min_root_mirrors']} Merkle mirror(s) required.",
+                    IND_GREEN,
+                )
         return settings
     except Exception as exc:
         _set_settings_status('Save failed: ' + str(exc), IND_RED)
@@ -3323,10 +3786,14 @@ settings_widgets = (
     settings_root_mirrors,
     settings_genesis_issuer_keys,
     settings_genesis_manifest_hashes,
+    settings_operator_set,
+    settings_operator_summary,
     settings_operator_key,
     settings_finality_entry,
     settings_timeout_entry,
     settings_operator_url_entry,
+    settings_operator_append_fanout_entry,
+    settings_operator_finality_min_proofs_entry,
     settings_root_lag_entry,
     settings_min_mirrors_entry,
     settings_max_current_root_age_entry,
@@ -3338,6 +3805,7 @@ settings_widgets = (
     settings_root_gossip,
     settings_update_check,
     settings_auto_sync_signin,
+    settings_gui_scale,
     settings_status,
     settings_ping_status,
     settings_update_status,
@@ -3392,7 +3860,7 @@ def place_settings_tab_widgets():
         place_scaled(settings_dns_seed_hosts, SETTINGS_CONTENT_X, SETTINGS_BOTTOM_FIELD_Y, 430, 190)
         place_scaled(settings_peer_servers, 548, SETTINGS_BOTTOM_FIELD_Y, 350, 190)
         place_scaled(settings_ping_button, 928, SETTINGS_BOTTOM_FIELD_Y, 104, 40)
-        place_scaled(settings_ping_status, 1052, SETTINGS_BOTTOM_FIELD_Y, 82, 40)
+        place_scaled(settings_ping_status, 928, 548, 204, 142)
     elif settings_active_tab == SETTINGS_TAB_BILL_SAFETY:
         place_scaled(settings_finality_entry, SETTINGS_ROW_COLS[0], SETTINGS_TOP_FIELD_Y, 130, 38)
         place_scaled(settings_require_log, SETTINGS_ROW_COLS[1], SETTINGS_TOP_FIELD_Y, 110, 38)
@@ -3416,26 +3884,34 @@ def place_settings_tab_widgets():
         )
     elif settings_active_tab == SETTINGS_TAB_TRANSPARENCY:
         place_scaled(
-            settings_operator_url_entry,
-            SETTINGS_TWO_COL_LEFT,
+            settings_operator_set,
+            SETTINGS_CONTENT_X,
             SETTINGS_TOP_FIELD_Y,
-            SETTINGS_TWO_COL_WIDTH,
+            670,
+            204,
+        )
+        place_scaled(
+            settings_operator_append_fanout_entry,
+            782,
+            SETTINGS_TOP_FIELD_Y,
+            106,
             38,
         )
         place_scaled(
-            settings_operator_key,
-            SETTINGS_TWO_COL_RIGHT,
+            settings_operator_finality_min_proofs_entry,
+            916,
             SETTINGS_TOP_FIELD_Y,
-            SETTINGS_TWO_COL_WIDTH,
+            114,
             38,
         )
-        place_scaled(settings_root_domains, SETTINGS_CONTENT_X, SETTINGS_BOTTOM_FIELD_Y, 240, 142)
-        place_scaled(settings_root_mirrors, 354, SETTINGS_BOTTOM_FIELD_Y, 240, 142)
-        place_scaled(settings_min_mirrors_entry, 620, SETTINGS_BOTTOM_FIELD_Y, 64, 38)
-        place_scaled(settings_root_lag_entry, 706, SETTINGS_BOTTOM_FIELD_Y, 76, 38)
-        place_scaled(settings_max_current_root_age_entry, 804, SETTINGS_BOTTOM_FIELD_Y, 76, 38)
-        place_scaled(settings_root_gossip, 902, SETTINGS_BOTTOM_FIELD_Y, 86, 38)
-        place_scaled(settings_current_root_future_skew_entry, 1010, SETTINGS_BOTTOM_FIELD_Y, 70, 38)
+        place_scaled(settings_operator_summary, 782, 404, 344, 126)
+        place_scaled(settings_root_domains, SETTINGS_CONTENT_X, 588, 240, 102)
+        place_scaled(settings_root_mirrors, 354, 588, 240, 102)
+        place_scaled(settings_min_mirrors_entry, 620, 588, 64, 38)
+        place_scaled(settings_root_lag_entry, 706, 588, 76, 38)
+        place_scaled(settings_max_current_root_age_entry, 804, 588, 76, 38)
+        place_scaled(settings_root_gossip, 902, 588, 86, 38)
+        place_scaled(settings_current_root_future_skew_entry, 1010, 588, 70, 38)
     elif settings_active_tab == SETTINGS_TAB_UPDATES:
         place_scaled(
             settings_update_source_entry, SETTINGS_CONTENT_X, SETTINGS_TOP_FIELD_Y, 628, 40
@@ -3445,6 +3921,7 @@ def place_settings_tab_widgets():
         place_scaled(settings_update_status, SETTINGS_CONTENT_X, SETTINGS_BOTTOM_FIELD_Y, 998, 190)
     elif settings_active_tab == SETTINGS_TAB_GENERAL:
         place_scaled(settings_auto_sync_signin, SETTINGS_CONTENT_X, SETTINGS_TOP_FIELD_Y, 110, 40)
+        place_scaled(settings_gui_scale, SETTINGS_ROW_COLS[1], SETTINGS_TOP_FIELD_Y, 130, 40)
 
 
 def refresh_settings_widgets():
@@ -3516,6 +3993,9 @@ def set_wallet_sync_status(message="", color=IND_MUTED):
 
 
 def wallet_sync_summary_text(summary, errors):
+    def plural(count, singular, plural_value=None):
+        return singular if int(count) == 1 else (plural_value or singular + "s")
+
     if errors:
         return "Sync failed: " + errors[0], IND_ORANGE
     if not summary:
@@ -3536,26 +4016,33 @@ def wallet_sync_summary_text(summary, errors):
     added = int(summary.get("wallet_bills_added") or 0)
     pending = int(summary.get("pending") or 0)
     peer_timeouts = int(summary.get("peer_timeouts") or 0)
-    if fetched:
-        parts.append(f"fetched {fetched} messages")
-    if fetched_records:
-        parts.append(f"received {fetched_records} peer records")
-    if checked_records and not added:
-        parts.append(f"checked {checked_records} bills")
-    if finalized:
-        parts.append(f"settled {finalized} bills")
+    transparency_waits = int(summary.get("transparency_waits") or 0)
     if added:
-        parts.append(f"added {added} unique bills")
+        message = f"Imported {added} unique {plural(added, 'bill')}"
+        if fetched_records:
+            message += f" from {fetched_records} peer {plural(fetched_records, 'record')}"
+        return "Sync: " + message, IND_GREEN
+    if finalized:
+        return f"Sync: Settled {finalized} {plural(finalized, 'bill')}.", IND_GREEN
     if pending:
-        parts.append(f"pending finality {pending} bills")
+        message = f"Waiting for transparency proofs for {pending} {plural(pending, 'bill')}"
+        if fetched_records:
+            message += f" ({fetched_records} peer {plural(fetched_records, 'record')} checked)"
+        return "Sync: " + message, IND_ORANGE
+    if transparency_waits and not pending:
+        return "Sync: Waiting for transparency proofs; checking again...", IND_ORANGE
+    if fetched_records:
+        parts.append(f"no new bills from {fetched_records} peer {plural(fetched_records, 'record')}")
+    elif checked_records:
+        parts.append(f"checked {checked_records} {plural(checked_records, 'bill')}")
+    elif fetched:
+        parts.append(f"checked {fetched} peer {plural(fetched, 'message')}")
     if peer_timeouts:
         parts.append(f"timeouts {peer_timeouts}")
     if not parts:
         parts.append("no new bills")
-    if pending or peer_timeouts:
+    if peer_timeouts:
         color = IND_ORANGE
-    elif finalized or fetched_records or added:
-        color = IND_GREEN
     else:
         color = IND_MUTED
     return "Sync: " + ", ".join(parts), color
@@ -3583,6 +4070,8 @@ def wallet_sync_progress_text(progress):
         return "Sync: paused", IND_ORANGE
     if event == "wallet_started":
         return "Sync: checking this wallet...", IND_MUTED
+    if event == "transparency_wait":
+        return "Waiting for transparency proofs; checking again...", IND_ORANGE
     if event == "local_messages":
         count = int(progress.get("message_count") or 0)
         return f"Sync: checking {count} local message(s)...", IND_MUTED
@@ -4192,7 +4681,12 @@ def charge_bills():
         try:
             of = runtime_json.read_decrypted_wallet_lines(wallet_path)
             wallet_address = of[0].strip() if of else ""
-            store = wallet_store_for_address(wallet_address)
+            try:
+                store = wallet_store_for_address(wallet_address)
+            except Exception as exc:
+                if wallet_display.is_transparency_temporarily_unavailable(exc):
+                    raise wallet_offline_action_error("charge printed bills") from exc
+                raise
             wallet_line_by_display_id = {}
             wallet_index_by_display_id = {}
             already_spent = []
@@ -4284,7 +4778,7 @@ def charge_bills():
             set_print_charge_busy(False)
             if sent_count and fatal_error is None:
                 clear_wallet_record_cache()
-                start_wallet_send_worker(expected_total=sent_count)
+                start_wallet_send_worker(expected_total=sent_count, recipient_address="")
             if preflight_error is not None:
                 show_error_popup('Charge bills failed', preflight_error)
                 set_print_status('Charge stopped before signing. Review the selected bills.', IND_ORANGE)
@@ -5636,7 +6130,7 @@ def wallet_history_bill_for_sequence(display_id, sequence=None, store=None):
     if not display_id:
         return None
     try:
-        store = store or wallet_snapshot_store()
+        store = store or wallet_snapshot_store(allow_offline=True)
     except Exception:
         log_ignored_exception()
         store = None
@@ -5703,6 +6197,7 @@ def wallet_history_entry(
     record=None,
     bill=None,
     display_label=None,
+    finality_progress=None,
 ):
     clean_display_id = str(display_id).strip().lstrip("-")
     display_label = display_label or wallet_services.wallet_display_label(display_id)
@@ -5723,9 +6218,15 @@ def wallet_history_entry(
     if bill is not None or dict(record or {}).get("bill_blob") is not None:
         transfer_context = wallet_history_transfer_context(record=record, bill=bill)
     status_key = str(status).lower()
+    finality_progress = dict(finality_progress or {})
+    pending_incoming = (
+        str(direction).lower() != "sent"
+        and status_key in {"pending", "verified"}
+        and not finality_progress.get("spendable", status_key != "pending")
+    )
     if str(direction).lower() == "sent":
         tag = "sent"
-    elif status_key == "pending":
+    elif pending_incoming:
         tag = "pending"
     else:
         tag = "wallet"
@@ -5740,6 +6241,7 @@ def wallet_history_entry(
         "source": str(source),
         "value": value,
         "record": record_data,
+        "finality_progress": finality_progress,
         **transfer_context,
         "tag": tag,
     }
@@ -5877,7 +6379,7 @@ def wallet_history_metadata_entries(force_refresh=False):
     store = None
     if wallet_address:
         try:
-            store = wallet_store_for_address(wallet_address)
+            store = wallet_store_for_address(wallet_address, allow_offline=True)
             records = wallet_services.wallet_count_records(
                 wallet_address,
                 store=store,
@@ -5905,17 +6407,18 @@ def wallet_history_metadata_entries(force_refresh=False):
                 wallet_history_record_for_sequence(record_by_display_id, display_id, sequence)
                 or wallet_history_record_for_sequence(pending_by_display_id, display_id, sequence)
             )
+            record_status = str(dict(record or {}).get("status") or direction)
             items.append(
                 wallet_history_item(
                     display_id,
                     timestamp=timestamp,
                     direction=direction,
-                    status=direction,
+                    status=record_status,
                     sequence=sequence,
                     source="Wallet history",
                     record=record,
                     display_label=wallet_services.wallet_display_label(parts[0]),
-                    load_bill=False,
+                    load_bill=record_status.lower() in {"pending", "verified"},
                 )
             )
     except Exception:
@@ -5979,6 +6482,12 @@ def wallet_history_entry_from_item(item, store=None):
             item.get("sequence"),
             store=store,
         )
+    finality_progress = wallet_services.bill_finality_progress(
+        store=store,
+        bill=bill,
+        record=item.get("record"),
+        status=item.get("status"),
+    )
     return wallet_history_entry(
         item.get("display_id"),
         timestamp=item.get("timestamp"),
@@ -5989,7 +6498,14 @@ def wallet_history_entry_from_item(item, store=None):
         record=item.get("record"),
         bill=bill,
         display_label=item.get("display_label"),
+        finality_progress=finality_progress,
     )
+
+
+def wallet_history_item_visual_lines(item):
+    status = str((item or {}).get("status") or "").lower()
+    direction = str((item or {}).get("direction") or "").lower()
+    return 2 if direction != "sent" and status in {"pending", "verified"} else 1
 
 
 def wallet_history_page_entries(page_number, force_metadata=False):
@@ -6000,11 +6516,15 @@ def wallet_history_page_entries(page_number, force_metadata=False):
         page_number = max(1, int(page_number))
     except Exception:
         page_number = 1
-    start_index = (page_number - 1) * WALLET_HISTORY_ROWS_PER_PAGE
-    visible_items = items[start_index : start_index + WALLET_HISTORY_ROWS_PER_PAGE]
+    visible_items, total_pages = wallet_display.paginate_visual_rows(
+        items,
+        page_number,
+        line_limit=WALLET_HISTORY_ROWS_PER_PAGE,
+        row_line_count=wallet_history_item_visual_lines,
+    )
     entries = [wallet_history_entry_from_item(item, store=store) for item in visible_items]
     entries.sort(key=lambda entry: entry["timestamp"], reverse=True)
-    return entries, len(items)
+    return entries, total_pages
 
 
 def refresh_wallet_history_cache(force_metadata=True):
@@ -6019,12 +6539,41 @@ def refresh_wallet_history_cache(force_metadata=True):
         wallet_history_cached_total = 0
 
 
+def wallet_history_pending_detail(entry):
+    progress = dict(entry.get("finality_progress") or {})
+    if progress.get("divergent_witness"):
+        return "Transparency proofs disagree - Not spendable yet"
+    try:
+        required = int(progress.get("required_proofs") or 0)
+        proven = int(progress.get("proven_proofs") or 0)
+    except Exception:
+        required = 0
+        proven = 0
+    if required > 0:
+        proven = max(0, min(proven, required))
+        return f"Awaiting transparency proofs: {proven}/{required} - Not spendable yet"
+    return "Awaiting finality - Not spendable yet"
+
+
+def wallet_history_row_text(entry):
+    if entry.get("tag") == "pending":
+        return (
+            entry["display_label"]
+            + " - pending incoming\t"
+            + entry["timestamp_text"]
+            + "\n"
+            + wallet_history_pending_detail(entry)
+            + "\n"
+        )
+    return entry["display_label"] + '\t' + entry["timestamp_text"] + '\n'
+
+
 def wallet_history_detail_transfer_context(entry):
     display_id = str(entry.get("display_id") or "").strip()
     if not display_id:
         return {}
     try:
-        store = wallet_snapshot_store()
+        store = wallet_snapshot_store(allow_offline=True)
         if store is None:
             return {}
         bill = wallet_history_bill_for_sequence(
@@ -6079,6 +6628,8 @@ def wallet_history_detail_text(entry):
         details.append(f"To wallet: {to_wallet}")
     if transfer_note:
         details.append(f"From wallet: {transfer_note}")
+    if entry.get("tag") == "pending":
+        details.append("Finality: " + wallet_history_pending_detail(entry))
     if entry.get("transfer_timestamp"):
         details.append(
             "Transfer time: "
@@ -6298,10 +6849,7 @@ def page(refresh_entries=True, force_history_metadata=True):
             )
             return
         entries = wallet_history_cached_entries
-        num_of_bills = wallet_history_cached_total
-        total_pages = max(
-            1, (num_of_bills + WALLET_HISTORY_ROWS_PER_PAGE - 1) // WALLET_HISTORY_ROWS_PER_PAGE
-        )
+        total_pages = max(1, int(wallet_history_cached_total or 1))
         if page_wallet > total_pages:
             page_wallet = total_pages
         if page_wallet < 1:
@@ -6323,7 +6871,7 @@ def page(refresh_entries=True, force_history_metadata=True):
             row_start = receiver_history.index(INSERT)
             receiver_history.insert(
                 INSERT,
-                entry["display_label"] + '\t' + entry["timestamp_text"] + '\n',
+                wallet_history_row_text(entry),
                 ('history_row', row_tag),
             )
             row_end = receiver_history.index(INSERT)
@@ -6510,7 +7058,9 @@ def configure_bill_button(button, value, remaining, enabled, pending=0):
     remaining = max(remaining, 0)
     pending = max(pending, 0)
     button._bill_count_fg = BILL_COUNT_FG if enabled else IND_PENDING
-    image = BILL_IMAGES.get((value, enabled))
+    image_enabled = wallet_display.bill_button_uses_active_art(enabled, pending)
+    text_fg = BILL_COUNT_FG if enabled or pending > 0 else IND_PENDING
+    image = BILL_IMAGES.get((value, image_enabled))
     if image is None and BILL_IMAGES_LOADED:
         image = BILL_IMAGES.get((value, False))
     if image is not None:
@@ -6522,10 +7072,10 @@ def configure_bill_button(button, value, remaining, enabled, pending=0):
             cursor='hand2' if enabled else '',
             state='normal' if enabled else 'disabled',
             bg=IND_BLACK,
-            fg=BILL_COUNT_FG if enabled else IND_PENDING,
+            fg=text_fg,
             activeforeground=BILL_COUNT_HOVER_FG if enabled else IND_PENDING,
             activebackground=IND_BLACK,
-            disabledforeground=IND_PENDING if pending > 0 else BILL_COUNT_FG,
+            disabledforeground=BILL_COUNT_FG,
             pady=0,
         )
     else:
@@ -6541,9 +7091,9 @@ def configure_bill_button(button, value, remaining, enabled, pending=0):
             cursor='hand2' if enabled else '',
             state='normal' if enabled else 'disabled',
             bg=IND_GREEN if enabled else '#111111',
-            fg=IND_WHITE if enabled else IND_PENDING,
+            fg=IND_WHITE if enabled or pending > 0 else IND_PENDING,
             activeforeground=BILL_COUNT_HOVER_FG if enabled else IND_PENDING,
-            disabledforeground=IND_PENDING if pending > 0 else IND_MUTED,
+            disabledforeground=IND_WHITE if pending > 0 else IND_MUTED,
         )
 
 
@@ -6553,7 +7103,7 @@ bill_counts = {value: 0 for value in BILL_VALUES}
 selected_bill_counts = {value: 0 for value in BILL_VALUES}
 bill_buttons = {}
 wallet_balance_has_cached_snapshot = False
-wallet_sync_optimistic_import_keys = set()
+wallet_sync_optimistic_import_keys = {}
 
 
 def update_wallet_balance_text_from_counts():
@@ -6609,20 +7159,86 @@ def apply_wallet_sync_optimistic_import(progress_event):
         return
     sequence = str(progress_event.get("sequence") or "").strip()
     key = (display_id.lstrip("-"), sequence)
-    if key in wallet_sync_optimistic_import_keys:
-        return
+    previous_status = str(wallet_sync_optimistic_import_keys.get(key) or "").lower()
     status = str(progress_event.get("status") or "").strip().lower()
     if status == "pending":
+        if previous_status:
+            return
         pending_bill_counts[value] = pending_bill_counts.get(value, 0) + 1
     elif status in {"settled", "verified"}:
+        if previous_status in {"settled", "verified"}:
+            return
+        if previous_status == "pending":
+            pending_bill_counts[value] = max(0, pending_bill_counts.get(value, 0) - 1)
         bill_counts[value] = bill_counts.get(value, 0) + 1
     else:
         return
-    wallet_sync_optimistic_import_keys.add(key)
+    wallet_sync_optimistic_import_keys[key] = status
     wallet_balance_has_cached_snapshot = True
     stop_wallet_balance_loading()
     update_wallet_balance_text_from_counts()
     refresh_bill_buttons()
+
+
+def clear_wallet_sync_visual_updates():
+    global wallet_sync_visual_after_ids
+    for after_id in list(wallet_sync_visual_after_ids):
+        try:
+            root.after_cancel(after_id)
+        except Exception:
+            log_ignored_exception()
+    wallet_sync_visual_after_ids.clear()
+
+
+def schedule_wallet_sync_visual_update(delay_ms, callback):
+    def run():
+        wallet_sync_visual_after_ids.discard(after_id)
+        callback()
+
+    after_id = root.after(max(0, int(delay_ms)), run)
+    wallet_sync_visual_after_ids.add(after_id)
+    return after_id
+
+
+def schedule_wallet_sync_settled_activation(progress_event):
+    records = list(progress_event.get("records") or [])
+    if not records:
+        schedule_wallet_count_refresh()
+        schedule_wallet_view_refresh()
+        return 0
+    total_delay = 0
+    for index, record in enumerate(records):
+        delay_ms = index * WALLET_SYNC_SETTLED_STAGGER_MS
+        total_delay = delay_ms
+
+        def activate(record=record):
+            event = dict(record)
+            event["status"] = str(event.get("status") or "settled")
+            apply_wallet_sync_optimistic_import(event)
+
+        schedule_wallet_sync_visual_update(delay_ms, activate)
+
+    final_delay = total_delay + WALLET_SYNC_SETTLED_FINAL_DELAY_MS
+    schedule_wallet_sync_visual_update(final_delay, schedule_wallet_count_refresh)
+    schedule_wallet_sync_visual_update(final_delay, schedule_wallet_view_refresh)
+    return final_delay
+
+
+def wallet_sync_finish_visual_delay_ms(summary):
+    if not summary:
+        return 0
+    try:
+        added = int(summary.get("wallet_bills_added") or 0)
+    except Exception:
+        added = 0
+    try:
+        finalized = int(summary.get("finalized") or 0)
+    except Exception:
+        finalized = 0
+    if added <= 1 or finalized <= 0:
+        return 0
+    delay_ms = ((added - 1) * WALLET_SYNC_SETTLED_STAGGER_MS) + WALLET_SYNC_SETTLED_FINAL_DELAY_MS
+    return min(WALLET_SYNC_SETTLED_MAX_VISUAL_DELAY_MS, max(0, delay_ms))
 
 
 count_selected = False
@@ -6801,9 +7417,18 @@ wallet_sync_running = False
 wallet_sync_cancel_event = threading.Event()
 WALLET_SYNC_PROGRESS_DELAY_MS = 200
 WALLET_SYNC_HISTORY_REFRESH_INTERVAL_SECONDS = 10.0
+WALLET_SYNC_SETTLED_STAGGER_MS = 90
+WALLET_SYNC_SETTLED_FINAL_DELAY_MS = 300
+WALLET_SYNC_SETTLED_MAX_VISUAL_DELAY_MS = 1200
+WALLET_PENDING_RETRY_DELAY_MS = 15000
+WALLET_PENDING_RETRY_MAX_ATTEMPTS = 8
+wallet_pending_retry_after_id = None
+wallet_pending_retry_attempts = 0
+wallet_sync_visual_after_ids = set()
 WALLET_SYNC_PROGRESS_IMMEDIATE_EVENTS = {
     "cancelled",
     "wallet_started",
+    "transparency_wait",
     "local_messages",
     "peer_request_started",
     "peer_report",
@@ -6846,11 +7471,73 @@ def set_wallet_sync_button_paused():
     set_receiver_button_asset('pause_button', request_wallet_sync_cancel, 'Pause')
 
 
+def cancel_wallet_pending_retry(reset_attempts=False):
+    global wallet_pending_retry_after_id, wallet_pending_retry_attempts
+    after_id = wallet_pending_retry_after_id
+    wallet_pending_retry_after_id = None
+    if reset_attempts:
+        wallet_pending_retry_attempts = 0
+    if after_id is not None:
+        try:
+            root.after_cancel(after_id)
+        except Exception:
+            log_ignored_exception()
+
+
+def wallet_pending_retry_waiting():
+    return wallet_pending_retry_after_id is not None
+
+
+def schedule_wallet_pending_retry(sync_summary, errors):
+    global wallet_pending_retry_after_id, wallet_pending_retry_attempts
+    decision = wallet_display.pending_sync_retry_decision(
+        sync_summary,
+        errors=errors,
+        attempts=wallet_pending_retry_attempts,
+        max_attempts=WALLET_PENDING_RETRY_MAX_ATTEMPTS,
+    )
+    if not decision["schedule"]:
+        if int(decision.get("pending") or 0) <= 0:
+            wallet_pending_retry_attempts = 0
+        elif decision.get("exhausted"):
+            set_wallet_sync_status(
+                "Still waiting for transparency proofs. Press Sync to check again.",
+                IND_ORANGE,
+            )
+            return "exhausted"
+        return False
+
+    cancel_wallet_pending_retry(reset_attempts=False)
+    wallet_pending_retry_attempts = int(decision["next_attempt"])
+    delay_seconds = max(1, int(WALLET_PENDING_RETRY_DELAY_MS / 1000))
+    set_wallet_sync_button_paused()
+    set_wallet_sync_status(
+        f"Waiting for transparency proofs; checking again in {delay_seconds}s "
+        f"({wallet_pending_retry_attempts}/{WALLET_PENDING_RETRY_MAX_ATTEMPTS})",
+        IND_ORANGE,
+    )
+
+    def run_retry():
+        global wallet_pending_retry_after_id
+        wallet_pending_retry_after_id = None
+        start_wallet_sync(show_busy=False, show_errors=False)
+
+    wallet_pending_retry_after_id = root.after(WALLET_PENDING_RETRY_DELAY_MS, run_retry)
+    return "scheduled"
+
+
 def request_wallet_sync_cancel():
-    if not wallet_sync_running:
+    if not wallet_sync_running and not wallet_pending_retry_waiting():
         return
+    clear_wallet_sync_visual_updates()
+    cancel_wallet_pending_retry(reset_attempts=True)
     wallet_sync_cancel_event.set()
-    set_wallet_sync_status("Sync: pausing after current item...", IND_ORANGE)
+    if wallet_sync_running:
+        set_wallet_sync_status("Sync: pausing after current item...", IND_ORANGE)
+    else:
+        wallet_sync_cancel_event.clear()
+        set_wallet_sync_button_idle()
+        set_wallet_sync_status("Sync paused.", IND_ORANGE)
 
 
 def start_wallet_sync(show_busy=False, show_errors=False):
@@ -6885,11 +7572,14 @@ def start_wallet_sync(show_busy=False, show_errors=False):
         event = str(progress_event.get("event") or "")
         if event == "record_accepted":
             apply_wallet_sync_optimistic_import(progress_event)
-        if count_refresh_required or event in WALLET_SYNC_COUNT_REFRESH_EVENTS:
+        if event == "bills_added":
+            schedule_wallet_sync_settled_activation(progress_event)
+        elif count_refresh_required or event in WALLET_SYNC_COUNT_REFRESH_EVENTS:
             schedule_wallet_count_refresh()
         if refresh_required or event in WALLET_SYNC_HISTORY_REFRESH_EVENTS:
-            last_history_refresh_request = time.monotonic()
-            schedule_wallet_view_refresh()
+            if event != "bills_added":
+                last_history_refresh_request = time.monotonic()
+                schedule_wallet_view_refresh()
         elif count_refresh_required or event in WALLET_SYNC_COUNT_REFRESH_EVENTS:
             now = time.monotonic()
             if now - last_history_refresh_request >= WALLET_SYNC_HISTORY_REFRESH_INTERVAL_SECONDS:
@@ -6966,19 +7656,35 @@ def start_wallet_sync(show_busy=False, show_errors=False):
                 stop_requested=wallet_sync_cancel_event.is_set,
             )
         except Exception as exc:
-            errors.append(f"Wallet sync failed: {error_detail(exc)}")
+            if sender_node.wallet_sync_transparency_error_is_retryable(exc):
+                logger.info("wallet sync waiting for transparency mirrors: %s", exc)
+                sync_summary = {
+                    "status": "complete",
+                    "pending": 0,
+                    "transparency_waits": 1,
+                    "errors": [],
+                }
+            else:
+                errors.append(f"Wallet sync failed: {error_detail(exc)}")
 
-        def finish():
+        def finish_now():
             global wallet_sync_running
             wallet_sync_running = False
             wallet_sync_cancel_event.clear()
             cancel_pending_progress_update()
-            set_wallet_sync_button_idle()
             if show_busy:
                 root.config(cursor='arrow')
             flush_wallet_view_refresh()
             status_message, status_color = wallet_sync_summary_text(sync_summary, errors)
-            set_wallet_sync_status(status_message, status_color)
+            retry_state = False
+            if not errors and not (sync_summary and sync_summary.get("errors")):
+                retry_state = schedule_wallet_pending_retry(sync_summary, errors)
+            if retry_state == "scheduled":
+                pass
+            else:
+                set_wallet_sync_button_idle()
+                if retry_state != "exhausted":
+                    set_wallet_sync_status(status_message, status_color)
             if errors:
                 if show_errors:
                     show_error_popup('Sync failed', RuntimeError("\n".join(errors)))
@@ -6990,6 +7696,15 @@ def start_wallet_sync(show_busy=False, show_errors=False):
                     RuntimeError("\n".join(sync_summary["errors"])),
                 )
 
+        def finish():
+            visual_delay_ms = wallet_sync_finish_visual_delay_ms(sync_summary)
+            if visual_delay_ms > 0 and not errors:
+                set_wallet_sync_button_paused()
+                set_wallet_sync_status("Sync: activating imported bills...", IND_GREEN)
+                root.after(visual_delay_ms, finish_now)
+                return
+            finish_now()
+
         root.after(0, finish)
 
     threading.Thread(target=worker, daemon=True).start()
@@ -6997,6 +7712,8 @@ def start_wallet_sync(show_busy=False, show_errors=False):
 
 # Synchronize wallet-visible bills from local settlement and peer gossip.
 def receive_bills():
+    clear_wallet_sync_visual_updates()
+    cancel_wallet_pending_retry(reset_attempts=True)
     start_wallet_sync(show_busy=True, show_errors=True)
 
 
@@ -7007,6 +7724,10 @@ def start_wallet_background_sync():
 wallet_send_running = False
 wallet_send_popup = None
 wallet_send_popup_widgets = {}
+wallet_send_destination_address = ""
+wallet_signing_running = False
+wallet_signing_popup = None
+wallet_signing_popup_widgets = {}
 wallet_send_queue_monitor_after_id = None
 wallet_send_queue_monitor_expected_total = 0
 wallet_send_queue_monitor_sent_floor = 0
@@ -7020,6 +7741,9 @@ WALLET_SEND_POPUP_BADGE_BG = '#0d1713'
 WALLET_SEND_POPUP_WIDTH = 470
 WALLET_SEND_POPUP_BAR_WIDTH = 416
 WALLET_SEND_POPUP_BAR_HEIGHT = 10
+WALLET_SIGNING_POPUP_WIDTH = 430
+WALLET_SIGNING_POPUP_BAR_WIDTH = 376
+WALLET_SIGNING_POPUP_BAR_HEIGHT = 10
 
 
 def format_eta(seconds):
@@ -7041,6 +7765,26 @@ def format_eta(seconds):
 def wallet_send_bill_label(count):
     count = int(count or 0)
     return "bill" if count == 1 else "bills"
+
+
+def wallet_send_destination(recipient_address=None):
+    address = str(
+        wallet_send_destination_address if recipient_address is None else recipient_address
+    ).strip()
+    return address
+
+
+def wallet_send_destination_suffix(recipient_address=None):
+    address = wallet_send_destination(recipient_address)
+    return f" to {address}" if address else ""
+
+
+def wallet_send_dispatched_text(count, recipient_address=None):
+    count = int(count or 0)
+    return (
+        f"{count} {wallet_send_bill_label(count)} dispatched"
+        f"{wallet_send_destination_suffix(recipient_address)}"
+    )
 
 
 def wallet_send_phase_style(event, queued=0):
@@ -7121,6 +7865,15 @@ def update_wallet_send_progress_bar(widgets, ratio, color):
     canvas.itemconfig(fill, fill=color)
 
 
+def update_local_progress_bar(widgets, ratio, color, width, height):
+    canvas = widgets.get("progress_canvas")
+    fill = widgets.get("progress_fill")
+    if canvas is None or fill is None:
+        return
+    canvas.coords(fill, 0, 0, int(px(width) * ratio), px(height))
+    canvas.itemconfig(fill, fill=color)
+
+
 def close_wallet_send_popup():
     global wallet_send_popup, wallet_send_popup_widgets
     try:
@@ -7132,9 +7885,196 @@ def close_wallet_send_popup():
     wallet_send_popup_widgets = {}
 
 
-def show_wallet_send_progress_popup(total):
-    global wallet_send_popup, wallet_send_popup_widgets
+def close_wallet_signing_popup():
+    global wallet_signing_popup, wallet_signing_popup_widgets
+    try:
+        if wallet_signing_popup is not None and wallet_signing_popup.winfo_exists():
+            wallet_signing_popup.destroy()
+    except Exception:
+        log_ignored_exception()
+    wallet_signing_popup = None
+    wallet_signing_popup_widgets = {}
+
+
+def show_wallet_signing_progress_popup(total, recipient_address="", workers=None):
+    global wallet_signing_popup, wallet_signing_popup_widgets
     total = max(0, int(total or 0))
+    try:
+        if wallet_signing_popup is not None and wallet_signing_popup.winfo_exists():
+            raise_widget(wallet_signing_popup)
+            update_wallet_signing_progress(
+                0,
+                total,
+                "Preparing local signatures.",
+                recipient_address=recipient_address,
+                workers=workers,
+            )
+            return
+    except Exception:
+        wallet_signing_popup = None
+        wallet_signing_popup_widgets = {}
+
+    popup = Toplevel(root)
+    popup.title("Signing bills")
+    popup.configure(bg=IND_BLACK)
+    popup.resizable(False, False)
+    popup.protocol("WM_DELETE_WINDOW", lambda: None)
+
+    panel = Frame(
+        popup,
+        bg=WALLET_SEND_POPUP_PANEL_BG,
+        bd=0,
+        highlightthickness=1,
+        highlightbackground=NODE_CHIP_BORDER,
+        highlightcolor=NODE_CHIP_BORDER,
+    )
+    title = Label(
+        panel,
+        text="Signing bills",
+        font=app_font(26, 'bold'),
+        bg=WALLET_SEND_POPUP_PANEL_BG,
+        fg=IND_WHITE,
+        anchor='w',
+    )
+    subtitle = Label(
+        panel,
+        text=f"Preparing {total} {wallet_send_bill_label(total)} for local signing",
+        font=app_font(16),
+        bg=WALLET_SEND_POPUP_PANEL_BG,
+        fg=IND_MUTED,
+        anchor='w',
+        wraplength=px(380),
+    )
+    progress_canvas = Canvas(
+        panel,
+        width=px(WALLET_SIGNING_POPUP_BAR_WIDTH),
+        height=px(WALLET_SIGNING_POPUP_BAR_HEIGHT),
+        bg=WALLET_SEND_POPUP_TRACK_BG,
+        bd=0,
+        highlightthickness=0,
+    )
+    progress_fill = progress_canvas.create_rectangle(
+        0,
+        0,
+        0,
+        px(WALLET_SIGNING_POPUP_BAR_HEIGHT),
+        fill=IND_GREEN,
+        outline='',
+    )
+    progress = Label(
+        panel,
+        text=f"0 of {total} signed",
+        font=app_font(17),
+        bg=WALLET_SEND_POPUP_PANEL_BG,
+        fg=IND_GREEN,
+        anchor='w',
+    )
+    detail = Label(
+        panel,
+        text="Local signing is running off the UI thread.",
+        font=app_font(15),
+        bg=WALLET_SEND_POPUP_PANEL_BG,
+        fg=IND_MUTED,
+        anchor='w',
+        justify='left',
+        wraplength=px(380),
+    )
+    destination = Label(
+        panel,
+        text=(
+            f"Destination: {recipient_address}"
+            if str(recipient_address or "").strip()
+            else "Destination ready."
+        ),
+        font=app_font(14),
+        bg=WALLET_SEND_POPUP_PANEL_BG,
+        fg=IND_MUTED,
+        anchor='w',
+        justify='left',
+        wraplength=px(380),
+    )
+
+    panel.grid(row=0, column=0, padx=px(12), pady=px(12), sticky='nsew')
+    title.grid(row=0, column=0, padx=px(18), pady=(px(16), 0), sticky='ew')
+    subtitle.grid(row=1, column=0, padx=px(18), pady=(0, px(14)), sticky='ew')
+    progress_canvas.grid(row=2, column=0, padx=px(18), pady=(0, px(8)), sticky='w')
+    progress.grid(row=3, column=0, padx=px(18), pady=(0, px(6)), sticky='ew')
+    detail.grid(row=4, column=0, padx=px(18), pady=(0, px(4)), sticky='ew')
+    destination.grid(row=5, column=0, padx=px(18), pady=(0, px(16)), sticky='ew')
+    popup.grid_columnconfigure(0, minsize=px(WALLET_SIGNING_POPUP_WIDTH))
+    panel.grid_columnconfigure(0, weight=1)
+
+    wallet_signing_popup = popup
+    wallet_signing_popup_widgets = {
+        "subtitle": subtitle,
+        "progress_canvas": progress_canvas,
+        "progress_fill": progress_fill,
+        "progress": progress,
+        "detail": detail,
+        "destination": destination,
+    }
+    update_wallet_signing_progress(
+        0,
+        total,
+        "Preparing local signatures.",
+        recipient_address=recipient_address,
+        workers=workers,
+    )
+    try:
+        root.update_idletasks()
+        popup.lift()
+    except Exception:
+        log_ignored_exception()
+
+
+def update_wallet_signing_progress(
+    completed,
+    total,
+    message=None,
+    recipient_address=None,
+    workers=None,
+):
+    try:
+        popup = wallet_signing_popup
+        if popup is None or not popup.winfo_exists():
+            return
+        widgets = wallet_signing_popup_widgets
+        completed = max(0, int(completed or 0))
+        total = max(0, int(total or 0))
+        ratio = wallet_send_progress_ratio(completed, total)
+        worker_text = ""
+        if workers:
+            worker_count = max(1, int(workers or 1))
+            worker_text = f" with {worker_count} signing worker"
+            if worker_count != 1:
+                worker_text += "s"
+        widgets["subtitle"].config(
+            text=f"Signing {total} {wallet_send_bill_label(total)} locally{worker_text}"
+        )
+        update_local_progress_bar(
+            widgets,
+            ratio,
+            IND_GREEN,
+            WALLET_SIGNING_POPUP_BAR_WIDTH,
+            WALLET_SIGNING_POPUP_BAR_HEIGHT,
+        )
+        widgets["progress"].config(
+            text=f"{completed} of {total} signed",
+            fg=IND_GREEN,
+        )
+        widgets["detail"].config(text=str(message or "Signing bills locally."))
+        destination = str(recipient_address or "").strip()
+        if destination:
+            widgets["destination"].config(text=f"Destination: {destination}")
+    except Exception:
+        log_ignored_exception()
+
+
+def show_wallet_send_progress_popup(total, recipient_address=None):
+    global wallet_send_popup, wallet_send_popup_widgets, wallet_send_destination_address
+    total = max(0, int(total or 0))
+    if recipient_address is not None:
+        wallet_send_destination_address = str(recipient_address or "").strip()
     try:
         if wallet_send_popup is not None and wallet_send_popup.winfo_exists():
             raise_widget(wallet_send_popup)
@@ -7179,7 +8119,10 @@ def show_wallet_send_progress_popup(total):
     )
     subtitle = Label(
         panel,
-        text=f"Preparing {total} {wallet_send_bill_label(total)} for dispatch",
+        text=(
+            f"Preparing {total} {wallet_send_bill_label(total)} for dispatch"
+            f"{wallet_send_destination_suffix()}"
+        ),
         font=app_font(17),
         bg=WALLET_SEND_POPUP_PANEL_BG,
         fg=IND_MUTED,
@@ -7346,6 +8289,7 @@ def show_wallet_send_progress_popup(total):
             "rate_limited_peers": 0,
             "eta_seconds": 0,
             "message": "Preparing queued bills.",
+            "recipient_address": wallet_send_destination_address,
         }
     )
     try:
@@ -7368,6 +8312,13 @@ def set_wallet_send_busy(busy):
         log_ignored_exception()
 
 
+def set_wallet_signing_busy(busy):
+    global wallet_signing_running
+    wallet_signing_running = bool(busy)
+    if busy or not wallet_send_running:
+        set_wallet_send_busy(busy)
+
+
 def wallet_send_status_text(progress):
     event = str(progress.get("event") or "")
     total = int(progress.get("total") or 0)
@@ -7375,28 +8326,41 @@ def wallet_send_status_text(progress):
     queued = int(progress.get("queued_remaining") or 0)
     eta = format_eta(progress.get("eta_seconds"))
     message = str(progress.get("message") or "").strip()
+    destination = progress.get("recipient_address")
     if event == "complete":
-        return f"Send complete: {sent} {wallet_send_bill_label(sent)} dispatched.", IND_GREEN
+        return f"Send complete: {wallet_send_dispatched_text(sent, destination)}.", IND_GREEN
     if event == "cancelled":
         return f"Send cancelled: {queued} unsent {wallet_send_bill_label(queued)} restored.", IND_ORANGE
     if event == "cancelling":
         return f"Send: cancelling, {queued} queued.", IND_ORANGE
     if event == "queued":
-        return f"Send: {queued} {wallet_send_bill_label(queued)} queued for background dispatch.", IND_GREEN
+        return (
+            f"Send: {queued} {wallet_send_bill_label(queued)} queued for background dispatch"
+            f"{wallet_send_destination_suffix(destination)}.",
+            IND_GREEN,
+        )
     if event == "partial":
         return (
-            f"Send: {sent}/{total} dispatched, {queued} queued for retry.",
+            f"Send: {sent}/{total} dispatched{wallet_send_destination_suffix(destination)}, {queued} queued for retry.",
             IND_ORANGE,
         )
     if event == "rate_limited":
         return f"Send: peers busy, {queued} queued, retrying.", IND_ORANGE
     if event == "waiting":
-        return f"Send: handing off to peers, {sent}/{total} dispatched, ETA {eta}.", IND_MUTED
+        return (
+            f"Send: handing off to peers, {sent}/{total} dispatched"
+            f"{wallet_send_destination_suffix(destination)}, ETA {eta}.",
+            IND_MUTED,
+        )
     if event == "preparing":
         return "Send: preparing queued bills.", IND_MUTED
     if event == "error":
         return message or "Send issue while processing queued bills.", IND_ORANGE
-    return f"Send: dispatching {sent}/{total}, ETA {eta}.", IND_MUTED
+    return (
+        f"Send: dispatching {sent}/{total}"
+        f"{wallet_send_destination_suffix(destination)}, ETA {eta}.",
+        IND_MUTED,
+    )
 
 
 def update_wallet_send_progress(progress):
@@ -7413,15 +8377,21 @@ def update_wallet_send_progress(progress):
         queued = int(progress.get("queued_remaining") or 0)
         rate_limited_peers = int(progress.get("rate_limited_peers") or 0)
         event = str(progress.get("event") or "")
+        destination = progress.get("recipient_address")
         phase_text, phase_color = wallet_send_phase_style(event, queued)
         ratio = wallet_send_progress_ratio(sent, total)
         progress_color = IND_GREEN if event == "complete" else phase_color
         message = str(progress.get("message") or status_text)
+        if destination and sent and event in {"sending", "complete"}:
+            message = wallet_send_dispatched_text(sent, destination) + "."
 
         widgets["title"].config(text="Sending bills")
         widgets["phase"].config(text=phase_text, fg=phase_color)
         widgets["subtitle"].config(
-            text=f"{sent} of {total} {wallet_send_bill_label(total)} dispatched"
+            text=(
+                f"{sent} of {total} {wallet_send_bill_label(total)} dispatched"
+                f"{wallet_send_destination_suffix(destination) if sent else ''}"
+            )
         )
         update_wallet_send_progress_bar(widgets, ratio, progress_color)
         widgets["progress"].config(
@@ -7439,7 +8409,8 @@ def update_wallet_send_progress(progress):
             fg=IND_MUTED if event != "rate_limited" else IND_ORANGE,
         )
         if event == "complete":
-            widgets["subtitle"].config(text=f"Dispatched {sent} {wallet_send_bill_label(sent)}.")
+            widgets["subtitle"].config(text=wallet_send_dispatched_text(sent, destination) + ".")
+            message = wallet_send_dispatched_text(sent, destination) + "."
             widgets["cancel"].config(state=DISABLED, cursor='arrow')
         elif event == "cancelled":
             widgets["subtitle"].config(text="Send cancelled.")
@@ -7458,9 +8429,9 @@ def update_wallet_send_progress(progress):
         elif event == "partial":
             widgets["subtitle"].config(
                 text=(
-                    f"{sent} dispatched, {queued} queued for automatic retry"
+                    f"{wallet_send_dispatched_text(sent, destination)}, {queued} queued for automatic retry"
                     if queued
-                    else f"Dispatched {sent} {wallet_send_bill_label(sent)}."
+                    else wallet_send_dispatched_text(sent, destination) + "."
                 )
             )
         widgets["status"].config(text=message, fg=status_color)
@@ -7468,7 +8439,7 @@ def update_wallet_send_progress(progress):
         log_ignored_exception()
 
 
-def wallet_send_summary_text(summary, errors):
+def wallet_send_summary_text(summary, errors, recipient_address=None):
     if errors:
         return "Send failed: " + errors[0], IND_ORANGE
     if not summary:
@@ -7482,8 +8453,11 @@ def wallet_send_summary_text(summary, errors):
     if queued:
         return f"Send: {queued} {wallet_send_bill_label(queued)} queued for retry.", IND_ORANGE
     if rate_limited:
-        return f"Send complete: {sent} {wallet_send_bill_label(sent)} dispatched, slowed by busy peers.", IND_GREEN
-    return f"Send complete: {sent} {wallet_send_bill_label(sent)} dispatched.", IND_GREEN
+        return (
+            f"Send complete: {wallet_send_dispatched_text(sent, recipient_address)}, slowed by busy peers.",
+            IND_GREEN,
+        )
+    return f"Send complete: {wallet_send_dispatched_text(sent, recipient_address)}.", IND_GREEN
 
 
 def show_wallet_send_locally_queued(expected_total=0):
@@ -7503,6 +8477,7 @@ def show_wallet_send_locally_queued(expected_total=0):
             "rate_limited_peers": 0,
             "eta_seconds": 0,
             "message": f"Queued {queued} {wallet_send_bill_label(queued)} for paced dispatch.",
+            "recipient_address": wallet_send_destination_address,
         }
     )
 
@@ -7631,6 +8606,7 @@ def emit_wallet_send_cancelled(summary):
             "rate_limited_peers": 0,
             "eta_seconds": 0,
             "message": f"Cancelled send: restored {restored} unsent {wallet_send_bill_label(restored)}.",
+            "recipient_address": wallet_send_destination_address,
         }
     )
 
@@ -7650,6 +8626,7 @@ def cancel_wallet_send_button():
             "rate_limited_peers": 0,
             "eta_seconds": 0,
             "message": "Cancelling send before the next queued bill is dispatched.",
+            "recipient_address": wallet_send_destination_address,
         }
     )
     if not wallet_send_running:
@@ -7724,7 +8701,8 @@ def wallet_send_queue_monitor_tick():
                 "sent": sent,
                 "queued_remaining": 0,
                 "eta_seconds": 0,
-                "message": f"Send complete: {sent} bill(s) dispatched.",
+                "message": f"Send complete: {wallet_send_dispatched_text(sent)}.",
+                "recipient_address": wallet_send_destination_address,
             }
         )
         refresh_wallet_view()
@@ -7739,18 +8717,26 @@ def wallet_send_queue_monitor_tick():
             "queued_remaining": queued,
             "eta_seconds": 0,
             "message": f"Retrying automatically: {queued} queued.",
+            "recipient_address": wallet_send_destination_address,
         }
     )
     if wallet_send_queue_monitor_ticks_remaining > 0:
         schedule_wallet_send_queue_monitor_tick()
 
 
-def start_wallet_send_worker(expected_total=0, show_popup=True, keep_ui_busy=True):
-    global wallet_send_running
+def start_wallet_send_worker(
+    expected_total=0,
+    show_popup=True,
+    keep_ui_busy=True,
+    recipient_address=None,
+):
+    global wallet_send_running, wallet_send_destination_address
+    if recipient_address is not None:
+        wallet_send_destination_address = str(recipient_address or "").strip()
     expected_total = max(int(expected_total or 0), len(runtime_json.transaction_files()))
     cancel_wallet_send_queue_monitor()
     if show_popup:
-        show_wallet_send_progress_popup(expected_total)
+        show_wallet_send_progress_popup(expected_total, recipient_address=wallet_send_destination_address)
     if wallet_send_running:
         set_wallet_sync_status(
             f"Send: {expected_total} bill(s) queued; sender already running.",
@@ -7769,7 +8755,10 @@ def start_wallet_send_worker(expected_total=0, show_popup=True, keep_ui_busy=Tru
         set_wallet_send_busy(False)
 
     def progress(progress_event):
-        root.after(0, lambda event=progress_event: update_wallet_send_progress(event))
+        event = dict(progress_event or {})
+        if wallet_send_destination_address and not event.get("recipient_address"):
+            event["recipient_address"] = wallet_send_destination_address
+        root.after(0, lambda event=event: update_wallet_send_progress(event))
 
     def worker():
         errors = []
@@ -7803,10 +8792,15 @@ def start_wallet_send_worker(expected_total=0, show_popup=True, keep_ui_busy=Tru
                     expected_total=max(expected_total, live_queued),
                     show_popup=False,
                     keep_ui_busy=False,
+                    recipient_address=wallet_send_destination_address,
                 )
                 return
             refresh_wallet_view()
-            status_message, status_color = wallet_send_summary_text(summary, errors)
+            status_message, status_color = wallet_send_summary_text(
+                summary,
+                errors,
+                recipient_address=wallet_send_destination_address,
+            )
             set_wallet_sync_status(status_message, status_color)
             if not errors and summary and int(summary.get("queued_remaining") or 0) > 0:
                 start_wallet_send_queue_monitor(
@@ -7901,13 +8895,6 @@ def submit_sign_in_from_keyboard(_event=None):
     return 'break'
 
 
-def short_wallet_address(address):
-    address = normalized_wallet_address(address)
-    if len(address) <= 4:
-        return address
-    return address[:4] + '...'
-
-
 def wallet_display_name_for_address(address):
     address = normalized_wallet_address(address)
     if not address:
@@ -7932,10 +8919,7 @@ def sign_in_wallet_label(address):
     wallet_name = wallet_display_name_for_address(address)
     if not wallet_name:
         return address
-    name_column_width = 24
-    if len(wallet_name) > name_column_width:
-        wallet_name = wallet_name[: name_column_width - 3].rstrip() + '...'
-    return f'{wallet_name:<{name_column_width}} | {short_wallet_address(address)}'
+    return wallet_name
 
 
 class SignInWalletDropdown(Frame):
@@ -8554,34 +9538,59 @@ button_generate_wallet = Button(
 
 
 # Select wallet bills by denomination and queue signed sends to the receiver.
-def send_bills(serial_num_start, recipient_address=None):
+def send_bills(serial_num_start, recipient_address=None, wallet_path=None, progress_callback=None):
     errors = []
     sent_count = 0
     requested = list(serial_num_start)
     recipient_address = recipient_address or receiver.get()
-    wallet_path = active_wallet_path()
+    wallet_path = wallet_path or active_wallet_path()
     if wallet_path is None:
         return 0, ["Sign in to a wallet before sending bills."]
     of = runtime_json.read_decrypted_wallet_lines(wallet_path)
     wallet_address = of[0].strip() if of else ""
-    store = wallet_store_for_address(wallet_address)
+    try:
+        store = wallet_store_for_address(wallet_address)
+    except Exception as exc:
+        if wallet_display.is_transparency_temporarily_unavailable(exc):
+            raise wallet_offline_action_error("send bills") from exc
+        raise
     updated = list(of)
     wallet_bill_lines = []
     wallet_line_indices = []
     wallet_line_prefixes = []
+    wallet_display_ids = []
+    for wb in of:
+        if wallet_services.wallet_line_is_sent(wb):
+            continue
+        display_id = wallet_services.wallet_line_display_id(wb)
+        if display_id:
+            wallet_display_ids.append(display_id)
+    spendable_display_ids = wallet_services.spendable_wallet_display_ids(
+        wallet_address,
+        wallet_display_ids,
+        store=store,
+    )
     for index, wb in enumerate(of):
-        bill_prefix = wb.split('x')[0] + 'x'
+        if wallet_services.wallet_line_is_sent(wb):
+            continue
+        display_id = wallet_services.wallet_line_display_id(wb)
+        if not display_id or display_id not in spendable_display_ids:
+            continue
+        bill_prefix = display_id.split('x')[0] + 'x'
         if bill_prefix in requested:
             requested.remove(bill_prefix)
             wallet_bill_lines.append(wb)
             wallet_line_indices.append(index)
             wallet_line_prefixes.append(bill_prefix)
+    if requested:
+        return 0, ["Not enough settled bills for: " + ", ".join(requested)]
     if wallet_bill_lines:
         batch_results = wallet_services.spend_wallet_bills_batch(
             of,
             wallet_bill_lines,
             recipient_address,
             store=store,
+            progress_callback=progress_callback,
         )
         for line_index, bill_prefix, result in zip(
             wallet_line_indices,
@@ -8602,8 +9611,6 @@ def send_bills(serial_num_start, recipient_address=None):
             except Exception as exc:
                 errors.append(f"{display_id or bill_prefix}: {error_detail(exc)}")
     runtime_json.write_decrypted_wallet_lines(wallet_path, updated)
-    if requested:
-        errors.append("Not enough settled bills for: " + ", ".join(requested))
     return sent_count, errors
 
 
@@ -8621,28 +9628,75 @@ def confirm_transaction(recipient_address):
     starts_with = selected_bill_prefixes()
     if not starts_with:
         raise ValueError("Select at least one bill before sending.")
-    show_wallet_send_progress_popup(pending_before + len(starts_with))
-    set_wallet_send_busy(True)
-    sent_count, errors = send_bills(starts_with, recipient_address)
-    if sent_count or pending_before:
-        start_wallet_send_worker(
-            expected_total=pending_before + sent_count,
-            keep_ui_busy=False,
+    wallet_path = active_wallet_path()
+    if wallet_path is None:
+        raise ValueError("Sign in to a wallet before sending bills.")
+    start_wallet_signing_worker(starts_with, recipient_address, wallet_path, pending_before)
+
+
+def start_wallet_signing_worker(starts_with, recipient_address, wallet_path, pending_before=0):
+    if wallet_signing_running:
+        raise RuntimeError("Local wallet signing is already running.")
+    total = len(starts_with)
+    workers = wallet_services.wallet_sign_worker_count(total)
+    show_wallet_signing_progress_popup(total, recipient_address, workers=workers)
+    set_wallet_signing_busy(True)
+    set_wallet_sync_status(
+        f"Send: signing {total} {wallet_send_bill_label(total)} locally.",
+        IND_MUTED,
+    )
+
+    def progress(completed, progress_total, message):
+        root.after(
+            0,
+            lambda completed=completed, progress_total=progress_total, message=message: (
+                update_wallet_signing_progress(
+                    completed,
+                    progress_total,
+                    message,
+                    recipient_address=recipient_address,
+                    workers=workers,
+                )
+            ),
         )
-    if errors:
-        if not sent_count and not pending_before:
-            update_wallet_send_progress(
-                {
-                    "event": "error",
-                    "total": pending_before + len(starts_with),
-                    "sent": 0,
-                    "queued_remaining": len(runtime_json.transaction_files()),
-                    "eta_seconds": 0,
-                    "message": "No bills were queued for send.",
-                }
+
+    def worker():
+        sent_count = 0
+        errors = []
+        try:
+            sent_count, errors = send_bills(
+                starts_with,
+                recipient_address,
+                wallet_path=wallet_path,
+                progress_callback=progress,
             )
-        raise RuntimeError("\n".join(errors))
-    receiver.delete(0, END)
+        except Exception as exc:
+            errors = [error_detail(exc)]
+
+        def finish():
+            set_wallet_signing_busy(False)
+            close_wallet_signing_popup()
+            if sent_count:
+                clear_wallet_record_cache()
+            if sent_count or pending_before:
+                start_wallet_send_worker(
+                    expected_total=pending_before + sent_count,
+                    keep_ui_busy=False,
+                    recipient_address=recipient_address,
+                )
+            if errors:
+                set_wallet_sync_status("Send failed during local signing.", IND_ORANGE)
+                show_error_popup('Send failed', RuntimeError("\n".join(errors)))
+            else:
+                receiver.delete(0, END)
+            if not wallet_send_running and not wallet_signing_running:
+                root.config(cursor='arrow')
+                send.config(cursor='hand2')
+            refresh_wallet_view()
+
+        root.after(0, finish)
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 def send_button():
@@ -8660,7 +9714,7 @@ def send_button():
         show_error_popup('Send failed', exc)
     finally:
         close_amount()
-        if not wallet_send_running:
+        if not wallet_send_running and not wallet_signing_running:
             root.config(cursor='arrow')
             send.config(cursor='hand2')
         refresh_wallet_view()
@@ -8908,7 +9962,7 @@ def claim_bills():
             if not claimed:
                 errors.append(f"{preview}: could not be claimed")
         if claim_count:
-            start_wallet_send_worker(expected_total=claim_count)
+            start_wallet_send_worker(expected_total=claim_count, recipient_address="")
             root.after(2000, receive_bills)
         if errors:
             raise RuntimeError("\n".join(errors))
@@ -9969,6 +11023,12 @@ def on_closing():
     errors = []
     run_on_startup = 'NO'
     run_in_background = 'NO'
+    if wallet_signing_running:
+        show_error_popup(
+            'Signing in progress',
+            RuntimeError('Wait for local bill signing to finish before closing the wallet.'),
+        )
+        return
     try:
         cancel_wallet_send_queue_for_shutdown()
     except Exception as exc:

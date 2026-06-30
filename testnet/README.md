@@ -7,6 +7,8 @@ This folder contains public testnet metadata. The active testnet path is native 
 - Network: `testnet`
 - TCP node port: `18888`
 - Metadata: `testnet/testnet.json`
+- DNS seeds: `testnet-seed.international-dollar.com`, `testnet-seed.internetofthebots.com`
+- Explicit peers: `testnet-seed.international-dollar.com`, `testnet-seed.internetofthebots.com`, `51.83.199.25`, `108.61.23.82`
 
 ## Run
 
@@ -34,8 +36,6 @@ bootstrap files first and review them:
 ```bash
 python tools/testnet_seed_bootstrap.py \
   --public-host <this-vps-ip-or-dns> \
-  --peer testnet-seed.international-dollar.com \
-  --peer testnet-seed.internetofthebots.com \
   --canary-ref 1x1782156155 \
   --canary-ref 2x1782156156
 ```

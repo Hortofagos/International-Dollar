@@ -80,8 +80,6 @@ use the seed bootstrap renderer from the synced repo:
 ```bash
 python tools/testnet_seed_bootstrap.py \
   --public-host <this-vps-ip-or-dns> \
-  --peer testnet-seed.international-dollar.com \
-  --peer testnet-seed.internetofthebots.com \
   --canary-ref 1x1782156155 \
   --canary-ref 2x1782156156
 ```
@@ -111,6 +109,8 @@ $env:IND_NODE_PORT='18888'
 .\.venv\Scripts\python.exe tools\testnet_convergence_monitor.py --json --strict `
   --peer testnet-seed.international-dollar.com `
   --peer testnet-seed.internetofthebots.com `
+  --peer 51.83.199.25 `
+  --peer 108.61.23.82 `
   --peer <new-seed-ip-or-dns> `
   --ref 1x1782156155 `
   --ref 2x1782156156

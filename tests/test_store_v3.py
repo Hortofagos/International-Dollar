@@ -739,6 +739,52 @@ def test_wallet_bill_sync_response_does_not_skip_newer_sequence_in_known_range(
     ]
 
 
+def test_wallet_bill_sync_response_includes_pending_records(tmp_path, monkeypatch):
+    store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
+    owner_address, _private_key, _public_key = keys_v3.generate_keypair(b"\x49" * 32)
+    _insert_wallet_sync_bill_row(
+        store,
+        owner_address,
+        display_id="20x100",
+        updated_at=300,
+        status="pending",
+    )
+    _insert_wallet_sync_bill_row(
+        store,
+        owner_address,
+        display_id="20x101",
+        updated_at=200,
+        status="verified",
+    )
+
+    monkeypatch.setattr(store_module, "_bill_v3_record_has_allowed_value", lambda _record: True)
+    monkeypatch.setattr(
+        INDLocalStore,
+        "_wallet_sync_record_from_bill_row_v3",
+        lambda self, row: {
+            "type": "ind.wallet_bill_sync_record.v3",
+            "token_id": row["token_id"],
+            "display_id": row["display_id"],
+            "sequence": int(row["sequence"]),
+            "status": row["status"],
+            "updated_at": int(row["updated_at"]),
+        },
+    )
+
+    response = store.wallet_bill_sync_response(
+        {
+            "address": owner_address,
+            "direction": "reconcile",
+            "limit": 10,
+        }
+    )
+
+    assert [(record["display_id"], record["status"]) for record in response["records"]] == [
+        ("20x100", "pending"),
+        ("20x101", "verified"),
+    ]
+
+
 def test_invalid_bills_v3_are_cleaned_from_cache_rows(tmp_path):
     fixture = native_v3_archive_fixture(tmp_path)
     store = INDLocalStore(db_path=tmp_path / "wallet-v3.db", require_transparency=False)
@@ -1383,6 +1429,85 @@ def test_v3_finality_requires_operator_witness_quorum(tmp_path):
     )
 
     assert finalized == [fixture["token_id"]]
+
+
+def test_v3_finality_progress_counts_only_proven_operator_proofs(tmp_path):
+    fixture, store, transferred = _pending_v3_fixture(tmp_path)
+    transfer = transferred["recent_transfers"][-1]
+    transfer_hash_value = protocol_v3.transfer_hash(transfer)
+
+    class Operator:
+        def __init__(self, public_key):
+            self.operator_public_key = public_key
+
+    store.transparency_submitter = log_client.MultiTransparencySubmitter(
+        [Operator("operator-a-key"), Operator("operator-b-key")]
+    )
+    _mark_transfer_log_proven(store, transferred, fixture["bundle"], "operator-a-key")
+    with store._connect() as conn:
+        store._record_v3_transfer_log_status_conn(
+            conn,
+            transfer,
+            operator_identity={
+                "log_id": log_client.log_id_from_public_key("operator-b-key"),
+                "operator_public_key": "operator-b-key",
+            },
+            status="log_pending",
+            response={
+                "entry_hash": transfer_hash_value,
+                "leaf_index": 1,
+                "tree_size": 2,
+            },
+        )
+
+    progress = store.bill_v3_finality_progress(transferred, status="pending")
+
+    assert progress["required_proofs"] == 2
+    assert progress["proven_proofs"] == 1
+    assert progress["pending_proofs"] == 1
+    assert progress["awaiting_transparency"] is True
+    assert progress["spendable"] is False
+
+    _mark_transfer_log_proven(store, transferred, fixture["bundle"], "operator-b-key")
+    progress = store.bill_v3_finality_progress(transferred, status="pending")
+    settled_progress = store.bill_v3_finality_progress(transferred, status="settled")
+
+    assert progress["proven_proofs"] == 2
+    assert progress["awaiting_transparency"] is False
+    assert progress["spendable"] is False
+    assert settled_progress["spendable"] is True
+
+
+def test_v3_finality_progress_marks_divergent_witness_nonspendable(tmp_path):
+    fixture, store, transferred = _pending_v3_fixture(tmp_path)
+    store.operator_finality_min_proofs = 1
+    transfer = transferred["recent_transfers"][-1]
+    divergent = copy.deepcopy(transfer)
+    divergent["recipient_address"] = fixture["bob_address"]
+
+    _mark_transfer_log_proven(store, transferred, fixture["bundle"], "operator-a-key")
+    with store._connect() as conn:
+        store._record_v3_transfer_log_status_conn(
+            conn,
+            divergent,
+            operator_identity={
+                "log_id": log_client.log_id_from_public_key("operator-b-key"),
+                "operator_public_key": "operator-b-key",
+            },
+            status="log_proven",
+            response={
+                "entry_hash": protocol_v3.transfer_hash(divergent),
+                "leaf_index": 1,
+                "tree_size": 2,
+            },
+        )
+
+    progress = store.bill_v3_finality_progress(transferred, status="settled")
+
+    assert progress["required_proofs"] == 1
+    assert progress["proven_proofs"] == 1
+    assert progress["divergent_witness"] is True
+    assert progress["spendable"] is False
 
 
 def test_strict_v3_finality_allows_threshold_below_operator_count_when_within_fanout(

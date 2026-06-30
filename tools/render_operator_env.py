@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_OPERATOR_SET = ROOT_DIR / "testnet" / "operator_set.testnet.json"
+DEFAULT_MAINNET_OPERATOR_SET = ROOT_DIR / "files" / "mainnet" / "operator_set.mainnet.json"
 DEFAULT_OPERATOR_APPEND_FANOUT = 5
 DEFAULT_OPERATOR_CORE_DOMAINS = ["international-dollar.com", "internetofthebots.com"]
 DEFAULT_NODE_PORTS = {"mainnet": 8888, "testnet": 18888}

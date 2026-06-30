@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from multiprocessing import Manager, Process
 
 from . import env as ind_env
+from . import memory_pressure
 from . import runtime as runtime_json
 from . import sender_node
 from . import settings as ind_settings
@@ -1240,6 +1241,7 @@ def _queue_async_gossip_ingest(peer_ip, prepared, seen_gossip, store, gossip_poo
         seen_gossip.add(key)
 
     def ingest():
+        nonlocal prepared
         try:
             _ingest_prepared_gossip_with_transient_retry(
                 peer_ip,
@@ -1250,7 +1252,9 @@ def _queue_async_gossip_ingest(peer_ip, prepared, seen_gossip, store, gossip_poo
                 penalties,
             )
         finally:
+            prepared = None
             _ASYNC_GOSSIP_INGEST_SLOTS.release()
+            memory_pressure.maybe_collect_after_pressure("gossip_ingest")
 
     threading.Thread(target=ingest, daemon=True).start()
     return True
@@ -1327,7 +1331,9 @@ class GossipIngestQueue:
                     self.penalties,
                 )
             finally:
+                prepared = None
                 self.queues[lane].task_done()
+                memory_pressure.maybe_collect_after_pressure("gossip_ingest")
 
 
 def _incoming_gossip_result(
@@ -1895,6 +1901,9 @@ def node_protocol(rfb, rfb_response, gossip_pool, _unused_bill_pool):
 
     def handle_client(conn, addr):
         peer_ip = _normalized_ip(addr[0])
+        request = ""
+        msg = ""
+        response = ""
         try:
             conn.settimeout(NODE_REQUEST_TIMEOUT_SECONDS)
             try:
@@ -2063,10 +2072,14 @@ def node_protocol(rfb, rfb_response, gossip_pool, _unused_bill_pool):
         except Exception as exc:
             logger.debug("peer handler failed for %s: %s", peer_ip, exc, exc_info=True)
         finally:
+            request = None
+            msg = None
+            response = None
             try:
                 conn.close()
             finally:
                 active_connections.release(peer_ip)
+            memory_pressure.maybe_collect_after_pressure("node_request")
 
     time.sleep(3)
     addr = ("", node_port())
@@ -2134,6 +2147,7 @@ def database(_rfb, _rfb_response, gossip_pool):
             gossip_pool.trim(MAX_GOSSIP_POOL_MESSAGES)
         elif len(gossip_pool) > MAX_GOSSIP_POOL_MESSAGES:
             del gossip_pool[: len(gossip_pool) - MAX_GOSSIP_POOL_MESSAGES]
+        memory_pressure.maybe_collect_after_pressure("local_settlement")
 
 
 # Compatibility stub for the old global bill database flow.

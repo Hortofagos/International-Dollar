@@ -996,13 +996,14 @@ def _validate_base_state(state):
     return state
 
 
-# Verify TransferV3 objects extending an already-proven state.
-def verify_transfer_sequence_from_state(
+# Replay TransferV3 objects extending an already-proven or already-cached state.
+def _replay_transfer_sequence_from_state(
     token_id,
     state,
     transfers,
     network_id=DEFAULT_NETWORK_ID,
     now=None,
+    verify_signatures=True,
 ):
     if not isinstance(transfers, list):
         raise ProtocolV3Error("TransferV3 sequence must be a list")
@@ -1031,7 +1032,12 @@ def verify_transfer_sequence_from_state(
             day_count = 1
         if day_count > ind_token.MAX_TRANSFERS_PER_BILL_PER_DAY:
             raise ProtocolV3Error("BillV3 exceeds daily transfer limit")
-        verify_transfer_signature(transfer)
+        if verify_signatures:
+            verify_transfer_signature(transfer)
+        elif not keys_v3.public_key_matches_address(
+            transfer["sender_public_key"], transfer["sender_address"]
+        ):
+            raise ProtocolV3Error("TransferV3 sender key does not match sender address")
         state.update(
             {
                 "sequence": expected_sequence,
@@ -1045,6 +1051,24 @@ def verify_transfer_sequence_from_state(
     return state
 
 
+# Verify TransferV3 objects extending an already-proven state.
+def verify_transfer_sequence_from_state(
+    token_id,
+    state,
+    transfers,
+    network_id=DEFAULT_NETWORK_ID,
+    now=None,
+):
+    return _replay_transfer_sequence_from_state(
+        token_id,
+        state,
+        transfers,
+        network_id=network_id,
+        now=now,
+        verify_signatures=True,
+    )
+
+
 # Create one signed TransferV3 extending a proven state.
 def create_transfer_from_state(
     token_id,
@@ -1055,6 +1079,7 @@ def create_transfer_from_state(
     metadata=None,
     timestamp=None,
     network_id=DEFAULT_NETWORK_ID,
+    verify_signature=True,
 ):
     state = copy.deepcopy(_validate_base_state(state))
     sender_address = keys_v3.address_from_public_key(sender_public_key)
@@ -1080,10 +1105,17 @@ def create_transfer_from_state(
         "signature": "",
     }
     _validate_transfer_shape(transfer_unsigned, int(network_id), require_signature=False)
-    signature = keys_v3.sign(sender_private_key, _transfer_signing_preimage(transfer_unsigned))
+    signing_preimage = _transfer_signing_preimage(transfer_unsigned)
+    if verify_signature:
+        signature = keys_v3.sign(sender_private_key, signing_preimage)
+    else:
+        signature = keys_v3.sign_unverified(sender_private_key, signing_preimage)
     transfer_signed = copy.deepcopy(transfer_unsigned)
     transfer_signed["signature"] = signature.hex()
-    verify_transfer_signature(transfer_signed)
+    if verify_signature:
+        verify_transfer_signature(transfer_signed)
+    else:
+        _validate_transfer_shape(transfer_signed, int(network_id), require_signature=True)
     return transfer_signed
 
 
@@ -1358,6 +1390,48 @@ def _verify_bill_state(
     )
 
 
+# Derive the current state from a locally cached BillV3 tip without rechecking proofs.
+def cached_bill_state(
+    bill,
+    expected_network_id=DEFAULT_NETWORK_ID,
+    now=None,
+):
+    bill_obj = decode_bill(bill) if isinstance(bill, bytes) else bill
+    _require_exact_fields(bill_obj, BILL_FIELDS, "BillV3")
+    if bill_obj["type"] != BILL_TYPE:
+        raise ProtocolV3Error("malformed BillV3")
+    if _require_int(bill_obj["version"], "BillV3 version") != VERSION:
+        raise ProtocolV3Error("unsupported BillV3 version")
+    network_id = _require_int(bill_obj["network_id"], "BillV3 network id", minimum=0)
+    if expected_network_id is not None and network_id != int(expected_network_id):
+        raise ProtocolV3Error("BillV3 network id mismatch")
+    _validate_genesis_ref(bill_obj["genesis_ref"], network_id)
+    _validate_checkpoint_core(bill_obj["checkpoint_core"], network_id)
+    bill_value = _require_bill_value(bill_obj["value"], "BillV3 value")
+    if bill_value != int(bill_obj["checkpoint_core"]["value"]):
+        raise ProtocolV3Error("BillV3 value mismatch")
+    _validate_display_id_issue_index(
+        bill_obj["checkpoint_core"]["display_id"],
+        bill_value,
+        bill_obj["genesis_ref"]["issue_index"],
+        "BillV3 display id",
+    )
+    if bill_obj["token_id"] != bill_obj["checkpoint_core"]["token_id"]:
+        raise ProtocolV3Error("BillV3 token id mismatch")
+    if bill_obj["genesis_ref"]["genesis_hash"] != bill_obj["checkpoint_core"]["genesis_hash"]:
+        raise ProtocolV3Error("BillV3 genesis hash mismatch")
+    if not isinstance(bill_obj["recent_transfers"], list):
+        raise ProtocolV3Error("BillV3 recent transfers must be a list")
+    return _replay_transfer_sequence_from_state(
+        bill_obj["token_id"],
+        _initial_state_from_checkpoint_core(bill_obj["checkpoint_core"]),
+        bill_obj["recent_transfers"],
+        network_id=network_id,
+        now=now,
+        verify_signatures=False,
+    )
+
+
 # Verify a thin BillV3 and return the proven token state.
 def verify_bill(
     bill,
@@ -1443,6 +1517,45 @@ def create_transfer(
         archive_segment_resolver=archive_segment_resolver,
     )
     return new_bill
+
+
+# Append one TransferV3 to a locally cached BillV3 tip without rechecking proofs.
+def create_transfer_from_cached_bill(
+    bill,
+    sender_private_key,
+    sender_public_key,
+    recipient_address,
+    metadata=None,
+    timestamp=None,
+    expected_network_id=DEFAULT_NETWORK_ID,
+    cached_state=None,
+):
+    bill_obj = decode_bill(bill) if isinstance(bill, bytes) else bill
+    state = cached_state or cached_bill_state(
+        bill_obj,
+        expected_network_id=expected_network_id,
+    )
+    transfer = create_transfer_from_state(
+        bill_obj["token_id"],
+        state,
+        sender_private_key,
+        sender_public_key,
+        recipient_address,
+        metadata=metadata,
+        timestamp=timestamp,
+        network_id=bill_obj["network_id"],
+        verify_signature=False,
+    )
+    new_bill = copy.deepcopy(bill_obj)
+    new_bill["recent_transfers"] = [*new_bill["recent_transfers"], transfer]
+    new_state = _replay_transfer_sequence_from_state(
+        bill_obj["token_id"],
+        state,
+        [transfer],
+        network_id=bill_obj["network_id"],
+        verify_signatures=False,
+    )
+    return new_bill, _token_state_from_v3_state(bill_obj["token_id"], new_state)
 
 
 # Build an embedded resolver for archive segments bundled beside a gossip message.

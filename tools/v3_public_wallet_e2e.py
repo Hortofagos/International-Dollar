@@ -35,10 +35,7 @@ from ind.store import INDLocalStore
 from tools import testnet_peers, testnet_report
 
 
-DEFAULT_PEERS = [
-    "testnet-seed.international-dollar.com",
-    "testnet-seed.internetofthebots.com",
-]
+DEFAULT_PEERS = testnet_peers.parse_peer_args(None)
 ACCEPTED_FINAL_STATUSES = {"settled", "verified"}
 TRANSFER_BROADCAST_TIMEOUT_SECONDS = 60.0
 

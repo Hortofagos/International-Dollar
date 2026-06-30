@@ -15,6 +15,7 @@ from pymerkle.core import InvalidChallenge
 
 from . import env as ind_env
 from . import keys_v3
+from . import memory_pressure
 from . import operator_storage
 from . import protocol_policy
 from . import token as ind_token
@@ -138,9 +139,10 @@ class AppendValidationBackpressure(LogServerError):
 
 # Represents one append validation request waiting for a worker result.
 class AppendValidationJob:
-    def __init__(self, peer_ip, payload, operation):
+    def __init__(self, peer_ip, payload=None, operation=None):
+        if operation is None:
+            operation = payload
         self.peer_ip = str(peer_ip or "")
-        self.payload = payload
         self.operation = operation
         self.event = threading.Event()
         self.result = None
@@ -193,7 +195,7 @@ class AppendValidationQueue:
         admission_timeout=None,
         result_timeout=None,
     ):
-        job = AppendValidationJob(peer_ip, payload, operation)
+        job = AppendValidationJob(peer_ip, operation)
         admission_timeout = (
             APPEND_VALIDATION_ADMISSION_TIMEOUT_SECONDS
             if admission_timeout is None
@@ -269,9 +271,12 @@ class AppendValidationQueue:
             try:
                 job.result = job.operation()
             except Exception as exc:
+                exc.__traceback__ = None
                 job.error = exc
             finally:
+                job.operation = None
                 job.event.set()
+                memory_pressure.maybe_collect_after_pressure("append_validation")
 
     # Stop workers after all waiting threads have been notified.
     def close(self):
@@ -979,7 +984,7 @@ class TransparencyLog:
             log_client._normalize_spend_claim(claim)
             for claim in self._spend_claim_records(conn)
         ]
-        levels, _claims_by_key, total_claims = log_client._spend_map_levels(claims)
+        levels, claims_by_key, total_claims = log_client._spend_map_levels(claims)
         root_hash = levels[0].get(0, log_client._spend_map_empty_root())
         conn.execute("DELETE FROM spend_map_nodes_v3")
         conn.execute("DELETE FROM spend_map_claims_v3")
@@ -1006,6 +1011,8 @@ class TransparencyLog:
         self._set_spend_map_meta(conn, "root_hash", root_hash)
         self._set_spend_map_meta(conn, "rebuilt_at", int(time.time()))
         self._set_spend_map_meta(conn, "updated_at", int(time.time()))
+        del levels, claims_by_key, claims
+        memory_pressure.maybe_collect_after_pressure("spend_map_rebuild")
         return root_hash, total_claims
 
     def _ensure_current_spend_map(self, conn):
@@ -1905,7 +1912,10 @@ class TransparencyLog:
                     """,
                     (root_id, tree_size, root_hash, timestamp, log_client.canonical_json(root)),
                 )
-        self._mirror_root(root)
+        try:
+            self._mirror_root(root)
+        finally:
+            memory_pressure.maybe_collect_after_pressure("root_publish")
         return root
 
     # Publish a fresh signed root only when the configured interval has elapsed.
@@ -2205,8 +2215,13 @@ class TransparencyLogHandler(BaseHTTPRequestHandler):
             self._send_error_json(404, "not found")
         except Exception as exc:
             self._send_error_json(400, str(exc))
+        finally:
+            memory_pressure.maybe_collect_after_pressure("transparency_get")
 
     def do_POST(self):
+        raw = None
+        payload = None
+        append_operation = None
         try:
             path = self._request_path()
             if path != "/v3/append":
@@ -2280,6 +2295,11 @@ class TransparencyLogHandler(BaseHTTPRequestHandler):
             )
         except Exception as exc:
             self._send_error_json(400, str(exc))
+        finally:
+            raw = None
+            payload = None
+            append_operation = None
+            memory_pressure.maybe_collect_after_pressure("transparency_append")
 
     def log_message(self, format, *args):
         return
@@ -2292,6 +2312,8 @@ def _root_publisher(log, interval_seconds, stop_event):
                 log.maybe_publish_root(interval_seconds)
         except Exception as exc:
             logger.warning("background transparency root publishing failed: %s", exc)
+        finally:
+            memory_pressure.maybe_collect_after_pressure("root_publisher")
         stop_event.wait(interval_seconds)
 
 

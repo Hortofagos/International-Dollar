@@ -4,6 +4,7 @@ from ind import keys_v3
 from ind import protocol as ind_token
 from ind import protocol_v3
 from ind import runtime as runtime_json
+from ind import sender_node
 from ind import transparency_client as log_client
 from ind import wallet_services
 from ind.store import INDLocalStore
@@ -134,7 +135,7 @@ def test_filter_locally_sent_records_keeps_newer_returned_bill_sequence():
     ]
 
 
-def test_wallet_balance_counts_uses_lightweight_records_and_wallet_lines():
+def test_wallet_balance_counts_uses_lightweight_spendable_records_only():
     address, _private_key, _public_key = keys_v3.generate_keypair(b"\x42" * 32)
 
     class Store:
@@ -161,9 +162,9 @@ def test_wallet_balance_counts_uses_lightweight_records_and_wallet_lines():
         bill_values=(1, 2, 5),
     )
 
-    assert counts["bill_counts"] == {1: 1, 2: 0, 5: 1}
+    assert counts["bill_counts"] == {1: 0, 2: 0, 5: 1}
     assert counts["pending_bill_counts"] == {1: 0, 2: 1, 5: 0}
-    assert counts["balance"] == 6
+    assert counts["balance"] == 5
 
 
 def test_wallet_balance_counts_treats_verified_as_pending_when_quorum_requires_settled():
@@ -190,6 +191,85 @@ def test_wallet_balance_counts_treats_verified_as_pending_when_quorum_requires_s
     assert counts["bill_counts"] == {2: 0, 5: 1}
     assert counts["pending_bill_counts"] == {2: 1, 5: 0}
     assert counts["balance"] == 5
+
+
+def test_wallet_balance_counts_ignores_wallet_lines_for_nonspendable_verified_records():
+    address, _private_key, _public_key = keys_v3.generate_keypair(b"\x46" * 32)
+
+    class Store:
+        def spendable_bill_v3_statuses(self):
+            return ("settled",)
+
+        def bill_v3_count_records_for_owner(self, owner_address, statuses=None):
+            assert owner_address == address
+            assert statuses == ("settled", "verified", "pending")
+            return [
+                {"display_id": "2x4", "sequence": 1, "status": "verified"},
+            ]
+
+    counts = wallet_services.wallet_balance_counts(
+        address,
+        store=Store(),
+        wallet_lines=[
+            address + "\n",
+            "private\n",
+            "public\n",
+            "2x4 1 1781547000\n",
+        ],
+        bill_values=(2,),
+    )
+
+    assert counts["bill_counts"] == {2: 0}
+    assert counts["pending_bill_counts"] == {2: 1}
+    assert counts["balance"] == 0
+
+
+def test_pending_wallet_records_includes_verified_when_quorum_requires_settled():
+    address, _private_key, _public_key = keys_v3.generate_keypair(b"\x47" * 32)
+
+    class Store:
+        def spendable_bill_v3_statuses(self):
+            return ("settled",)
+
+        def bill_v3_records_for_owner(self, owner_address, statuses=None, limit=None):
+            assert owner_address == address
+            assert statuses == ("pending", "verified")
+            assert limit is None
+            return [
+                {"display_id": "2x4", "sequence": 1, "status": "verified"},
+                {"display_id": "5x5", "sequence": 1, "status": "pending"},
+            ]
+
+    assert wallet_services.pending_wallet_records(address, store=Store(), limit=None) == [
+        {"display_id": "2x4", "sequence": 1, "status": "verified"},
+        {"display_id": "5x5", "sequence": 1, "status": "pending"},
+    ]
+
+
+def test_bill_finality_progress_delegates_to_store_with_record_status():
+    class Store:
+        def bill_v3_finality_progress(self, bill, status=None):
+            assert bill == {"type": protocol_v3.BILL_TYPE}
+            assert status == "pending"
+            return {
+                "required_proofs": 2,
+                "proven_proofs": 1,
+                "pending_proofs": 0,
+                "failed_proofs": 0,
+                "awaiting_transparency": True,
+                "divergent_witness": False,
+                "spendable": False,
+            }
+
+    progress = wallet_services.bill_finality_progress(
+        store=Store(),
+        bill={"type": protocol_v3.BILL_TYPE},
+        record={"status": "pending"},
+    )
+
+    assert progress["required_proofs"] == 2
+    assert progress["proven_proofs"] == 1
+    assert progress["spendable"] is False
 
 
 def test_spendable_wallet_metadata_records_use_lightweight_query_and_filter_sent():
@@ -497,6 +577,67 @@ def test_spend_wallet_bill_v3_passes_store_transparency_verifier(tmp_path, monke
     assert state.owner_address == fixture["carol_address"]
     queued = [runtime_json.read_transaction_message(path) for path in runtime_json.transaction_files()]
     assert [message["type"] for message in queued] == [protocol_v3.TRANSFER_ANNOUNCEMENT_TYPE]
+
+
+def test_spend_wallet_bill_v3_uses_cached_fast_send_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IND_NETWORK", "testnet")
+    monkeypatch.setenv("IND_NODE_PORT", "18888")
+    store = INDLocalStore(db_path=tmp_path / "wallet.sqlite3", require_transparency=False)
+    fixture = native_v3_archive_fixture(tmp_path / "fixture")
+    bill = _store_fixture_bill(store, fixture)
+
+    def fail_full_verify(*_args, **_kwargs):
+        raise AssertionError("wallet send should spend from cached bill state")
+
+    monkeypatch.setattr(protocol_v3, "verify_bill", fail_full_verify)
+    monkeypatch.setattr(protocol_v3, "create_transfer", fail_full_verify)
+    monkeypatch.setattr(store, "store_bill_v3", fail_full_verify)
+
+    state = wallet_services.spend_wallet_bill_v3(
+        [fixture["bob_address"], fixture["bob_private"], fixture["bob_public"]],
+        bill,
+        fixture["carol_address"],
+        store=store,
+        timestamp=int(fixture["first_transfer"]["timestamp"]) + 40,
+    )
+
+    assert state.owner_address == fixture["carol_address"]
+    queued = [runtime_json.read_transaction_message(path) for path in runtime_json.transaction_files()]
+    assert len(queued) == 1
+    queued_bill, _proof_bundle, _archive_segments = protocol_v3.decode_transfer_announcement(
+        queued[0]
+    )
+    assert protocol_v3.cached_bill_state(queued_bill)["owner_address"] == fixture["carol_address"]
+
+
+def test_queued_broadcast_preflight_uses_cached_state(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IND_NETWORK", "testnet")
+    monkeypatch.setenv("IND_NODE_PORT", "18888")
+    store = INDLocalStore(db_path=tmp_path / "wallet.sqlite3", require_transparency=False)
+    fixture = native_v3_archive_fixture(tmp_path / "fixture")
+    bill = _store_fixture_bill(store, fixture)
+    state = wallet_services.spend_wallet_bill_v3(
+        [fixture["bob_address"], fixture["bob_private"], fixture["bob_public"]],
+        bill,
+        fixture["carol_address"],
+        store=store,
+        timestamp=int(fixture["first_transfer"]["timestamp"]) + 40,
+    )
+    message = runtime_json.read_transaction_message(runtime_json.transaction_files()[0])
+
+    def fail_full_announcement_verify(*_args, **_kwargs):
+        raise AssertionError("queued broadcast should not redo full proof verification")
+
+    monkeypatch.setattr(
+        protocol_v3,
+        "verify_transfer_announcement",
+        fail_full_announcement_verify,
+    )
+
+    sender_node._validate_v3_transfer_announcement_for_broadcast(store, message)
+    assert state.owner_address == fixture["carol_address"]
 
 
 def _store_fixture_bill(store, fixture):

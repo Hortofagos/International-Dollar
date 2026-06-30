@@ -51,11 +51,25 @@ def testnet_seed_hosts(config_path=DEFAULT_TESTNET_CONFIG):
     return _dedupe(hosts)
 
 
+def testnet_peer_hosts(config_path=DEFAULT_TESTNET_CONFIG):
+    try:
+        data = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    if isinstance(data, dict):
+        hosts = data.get("peer_ping_servers") or data.get("dns_seed_hosts", [])
+    elif isinstance(data, list):
+        hosts = data
+    else:
+        hosts = []
+    return _dedupe(hosts)
+
+
 # Parse repeated and comma-separated peer arguments.
 def parse_peer_args(values, *, config_path=DEFAULT_TESTNET_CONFIG, default_to_config=True):
     peers = _split_peer_values(values)
     if not peers and default_to_config:
-        peers = testnet_seed_hosts(config_path)
+        peers = testnet_peer_hosts(config_path)
     return _dedupe(peers)
 
 

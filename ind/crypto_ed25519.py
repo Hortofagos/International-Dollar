@@ -76,6 +76,17 @@ def sign(private_seed, message):
     return signature
 
 
+# Sign bytes without the defensive self-verification pass.
+def sign_unverified(private_seed, message):
+    if not isinstance(message, bytes):
+        raise ValidationError("Ed25519 message must be bytes")
+    private_key = private_key_from_seed(private_seed)
+    signature = private_key.sign(message)
+    if len(signature) != SIGNATURE_BYTES:
+        raise ValidationError("invalid Ed25519 signature length")
+    return signature
+
+
 # Return True when a raw Ed25519 signature verifies for the supplied bytes.
 def verify(public_key_bytes, signature, message):
     if not isinstance(message, bytes):

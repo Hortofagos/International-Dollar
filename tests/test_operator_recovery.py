@@ -316,6 +316,135 @@ def test_strict_consistency_refreshes_when_root_is_unchanged(tmp_path, monkeypat
     assert status["last_successful_consistency_at"] == 1_700_000_200
 
 
+def test_strict_stale_baseline_refreshes_before_failing(tmp_path, monkeypatch):
+    log, public_key, _first_root, second_root = _two_root_log(tmp_path)
+    observed = log_client.InMemoryObservedRootStore()
+    observed.record_root(
+        second_root,
+        ("test", "old-baseline"),
+        observed_at=1_700_000_050,
+        consistency_checked_at=1_700_000_050,
+    )
+    observed.mark_active(second_root["log_id"], second_root["operator_public_key"], checked_at=1_700_000_050)
+    verifier = log_client.TransparencyVerifier(
+        log_client.LocalTransparencyOperator(log),
+        [
+            log_client.StaticRootMirror([second_root], identity_id="steady-mirror-a"),
+            log_client.StaticRootMirror([second_root], identity_id="steady-mirror-b"),
+        ],
+        operator_public_key=public_key,
+        min_mirrors=2,
+        strict_mode=True,
+        consistency_max_stale_seconds=60,
+        max_current_root_age_seconds=600,
+        observed_root_store=observed,
+        run_startup_check=False,
+    )
+
+    monkeypatch.setattr(log_client.time, "time", lambda: 1_700_000_200)
+
+    verifier._enforce_consistency_freshness(second_root["log_id"])
+
+    status = observed.status(second_root["log_id"])
+    assert status["status"] == "active"
+    assert status["last_successful_consistency_at"] == 1_700_000_200
+
+
+def test_strict_stale_baseline_still_fails_when_refresh_unavailable(tmp_path, monkeypatch):
+    log, public_key, _first_root, second_root = _two_root_log(tmp_path)
+    observed = log_client.InMemoryObservedRootStore()
+    observed.record_root(
+        second_root,
+        ("test", "old-baseline"),
+        observed_at=1_700_000_050,
+        consistency_checked_at=1_700_000_050,
+    )
+    observed.mark_active(second_root["log_id"], second_root["operator_public_key"], checked_at=1_700_000_050)
+    verifier = log_client.TransparencyVerifier(
+        log_client.LocalTransparencyOperator(log),
+        [
+            log_client.StaticRootMirror([], identity_id="empty-mirror-a"),
+            log_client.StaticRootMirror([], identity_id="empty-mirror-b"),
+        ],
+        operator_public_key=public_key,
+        min_mirrors=2,
+        strict_mode=True,
+        consistency_max_stale_seconds=60,
+        max_current_root_age_seconds=600,
+        observed_root_store=observed,
+        run_startup_check=False,
+    )
+
+    monkeypatch.setattr(log_client.time, "time", lambda: 1_700_000_200)
+
+    with pytest.warns(RuntimeWarning, match="consistency freshness refresh failed"):
+        with pytest.raises(log_client.ConsistencyUnavailableError, match="last success was 150 seconds ago"):
+            verifier._enforce_consistency_freshness(second_root["log_id"])
+
+
+def test_strict_startup_allows_empty_store_to_bootstrap_later(tmp_path):
+    log, public_key, _first_root, second_root = _two_root_log(tmp_path)
+    observed = log_client.InMemoryObservedRootStore()
+    with pytest.warns(RuntimeWarning, match="startup transparency consistency check"):
+        verifier = log_client.TransparencyVerifier(
+            log_client.LocalTransparencyOperator(log),
+            [
+                log_client.StaticRootMirror([], identity_id="empty-mirror-a"),
+                log_client.StaticRootMirror([], identity_id="empty-mirror-b"),
+            ],
+            operator_public_key=public_key,
+            min_mirrors=2,
+            strict_mode=True,
+            max_current_root_age_seconds=600,
+            observed_root_store=observed,
+            run_startup_check=True,
+        )
+
+    assert observed.status(second_root["log_id"]) is None
+    assert observed.latest_root(second_root["log_id"]) is None
+
+    verifier.mirrors = [
+        log_client.StaticRootMirror([second_root], identity_id="ready-mirror-a"),
+        log_client.StaticRootMirror([second_root], identity_id="ready-mirror-b"),
+    ]
+    verifier.mirror_identities = [
+        log_client.transparency_source_identity(verifier.mirrors[0]),
+        log_client.transparency_source_identity(verifier.mirrors[1]),
+    ]
+
+    verifier.current_mirrored_root(now=1_700_000_050)
+
+    status = observed.status(second_root["log_id"])
+    assert status["status"] == "active"
+    assert status["last_successful_consistency_at"] is not None
+
+
+def test_strict_consistency_still_requires_baseline_after_local_root_exists(tmp_path):
+    log, public_key, _first_root, second_root = _two_root_log(tmp_path)
+    observed = log_client.InMemoryObservedRootStore()
+    observed.record_root(
+        second_root,
+        ("test", "unverified-local-root"),
+        observed_at=1_700_000_050,
+        consistency_checked_at=None,
+    )
+    verifier = log_client.TransparencyVerifier(
+        log_client.LocalTransparencyOperator(log),
+        [
+            log_client.StaticRootMirror([second_root], identity_id="steady-mirror-a"),
+            log_client.StaticRootMirror([second_root], identity_id="steady-mirror-b"),
+        ],
+        operator_public_key=public_key,
+        min_mirrors=2,
+        strict_mode=True,
+        observed_root_store=observed,
+        run_startup_check=False,
+    )
+
+    with pytest.raises(log_client.ConsistencyUnavailableError, match="no successful consistency baseline"):
+        verifier._enforce_consistency_freshness(second_root["log_id"])
+
+
 def test_current_root_check_rejects_signed_rollback_after_newer_tree(tmp_path):
     log, public_key, first_root, second_root = _two_root_log(tmp_path)
     rollback_root = log_client.make_signed_root(
